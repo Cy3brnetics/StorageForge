@@ -417,7 +417,8 @@ import json, shutil, sys, tempfile, time
 from storageforge_index import hostlogs, loganomaly
 from storageforge_index.db import Database
 base, flood = sys.stdin.read().split('\\n@@@@\\n')
-now = time.time() - time.time() % 300
+# Assess after the bucket containing the captured flood has closed.
+now = (int(time.time()) // hostlogs.COUNT_SECS + 1) * hostlogs.COUNT_SECS
 W = loganomaly.WEEK_SECS
 d = tempfile.mkdtemp(); db = Database(d + '/t.db'); conn = db.connect(); db.migrate(conn)
 def shifted(text, back, tag):

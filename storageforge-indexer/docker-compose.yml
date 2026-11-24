@@ -168,5 +168,5 @@ networks:
   sf:
     driver_opts:
       # A fixed bridge name, so a host firewall can allow SSH from this container to the Docker host itself:
-      #   sudo ufw allow in on sf0 to any port 22 proto tcp
-      com.docker.network.bridge.name: ${STORAGEFORGE_BRIDGE:-sf0}
+      #   sudo ufw allow in on br-sforge to any port 22 proto tcp
+      com.docker.network.bridge.name: ${STORAGEFORGE_BRIDGE:-br-sforge}

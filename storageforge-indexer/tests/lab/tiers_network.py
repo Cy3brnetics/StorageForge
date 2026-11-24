@@ -53,7 +53,7 @@ def in_container(command, stdin=None):
 def measure_by_hand(node):
     """Alpine takes no signed deploys, so its firewall reading comes through the same script and parser, by the lab's own SSH."""
     from storageforge_index import inframeasure
-    data = inframeasure.parse(sudo(node.name, inframeasure.script()))
+    data = inframeasure.parse(ssh(node.name, 'sudo -n bash -s', stdin=inframeasure.script()))
     want(data is not None, 'the reading was cut short')
     script = "import json,sys,time\nfrom storageforge_index import security,infragraph,cli\nfrom storageforge_index.db import Database\nimport os\ndb=Database(os.environ['STORAGEFORGE_DB'])\nc=db.connect()\nsecurity._save_measurement(c,sys.argv[1],'infra',int(time.time()),'measure',json.load(sys.stdin))\ninfragraph.rebuild(c,sys.argv[1])\nc.close()\n"
     ssh('sf-ctl', f'{COMPOSE} exec -T storageforge python -c {shlex.quote(script)} {node.name}', stdin=json.dumps(data))
@@ -288,7 +288,7 @@ def tier12(r):
     def segment_hosts():
         for node in (client, server, outside):
             demo.install_key(node.name, 'scan', keys['lab-scan'])
-            sudo(node.name, 'apk add -q findutils util-linux coreutils tar iproute2')
+            sudo(node.name, 'apk add -q bash findutils util-linux coreutils tar iproute2')
             bind('lab-scan', node.ip, 'scan', 'scan,checksum')
         demo.scan(api, [client.ip, server.ip, outside.ip])
         for node in (client, server, outside):
@@ -538,7 +538,7 @@ def tier12(r):
         want(names[client.name]['kind'] == 'host', names[client.name])
         want(any(x['to_addr'] == DMZ for x in f['forwards']), f['forwards'])
         page = api.text('/manage')
-        want('manage.js' in page and 'Management planner' in page, 'the page itself')
+        want('manage.js' in page and 'management planner' in page.lower(), 'the page itself')
         want('function viewCompose' in api.text('/manage.js'), 'its script')
         wi = api.post('/api/dsl/whatif', {'host': 'sf-mikrotik', 'dsl': '/ip firewall filter add chain=forward protocol=tcp dst-port=9999 action=accept', 'from': LAN, 'to': DMZ, 'port': 80})
         want(wi['before']['verdict'] == wi['after']['verdict'] == 'allowed' and not wi['changed'], wi)

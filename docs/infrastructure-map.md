@@ -201,7 +201,7 @@ What it holds to:
 - **A host that leaves** (`POST /api/sfnet/members/remove`) comes off every other member at the next plan and loses its interface and key. Its address is never given to another host.
 - **Open the port.** Peers call UDP 51903; add a `fw-rule` step where a firewall is in the way.
 
-A machine that already has an interface called `sf0` that is not WireGuard is left alone. The machine that runs the StorageForge containers is one: their bridge has that name by default. Give the bridge another name with `STORAGEFORGE_BRIDGE` (and move any firewall rule that names it) before that machine joins.
+A machine that already has an interface called `sf0` that is not WireGuard is left alone. Compose uses `br-sforge` for new installations. Existing sites can pin `STORAGEFORGE_BRIDGE=sf0` until their next maintenance window. To migrate, stop the stack with `docker compose down` (preserve its volumes), remove old sf0 egress hooks with `sudo STORAGEFORGE_BRIDGE=sf0 docker/egress-firewall.sh --remove`, and update host firewall rules and the site's bridge setting to `br-sforge`. Recreate the stack and reapply its egress firewall before joining WireGuard.
 
 ### The controller as a member
 

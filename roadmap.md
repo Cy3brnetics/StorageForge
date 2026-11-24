@@ -60,13 +60,8 @@ Checked against the code on 2026-11-16.
 | **Control is done over SSH; automation and monitoring by the agent,** which runs under its own uid:gid. Change plans stay on SSH. The user that deploys and manages the agent is never in the `docker` group and uses `sudo` where it must, limited to the agent's verifier | 2026-11-16, the owner |
 | **No single point of failure: layers, fast rotation, and sensitive routes that move.** After the 0.5.4 image scan (Grype: ten findings in OpenSSL and Python with no fix published yet), the owner's direction: a flaw in one layer must not give up a release or the data, so a second layer of encryption on the service and a third where it helps, keys rotated faster than a stolen one is of use, and sensitive API paths that change like a 2FA code. Built in section 14 (*Layers*) | 2026-11-18, the owner |
 | **The agent is written in Rust.** One static program, as the key enclave's is: no interpreter and no OpenSSL or Python in the agent's image for a scanner to find, memory safety in the part that runs on machines that may be hostile, and one file to sign and to hash. The controller and the web app stay Python (section 11.1, *Language*) | 2026-11-18, the owner |
-
-## Decisions still open
-
-| Decision | Blocks |
-| :--- | :--- |
-| **The compose bridge and the StorageForge network's interface are both called `sf0`** on the Docker host: rename the bridge default, or the interface | The controller's Docker host joining the StorageForge network |
-| **One design document** in place of the storage blueprint and the map's design: the owner took the recommended answers in section 10.1 on 2026-11-16, to be checked again when 3i is reached | Section 10's step 3i, confirmed at 0.5.16 |
+| **Docker bridge default is `br-sforge`; WireGuard keeps `sf0`.** Existing sites may pin the legacy bridge for a scheduled migration. | 2026-11-24, the owner |
+| **Unified designs follow §10.1.** Merge each host’s blueprint with its newest map design, preserve older alternatives as versions, and retain the old tables read-only for one release. | 2026-11-24, the owner |
 
 ## Versions and checkpoints
 
@@ -193,6 +188,8 @@ Decided 2026-11-16: data is encrypted even on the LAN, and the default needs no 
 | **Roaming, hub forwarding, dual-stack & signed head directory** (added 2026-11-22): hub forwarding step (`ip_forward` + forward rules so two NAT'd spokes meet at a hub), `[IPv6]` literal endpoints and dual-stack overlay support in `sfnet.py`/`sfnetwork.py`/`sfcontroller.py`, and a monotonic signed head/route directory (`seq`, expiry, hub/head pubkey + endpoints signed with `sshsig` by the controller's pinned key) pushed via SSH scans and pullable outbound by roaming peers from any reachable peer mirror | built 2026-11-23, not lab-tested (`sfnet.py`, `sfnetwork.py`, `steps_infra.py`): `wg-forward` hub step, `[IPv6]:port` endpoints and optional inner ULA `/64` overlay ranges (`sfnet.pick_v6_range`, `range6`) across `sfnet`/`sfnetwork`/`sfcontroller`, and `GET`/`POST /api/sfnet/directory` with `sshsig` monotonic `seq` + expiry verification and outbound roaming peer pull script (`sfnet.mirror_pull_script`). Open: lab run |
 
 **State of 2.1 on 2026-11-20 (built, not lab-tested; `fed5650` to `85848e2`):** rotation through plans, the controller as a member (a link container, or a controller that runs on a member), StorageForge's own SSH connections over the network, and the page under Infrastructure. Lab tier 20 is written and has not run. **Open:** `storageforge-agentctl` and the agent's tunnel (0.5.7); a hub has no step that turns on forwarding, so two spokes cannot reach each other; the `sfnet` image target has not been built; the compose bridge is also called `sf0` on the Docker host, so that host cannot join until `STORAGEFORGE_BRIDGE` is changed (the owner's decision: rename the bridge default or the interface).
+
+**2026-11-24 update.** The sfnet image built and its link entrypoint ran once in an isolated container. Compose now defaults to `br-sforge`, freeing `sf0` for WireGuard. Tier 20 remains unverified on this checkout.
 
 **SSH CA, and exposure through tunnels, on 2026-11-20 (built, not lab-tested; `125d6b4` to `d2e742c`):** the CA as a vault key, `ssh-ca-trust` and `ssh-ca-krl`, certificates for the console and scans per host, revocation, Keys → SSH certificates; tunnel findings in Exposure and Security, and the `cloudflare-tunnel` and `pangolin-site` steps. Lab tier 21 is written and has not run; its tunnel checks use stand-ins. The API can issue a certificate for a named SSH user and known host. **Open:** taking the key out of `authorized_keys` once certificates work, join steps for frp and ngrok (not asked for), Pangolin's API read (0.5.10).
 
@@ -351,7 +348,7 @@ From the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md) and the [UI audi
 | :--- | :--- | :--- |
 | **2** | Security and Settings as workspaces with their own section navigation; Security leading with blast radius, quarantine and the brake when the posture is Incident; the rail keeping only a summary and a link for them; one Plan workspace holding Design, Network and devices, Changes, Moves, Schedule and History; collapsible rail groups (UX-01) | open |
 | **3** | The planner grows, steps 3a to 3h: design what isn't there yet (disks, pools, remotes, exports), Shares, the network lens, the workloads lens with placement guardrails, the security lens, the health lens, compare and adopt (adopting one object from the scan is the part of 3g not built), one Change review | open |
-| **3i** | One design document in place of the storage blueprint and the map's design, with the planner as its editor and the map showing it as ghosts; a migration and a lab run. Answers in 10.1 | provisional answers, confirmed at 0.5.16 |
+| **3i** | One design document in place of the storage blueprint and the map's design, with the planner as its editor and the map showing it as ghosts; a migration and a lab run. Answers in 10.1 | migration rules confirmed 2026-11-24; per-host preview implemented and tested. Database migration and planner cutover remain open |
 | **4** | Design mode from what was read, Compose as an editor (with paths that must stay open or blocked), Scan as a table and a diff, "host or disk goes away" what-if steps | open |
 | **5** | The planner's own status dots and theme toggle | open |
 | **Components** | The card, table and pill components, page by page | open |
@@ -360,7 +357,7 @@ From the [UI and UX roadmap](archive/roadmaps/ui-ux-roadmap.md) and the [UI audi
 
 ### 10.1 Step 3i: the answers taken for now
 
-Today the storage blueprint is one per host (the planner, saved versions, laid over each scan), and the map's design is named, owned and covers many hosts (networks, workloads, firewall) with no versions. The owner took these recommended answers on 2026-11-16, and they are checked again with the owner when 3i is reached, before its migration runs.
+Today the storage blueprint is one per host (the planner, saved versions, laid over each scan), and the map's design is named, owned and covers many hosts (networks, workloads, firewall) with no versions. The owner took these recommended answers on 2026-11-16, and confirmed them on 2026-11-24 for the migration.
 
 | Question | Answer for now |
 | :--- | :--- |
@@ -374,6 +371,8 @@ Today the storage blueprint is one per host (the planner, saved versions, laid o
 | Which exports? | All of them from the one document, each saying which sections it leaves out |
 | Connections, Toolbox entries and log rules as sections too? | Yes, decided now so the format does not change again |
 | Retiring a host removes what? | Its document, and the host from any group design; saved versions kept until someone deletes them |
+
+The planner can now adopt an individual scanned disk, link, remote mount or share into the current draft. A browser regression test checks that adopting a link preserves unrelated disk edits.
 
 ## 11. The agent
 

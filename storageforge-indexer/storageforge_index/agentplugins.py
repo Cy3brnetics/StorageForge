@@ -81,7 +81,7 @@ def take(db: Database, now: float | None = None) -> dict:
             try:
                 taker(conn, host, body, int(received_at or now))
                 out[plugin] = out.get(plugin, 0) + 1
-            except (ValueError, TypeError, KeyError, RecursionError):
+            except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
                 errlog.trace()        # a reading of a form nothing here reads: dropped, the rest go on
         for i in range(0, len(done), 200):
             part = done[i:i + 200]

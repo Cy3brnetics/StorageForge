@@ -110,6 +110,22 @@ async function openTask(type, host, preset = {}, edit = null) {
     }
     controls[f.name] = input;
     inputs[f.name] = () => input.value.trim();
+    if (type === 'archive' && f.kind === 'path') {
+      const destination = f.name === 'dest';
+      const browse = el('button', { type: 'button', class: 'btn sm', onclick: async () => {
+        const current = input.value.trim();
+        const slash = current.lastIndexOf('/');
+        const chosen = await pickPath(host, current.slice(0, Math.max(0, slash)) || '/', {
+          title: destination ? 'Choose the archive folder' : 'Choose a file or folder',
+          pick: destination ? 'folder' : 'any'
+        });
+        if (!chosen) return;
+        input.value = destination ? chosen.replace(/\/+$/, '') + '/' + current.slice(slash + 1) : chosen;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      } }, destination ? 'Choose folder…' : 'Browse…');
+      return el('div', { class: 'field col' }, el('label', {}, f.label, input), browse);
+    }
     return el('label', { class: 'field col' }, el('span', {}, f.label + (f.required ? '' : ' (optional)')), input);
   });
   if (type === 'archive') {

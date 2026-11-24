@@ -266,6 +266,32 @@ def puppet(doc: dict) -> str:
 
 
 # ── storing them ────────────────────────────────────────────────────
+def migration_preview(conn: Conn, host: str) -> dict:
+    """Project the saved inputs for one host, preserving the provenance of each alternative."""
+    storage = conn.scalar('SELECT body_json FROM blueprints WHERE hostname = :h', {'h': host})
+    alternatives = []
+    for design_id, name, owner, raw, updated in conn.all(
+            'SELECT id, name, owner, graph_json, updated_at FROM map_designs ORDER BY updated_at DESC, id DESC'):
+        fleet = loads(raw)
+        for member in fleet.get('hosts', []):
+            if member['name'] != host:
+                continue
+            alternatives.append({'design_id': design_id, 'name': name, 'owner': owner, 'updated_at': updated,
+                                 'notes': fleet.get('notes', ''), 'member': member})
+    if storage is None and not alternatives:
+        raise LookupError(f'no saved design for {host}')
+    def version(source):
+        member = source['member'] if source else {}
+        sections = {key: member.get(key, []) for key in ('networks', 'workloads', 'firewall')}
+        sections.update(storage=loads(storage), connections=[], toolbox=[], log_rules=[])
+        document = {'apiVersion': 'storageforge/v2', 'kind': 'HostDesign',
+                    'metadata': {'host': host, 'planned': member.get('planned', False)}, 'sections': sections}
+        return {'document': document, 'source': {k: v for k, v in source.items() if k != 'member'} if source else None}
+
+    return {'current': version(alternatives[0] if alternatives else None),
+            'versions': [version(source) for source in alternatives[1:]]}
+
+
 def list_designs(conn: Conn) -> list[dict]:
     return [{'id': i, 'name': n, 'owner': o, 'updated_at': u, 'hosts': len((loads(g) or {}).get('hosts') or [])} for i, n, o, g, u in conn.all('SELECT id, name, owner, graph_json, updated_at FROM map_designs ORDER BY name')]
 

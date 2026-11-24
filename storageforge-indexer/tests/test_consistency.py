@@ -202,19 +202,27 @@ class EgressFirewall(unittest.TestCase):
             (self.tmp / 'bin' / name).write_text(text)
             (self.tmp / 'bin' / name).chmod(0o755)
         self.state = self.tmp / 'state.json'
-        self.state.write_text(json.dumps({'chains': {'DOCKER-USER': [], 'INPUT': []}, 'bridges': ['sf0', 'sfdemo0'],
+        self.state.write_text(json.dumps({'chains': {'DOCKER-USER': [], 'INPUT': []}, 'bridges': ['sf0', 'br-sforge', 'sfdemo0'],
                                           'opened': []}))
 
     def fw(self, *args, bridge='sf0', ports='22 443'):
         import json
         import subprocess
         env = {'PATH': f'{self.tmp}/bin:/usr/bin:/bin', 'FAKE_IPT_STATE': str(self.state),
-               'STORAGEFORGE_BRIDGE': bridge, 'STORAGEFORGE_EGRESS_PORTS': ports}
+               'STORAGEFORGE_EGRESS_PORTS': ports}
+        if bridge is not None:
+            env['STORAGEFORGE_BRIDGE'] = bridge
         p = subprocess.run(['sh', str(FIREWALL), *args], env=env, capture_output=True, text=True, timeout=60)
         return p.returncode, json.loads(self.state.read_text())
 
     def chains(self, st):
         return {c: rs for c, rs in st['chains'].items() if c not in ('DOCKER-USER', 'INPUT')}
+
+    def test_default_firewall_targets_the_compose_bridge(self):
+        rc, state = self.fw(bridge=None)
+        self.assertEqual(rc, 0)
+        self.assertIn('-i br-sforge -j SF-EGRESS-br-sforge', state['chains']['INPUT'])
+        self.assertNotIn('-i sf0 -j SF-EGRESS-sf0', state['chains']['INPUT'])
 
     def test_each_bridge_keeps_its_rules_and_never_opens(self):
         self.assertEqual(self.fw()[0], 0)

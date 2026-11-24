@@ -94,8 +94,11 @@ async function pollNetScan() {
   try {
     const data = await getJSON('/api/netscan');
     const running = (data.scans || []).some((s) => s.status === 'running');
-    if ($('#netscanview').hidden) return;
     if (running) { NS.timer = setTimeout(pollNetScan, 4000); return; }
-    NS.scan = null; loadNetScan();
+    NS.scan = null;
+    if (!$('#netscanview').hidden) loadNetScan();
+    if (typeof T !== 'undefined' && T.mode === 'map' && typeof loadMap === 'function') loadMap();
+    if (typeof ntNotifChip === 'function') ntNotifChip();
+    if (typeof curTab === 'function' && curTab() === 'notifications' && typeof loadNotifications === 'function') loadNotifications();
   } catch { /* the next look */ }
 }

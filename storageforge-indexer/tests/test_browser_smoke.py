@@ -70,6 +70,13 @@ class BrowserSmoke(unittest.TestCase):
         self.page.wait_for_load_state('load')                    # the markup is there before the last script has run: a test that asks for a global waits for it
         self.page.wait_for_selector('html[data-route-ready]', state='attached')      # the page has started following the address: a choice made before this is not a step in the history
 
+    def test_scan_refresh_preserves_archive_draft(self):
+        self.page.evaluate("openTask('archive', 'nas', {path: '/srv/photos'})")
+        dest = self.page.get_by_label('Archive file to write', exact=True)
+        dest.fill('/backup/custom.tar.zst')
+        self.page.evaluate("Promise.all([loadGraph({background: true}), loadDesigns({background: true})])")
+        self.assertEqual(dest.input_value(), '/backup/custom.tar.zst')
+
     def test_every_tab_opens_without_a_script_error(self):
         found = self.page.eval_on_selector_all('.tabs button', 'bs => bs.map(b => b.dataset.tab)')
         self.assertGreaterEqual(len(found), len(TABS) - 1, found)

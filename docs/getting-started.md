@@ -63,10 +63,10 @@ Or put key files in `./keys/` before starting: the entrypoint imports each one (
 
 ## Scanning the Docker host itself
 
-Connections from the container to its own host arrive on the `sf0` bridge, not from the LAN. A host firewall that only allows SSH from the LAN drops them, and scans fail with "Connection timed out". With ufw:
+Connections from the container to its own host arrive on the `br-sforge` bridge, not from the LAN. A host firewall that only allows SSH from the LAN drops them, and scans fail with "Connection timed out". With ufw:
 
 ```bash
-sudo ufw allow in on sf0 to any port 22 proto tcp
+sudo ufw allow in on br-sforge to any port 22 proto tcp
 ```
 
 ## Try the demo

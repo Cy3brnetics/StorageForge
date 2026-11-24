@@ -76,6 +76,18 @@ class PlannerVersions(unittest.TestCase):
     def other_mode(self):
         return 'LABEL' if self.page.evaluate('S.idMode') == 'UUID' else 'UUID'
 
+    def test_adopt_one_scanned_link_into_current_draft(self):
+        scan = {'metadata': {'host': HOST}, 'links': [{'path': '/adopt', 'kind': 'symlink', 'target': '/srv/data'}]}
+        self.page.route('**/api/planner/design?source=inventory&host=*',
+                        lambda route: route.fulfill(json={'blueprint': scan}))
+        self.page.evaluate('DOC.scanned = true; docState()')
+        before = self.page.evaluate('JSON.stringify(S.disks)')
+        self.page.click('#adoptobject')
+        self.page.get_by_role('button', name='Adopt into draft').click()
+        self.assertTrue(self.page.evaluate("DOC.dirty && S.links.some(l => l.path === '/adopt' && l.target === '/srv/data')"))
+        self.assertEqual(self.page.evaluate('JSON.stringify(S.disks)'), before)
+        self.assertEqual(self.errors, [])
+
     def test_save_compare_restore_and_delete(self):
         before = self.page.evaluate('S.idMode')
         after = self.other_mode()

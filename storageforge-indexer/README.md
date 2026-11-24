@@ -432,10 +432,10 @@ Host keys are trusted on first use into the same `known_hosts` that scans use. E
 
 The host must allow password login once for `ssh-copy-id`. Afterwards you can turn `PasswordAuthentication` off.
 
-**Scanning the Docker host itself.** The container reaches other machines through the host, but connections to the host's own address arrive from the Docker network on the `sf0` bridge. A host firewall that only allows SSH from the LAN drops them, and `ssh-copy-id` or scans fail with "Connection timed out". With ufw, allow it once:
+**Scanning the Docker host itself.** The container reaches other machines through the host, but connections to the host's own address arrive from the Docker network on the `br-sforge` bridge. A host firewall that only allows SSH from the LAN drops them, and `ssh-copy-id` or scans fail with "Connection timed out". With ufw, allow it once:
 
 ```bash
-sudo ufw allow in on sf0 to any port 22 proto tcp
+sudo ufw allow in on br-sforge to any port 22 proto tcp
 ```
 
 ## Backups, retention and logs
@@ -485,7 +485,7 @@ Run `storageforge-index prune --vacuum` once to shrink the database file. It rew
 | `docker/entrypoint.sh` | Refuses root, checks secret lengths, checks volume ownership and that the runtime dir is tmpfs, tightens permissions, migrates, creates or verifies the vault, imports keys from a read-only mount, then `exec`s |
 | `docker/init-volumes.sh` | The one-shot `init-secrets` service: on first deploy, fills the `sf-secrets` and `sf-tls` volumes with the vault secret, session secret and a self-signed certificate for the host's name and address (`STORAGEFORGE_TLS_NAMES` adds more). Never overwrites; takes anything missing from `./secrets` first |
 | `docker/init-secrets.sh` | Optional, on the host: makes the same files in `./secrets` for `init-secrets` to copy, with every LAN address in the certificate. Also sets up `keys/` for the key import (`STORAGEFORGE_SECRETS_GID`, written to `.env` when your group is not 1000) |
-| `docker/egress-firewall.sh` | Optional, run as root: lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `sf0` bridge, to other machines and to the Docker host itself (`STORAGEFORGE_BRIDGE` for another bridge, each with its own rules); `--remove` undoes it |
+| `docker/egress-firewall.sh` | Optional, run as root: lets the containers open only SSH and alert ports (`STORAGEFORGE_EGRESS_PORTS`, default `22 443`) out of the `br-sforge` bridge, to other machines and to the Docker host itself (`STORAGEFORGE_BRIDGE` for another bridge, each with its own rules); `--remove` undoes it |
 | `docker/requirements*.lock` | Every Python dependency pinned with hashes; the image installs with `--require-hashes` |
 | `examples/demo/` | Disposable SSH target and an end-to-end script |
 

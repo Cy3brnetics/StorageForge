@@ -80,7 +80,10 @@ class Ranking(Center):
     def test_the_summary_is_what_the_page_header_counts(self):
         self.wrong(a=problem('job-failed', 'j1', 'crit'), b=problem('scan-failed', 'pc'))
         notifications.snooze(self.conn, 'b', 3600, 'gabe')
-        self.assertEqual(notifications.summary(self.conn), {'counts': {'crit': 1, 'warn': 0, 'info': 0}, 'total': 1})
+        summary = notifications.summary(self.conn)
+        self.assertEqual(summary['counts'], {'crit': 1, 'warn': 0, 'info': 0})
+        self.assertEqual(summary['total'], 1)
+        self.assertEqual(summary['mark'], notifications.summary(self.conn)['mark'])
 
 
 class WhatCannotBeIgnored(Center):

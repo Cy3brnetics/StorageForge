@@ -552,6 +552,43 @@ t_apparmor_local() { local profile=$1 rules=$2 file err
   try apparmor_parser -r "/etc/apparmor.d/$profile" && ok "$profile reloaded with these paths"
 }
 
+t_mac_setup() { local framework=$1 state
+  . /etc/os-release
+  case "$framework:$ID" in
+    apparmor:ubuntu|apparmor:debian)
+      [[ $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null) == Y ]] || { conflict "AppArmor is unavailable in the running kernel. Enable AppArmor in the boot configuration and reboot before applying."; return 0; }
+      act "install AppArmor utilities and enable the distribution profiles" || return 0
+      try env DEBIAN_FRONTEND=noninteractive apt-get install -y apparmor apparmor-utils || return 0
+      try systemctl enable --now apparmor.service && try aa-status --enabled && ok "AppArmor enabled"
+      ;;
+    enforce:fedora|enforce:rhel|enforce:rocky|enforce:almalinux)
+      state=$(getenforce 2>/dev/null)
+      [[ $state == Enforcing || $state == Permissive ]] || { conflict "Complete permissive setup and reboot first"; return 0; }
+      grep -q "^SELINUX=" /etc/selinux/config || { conflict "Missing SELINUX setting"; return 0; }
+      act "enforce SELinux now and at startup" || return 0
+      try setenforce 1 && try sed -i "s/^SELINUX=.*/SELINUX=enforcing/" /etc/selinux/config && ok "SELinux enforcing"
+      ;;
+    selinux:fedora|selinux:rhel|selinux:rocky|selinux:almalinux)
+      if grep -Eq "(^| )(lsm=|security=apparmor)" /proc/cmdline; then conflict "A custom security module selection needs boot configuration review"; return 0; fi
+      act "install the targeted SELinux policy and management tools; prepare disabled hosts for a permissive relabel on reboot" || return 0
+      try dnf install -y selinux-policy-targeted policycoreutils-python-utils libselinux-utils || return 0
+      state=$(getenforce) || { conflict "Cannot read SELinux state"; return 0; }
+      case $state in
+        Enforcing|Permissive) ok "SELinux is $state and management tools are installed" ;;
+        Disabled)
+          command -v grubby >/dev/null || { conflict "This boot loader requires manual SELinux configuration"; return 0; }
+          grep -q "^SELINUX=" /etc/selinux/config || { conflict "Missing SELINUX setting in /etc/selinux/config"; return 0; }
+          try sed -i "s/^SELINUX=.*/SELINUX=permissive/" /etc/selinux/config || return 0
+          try fixfiles -F onboot || return 0
+          try grubby --update-kernel=ALL --remove-args=selinux=0 && ok "Reboot during maintenance for relabeling, then measure the host again"
+          ;;
+        *) conflict "Unknown SELinux mode" ;;
+      esac
+      ;;
+    *) conflict "Supported setup: AppArmor on Debian or Ubuntu, SELinux on Fedora, RHEL, Rocky or AlmaLinux" ;;
+  esac
+}
+
 t_apparmor_mode() { local profile=$1 mode=$2
   command -v aa-enforce >/dev/null || { conflict "aa-enforce is not installed (apparmor-utils)"; return 0; }
   if aa-status 2>/dev/null | awk -v m="$mode" 'index($0, "profiles are in " m) {s = 1; next} /profiles are in/ {s = 0} s' | grep -qF "$profile"; then ok "$profile is in $mode mode"; return 0; fi
@@ -1320,6 +1357,10 @@ changes.register('selinux-relabel', {'group': 'Hardening', 'label': 'SELinux lab
 changes.register('apparmor-local', {'group': 'Hardening', 'label': 'AppArmor local rules', 'fields': [F('profile', 'name', 'Profile', required=True, placeholder='usr.sbin.smbd'), F('rules', 'lines', 'Rules', required=True, placeholder='/srv/pool/dataset/** rwk,')],
     'help': 'In /etc/apparmor.d/local, so a package update keeps them. Checked with apparmor_parser first.'},
     ('profile', 'rules'), lambda p: f'AppArmor rules for {p["profile"]}', _check_apparmor_local, _ansible_bash('t_apparmor_local', ('profile', 'rules')))
+
+changes.register('mac-setup', {'group': 'Hardening', 'label': 'Set up host access control',
+    'fields': [F('framework', 'choice', 'Framework', options=['apparmor', 'selinux', 'enforce'], required=True)]},
+    ('framework',), lambda p: f'Set up {p["framework"]}', _check_nothing, _ansible_bash('t_mac_setup', ('framework',)))
 
 changes.register('apparmor-mode', {'group': 'Hardening', 'label': 'AppArmor mode', 'fields': [F('profile', 'name', 'Profile', required=True), F('mode', 'choice', 'Mode', options=['enforce', 'complain'], required=True)]},
     ('profile', 'mode'), lambda p: f'AppArmor {p["profile"]} {p["mode"]}', _check_nothing, _ansible_bash('t_apparmor_mode', ('profile', 'mode')))

@@ -420,11 +420,24 @@ stop_vm() {  # clean shutdown from inside, so nothing is left in a guest's cache
   virsh -q destroy "$n" >/dev/null
 }
 
+# A router's TCP serial port can remain in TIME_WAIT just after shutdown.
+start_vm() {
+  local name=$1 error attempt
+  for attempt in {1..15}; do
+    if error=$(LC_ALL=C virsh -q start "$name" 2>&1); then return 0; fi
+    if [[ $error != *"Address already in use"* ]] || (( attempt == 15 )); then
+      printf '%s\n' "$error" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
 snapshot_one() {   # one VM that joined: the others keep the golden they have
   local n=$1 f
   stop_vm "$n"
   for f in $(node_disks "$n"); do qemu-img snapshot -c golden "$f"; done
-  virsh -q start "$n" >/dev/null
+  start_vm "$n"
   wait_ready "$n"
 }
 
@@ -437,7 +450,7 @@ cmd_snapshot() {
       qemu-img snapshot -l "$f" | grep -qw golden && qemu-img snapshot -d golden "$f"
       qemu-img snapshot -c golden "$f"
     done
-    virsh -q start "$d" >/dev/null
+    start_vm "$d"
   done
   # shellcheck disable=SC2086
   wait_all $doms
@@ -480,7 +493,7 @@ cmd_up() {
   ensure_state; ensure_images "${want[@]}"; ensure_network; ensure_segments; ensure_pool
   for n in "${want[@]}"; do
     exists "$n" || { say "$n: creating"; create_node "$n"; }
-    [ "$(state "$n")" = running ] || virsh -q start "$n" >/dev/null
+    [ "$(state "$n")" = running ] || start_vm "$n"
   done
   say "waiting for first boot to finish"
   wait_all "${want[@]}" || die 'some VMs did not come up: see above. Fix or use down.'
@@ -508,7 +521,7 @@ cmd_reset() {
     for f in $(node_disks "$d"); do qemu-img snapshot -a golden "$f" & pids+=($!); done
   done
   for p in "${pids[@]}"; do wait "$p"; done
-  for d in $doms; do virsh -q start "$d" >/dev/null; done
+  for d in $doms; do start_vm "$d"; done
   # shellcheck disable=SC2086
   wait_all $doms
   say "back at golden"

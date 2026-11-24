@@ -1,7 +1,7 @@
 #!/bin/sh
 # Limit what the StorageForge containers can reach: SSH to your hosts and the ports alerts use, nothing else.
-# Run as root on the Docker host, after `docker compose up` (the sf0 bridge must exist):
-#   sudo ./docker/egress-firewall.sh                 # allow tcp 22 and 443 out of sf0
+# Run as root on the Docker host, after `docker compose up` (the br-sforge bridge must exist):
+#   sudo ./docker/egress-firewall.sh                 # allow tcp 22 and 443 out of br-sforge
 #   sudo STORAGEFORGE_EGRESS_PORTS="22 2222 443 2586" ./docker/egress-firewall.sh
 #   sudo STORAGEFORGE_BRIDGE=sfdemo0 ./docker/egress-firewall.sh   # another bridge gets its own rules
 #   sudo ./docker/egress-firewall.sh --remove
@@ -13,7 +13,7 @@
 # Re-running builds the new rules in a second chain and hooks it in before the old one is unhooked, so a bridge is
 # never left unfiltered, not even when something fails halfway.
 set -eu
-BRIDGE=${STORAGEFORGE_BRIDGE:-sf0}
+BRIDGE=${STORAGEFORGE_BRIDGE:-br-sforge}
 PORTS=${STORAGEFORGE_EGRESS_PORTS:-22 443}
 LEGACY=SF-EGRESS        # the one chain every bridge shared before 2026-10-29
 

@@ -69,8 +69,8 @@ curl -b jar 'https://sf.lan:8443/api/search?q=*.cr2&limit=20'
 | GET | `/api/fs/browse?host=&path=` | folders and files with mounts, shares and planned mounts |
 | GET | `/api/folders/duplicates?host=&min_files=&min_size=` | duplicate folders. Each group has `scope`, `hosts`, `reclaimable` (second copies on one host) and `elsewhere` (bytes held on other hosts: possible backups); the answer has `reclaimable_same_host` and `elsewhere_across_hosts` |
 | GET | `/api/copies` | folder copies on other hosts: `suggested` (not kept in sync, largest first, each with the plan `prepared` for it if there is one), `kept` (deployed mirror jobs with `state`, `last` and `last_ok`), `dismissed` |
-| GET | `/api/copies/sides?host=&path=&host=&path=` | for choosing the source: each folder's files, bytes and newest change, and `source`, the index of the side that changed last |
-| POST | `/api/copies/sync` | `{"src": {"host", "path"}, "dst": {"host", "path"}, "delete": false, "schedule": "daily"}`: saves a Moves plan with one mirror step and answers `{"plan", "name", "existing", "check"}` (201, or 200 when that plan was already prepared). Nothing syncs until the plan is deployed |
+| GET | `/api/copies/sides?host=&path=&host=&path=` | for choosing the source: each folder's files, bytes and newest change, and `source`, the index of the side that changed last. Add `kind=file` to compare individual indexed files |
+| POST | `/api/copies/sync` | `{"src": {"host", "path"}, "dst": {"host", "path"}, "delete": false, "schedule": "daily"}`: saves a Moves plan with one mirror step and answers `{"plan", "name", "existing", "check"}` (201, or 200 when that plan was already prepared). Nothing syncs until the plan is deployed. With `"kind": "file"` each path names one indexed regular file. The filenames may differ. A missing source leaves the destination intact. `keep_replaced` retains a dated copy when replacing the destination |
 | POST | `/api/copies/dismiss` | `{"copies": [{"host", "path"}, …], "dismissed": true}`: these folders are not a backup of each other, do not suggest them; `false` suggests them again |
 | GET | `/api/folders/cold?host=&years=&min_size=` | folders whose newest file is older than the cutoff |
 | GET | `/api/git?host=` | repositories, copies and archive state |
@@ -194,7 +194,7 @@ A route that needs a step-up the enclave checks (making or importing a key, a se
 | Method | Path | Body | |
 | :--- | :--- | :--- | :--- |
 | GET | `/api/planner/hosts` | | scanned hosts and saved designs; whether the example shows |
-| GET | `/api/planner/design?host=&source=saved\|scan` | | the saved design, or one built from the latest scan plus saved intent; `shares_deployed` says this design's shares are the ones last deployed |
+| GET | `/api/planner/design?host=&source=saved\|scan\|inventory` | | the saved design, the latest scan with saved intent, or inventory without the saved design overlay; `shares_deployed` says this design's shares are the ones last deployed |
 | PUT | `/api/planner/design` | a `storageforge/v1` `StorageBlueprint` | save and rebuild the host's graph |
 | POST | `/api/planner/changes` | a `storageforge/v1` `StorageBlueprint` (saved or not) | `{host, name, tasks, manual, left, destructive}`: the change-plan tasks that bring the scanned host to the design, what needs doing by hand, and what the design leaves alone. Stages nothing; 409 when the host has not been scanned |
 | PUT | `/api/planner/example` | `{"show"}` | show or hide the example host for everyone |
@@ -367,6 +367,7 @@ See [Infrastructure map](infrastructure-map.md). Reads need `map.view`; exposure
 | GET, POST, DELETE | `/api/map/views`, `/api/map/annotations` | | `map.edit`. A view is seen by its owner, or by everyone with `"shared": true`, and changed only by its owner |
 | GET, POST 🔑, DELETE 🔑 | `/api/map/manual` | `{"kind", "label", "url", "links"}` | `map.edit` |
 | GET, POST, DELETE | `/api/map/designs` | `{"name", "doc"}` | `plans.edit` |
+| GET | `/api/map/designs/migration-preview?host=` | | Requires `plans.edit`. Previews the merged v2 document and earlier map alternatives for one host, including their source names and owners. |
 | GET | `/api/map/designs/<id>/compare`, `/export` | `?target=bash\|ansible\|terraform\|puppet` | |
 | POST | `/api/map/designs/<id>/stage` | | what is missing, as a plan |
 | GET | `/api/workloads`, `/api/network`, `/api/firewall`, `/api/exposure` | `?host=` | `/api/exposure` gives each host's `items` (listeners and published ports, with `level` and the `rule` that decides; `tunnel` where a tunnel publishes it) and `tunnels` (what each tunnel on the host publishes: `public`, `local`, `label`, `level`, `running`) |

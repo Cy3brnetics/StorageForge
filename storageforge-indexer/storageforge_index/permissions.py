@@ -107,6 +107,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/search(/hosts)?', 'search.files'),
     (READ, r'/api/planner/versions(/\d+)?', 'plans.view'),            # saved versions of a design (design_versions.py)
     (('POST',), r'/api/planner/versions/compare', 'plans.view'),      # a read: it saves nothing
+    (READ, r'/api/cli/catalog', 'hosts.view'),
     (READ, r'/api/(hosts|disks|graph|canvas|capacity|planner/.*)', 'hosts.view'),
     (READ, r'/api/hosts/[^/]+/schedule', 'hosts.view'),
     (READ, r'/api/(browse|fs/browse|file-changes|dupes|filemap|files/ignore|folders/.*)', 'files.browse'),
@@ -150,6 +151,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/dsl/of', 'security.view'),
     (_WRITE, r'/api/devices(/.*)?', 'devices.manage'),
     (READ, r'/api/map/(exposure|reach|coverage)', 'security.view'),
+    (READ, r'/api/map/designs/migration-preview', 'plans.edit'),
     (READ, r'/api/map/designs/\d+/export', 'plans.scripts'),
     (READ, r'/api/changes/\d+/export/(terraform|opentofu|puppet)', 'plans.scripts'),     # a change plan's workloads as Terraform, OpenTofu or Puppet
     (READ, r'/api/(network|map(/.*)?)', 'map.view'),

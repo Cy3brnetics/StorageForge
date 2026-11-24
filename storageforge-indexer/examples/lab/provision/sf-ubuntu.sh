@@ -2,7 +2,7 @@
 # qemu-utils for tier 10's libvirt guest, whose disk qemu-img makes: installed here, where the package lists are fresh.
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=300 update -qq
-apt-get -o DPkg::Lock::Timeout=300 install -y -qq zfsutils-linux docker.io qemu-utils
+apt-get -o DPkg::Lock::Timeout=300 install -y -qq zfsutils-linux docker.io docker-compose-v2 qemu-utils
 
 echo 'options zfs zfs_arc_max=268435456' >/etc/modprobe.d/sflab-zfs.conf
 modprobe zfs

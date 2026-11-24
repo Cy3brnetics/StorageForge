@@ -6,6 +6,25 @@
    which pages this person may go to. DOM APIs only, so a name a machine reports can never become markup. Loaded after kernel.js. */
 
 const SF_CHIP = { secure: 'Security: nothing wrong found', warning: 'Security: needs a look', critical: 'Security: incident', unknown: 'Security: not known' };
+const sfSecDraws = [];
+const sfNotifDraws = [];
+let sfLastScanMark = null;
+let sfLastNotifMark = null;
+let sfFastPollUntil = 0;
+let sfWatchTimer = 0;
+
+function sfNoteScanMark(mark) {
+  if (mark) sfLastScanMark = mark;
+}
+
+function sfNoteNotifMark(mark) {
+  if (mark) sfLastNotifMark = mark;
+}
+
+function sfScanQueued() {
+  sfFastPollUntil = Date.now() + 90000;
+  sfScheduleWatch(2000);
+}
 
 /* Fills `chip` (a button) with where the security posture stands, always as "Security: …" with the reason under it, and keeps it fresh.
    `open()` is what a click does. `allowed()` says whether this person may see security at all: they see no chip if not.
@@ -22,7 +41,8 @@ function sfSecurityChip(chip, open, allowed = () => true, delay = 0) {
     } catch { chip.hidden = true; }
   };
   chip.addEventListener('click', open);
-  setInterval(draw, 60000);
+  sfSecDraws.push(draw);
+  setInterval(() => { if (!document.hidden) draw(); }, 60000);
   setTimeout(draw, delay);
   return draw;
 }
@@ -30,10 +50,11 @@ function sfSecurityChip(chip, open, allowed = () => true, delay = 0) {
 /* The count of open notifications, on every page (roadmap section 12): critical ones first and in words, so the number never stands alone.
    A click opens the center. Nothing is shown to someone who may not see alerts, or when nothing is open. */
 function sfNotificationChip(chip, open, allowed = () => true, delay = 0) {
+  let prevMark = null;
   const draw = async () => {
     if (!allowed()) { chip.hidden = true; return; }
     try {
-      const { counts, total } = await getJSON('/api/notifications/summary');
+      const { counts, total, mark } = await getJSON('/api/notifications/summary');
       chip.hidden = !total;
       const level = counts.crit ? 'crit' : counts.warn ? 'warn' : 'info';
       chip.className = `threat nt-${level}`;
@@ -43,13 +64,52 @@ function sfNotificationChip(chip, open, allowed = () => true, delay = 0) {
       chip.replaceChildren(sfNode('b', {}, head), sfNode('span', { class: 'threat-detail' }, rest));
       chip.title = `${head}${rest ? `: ${rest}` : ''}. Open the notification center`;
       const cnt = document.getElementById('ncrit'); if (cnt) cnt.textContent = counts.crit ? String(counts.crit) : '';
+      if (mark) {
+        const changed = prevMark !== null && prevMark !== mark;
+        prevMark = mark;
+        if (changed) document.dispatchEvent(new CustomEvent('sf:notifications', { detail: { counts, total, mark } }));
+      }
     } catch { chip.hidden = true; }
   };
   chip.addEventListener('click', open);
-  setInterval(draw, 60000);
+  sfNotifDraws.push(draw);
+  setInterval(() => { if (!document.hidden) draw(); }, 60000);
   setTimeout(draw, delay);
   return draw;
 }
+
+async function sfWatchTick() {
+  sfWatchTimer = 0;
+  const nextDelay = Date.now() < sfFastPollUntil ? 2000 : 8000;
+  if (!document.hidden && sfPerms && sfPerms.has('hosts.view')) {
+    try {
+      const d = await getJSON('/api/hosts');
+      const sm = d.scan_mark || null, nm = d.notif_mark || null;
+      const scanChanged = sm && sfLastScanMark !== null && sm !== sfLastScanMark;
+      const notifChanged = nm && sfLastNotifMark !== null && nm !== sfLastNotifMark;
+      if (sm) sfLastScanMark = sm;
+      if (nm) sfLastNotifMark = nm;
+      if (scanChanged) {
+        sfSecDraws.forEach((fn) => fn());
+        sfNotifDraws.forEach((fn) => fn());
+        document.dispatchEvent(new CustomEvent('sf:scan', { detail: d }));
+      } else if (notifChanged) {
+        sfNotifDraws.forEach((fn) => fn());
+      }
+    } catch { /* transient network error: try on the next tick */ }
+  }
+  sfScheduleWatch(nextDelay);
+}
+
+function sfScheduleWatch(ms) {
+  clearTimeout(sfWatchTimer);
+  sfWatchTimer = setTimeout(sfWatchTick, ms);
+}
+
+sfScheduleWatch(5000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) sfScheduleWatch(200);
+});
 
 // [key, href, label, the permission it needs]
 const SF_PAGES = [

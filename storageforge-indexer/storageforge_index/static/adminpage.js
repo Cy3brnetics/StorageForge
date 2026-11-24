@@ -71,6 +71,11 @@ sfPaletteSource(() => {
       const next = sfParseHash().parts[0] || 'keys';
       if (next !== AD.sec) adOpen(next, false);
     });
+    document.addEventListener('sf:scan', () => {
+      if (!AD.booted || document.querySelector('dialog[open]')) return;
+      if (typeof loadAdminSummary === 'function') loadAdminSummary();
+      if (AD.sec === 'audit') loadAudit();
+    });
   } catch (err) {
     if (!/Sign in/.test(err.message)) notify(err.message, 'error');
   } finally {

@@ -124,10 +124,12 @@ def register(web, ctx):
             got = apiread.read(db, conn(), row)
         except apiconn.ApiError as exc:
             core.audit(conn(), actor(), 'platform.read', 'failed', row['host'], {'name': row['name'], 'why': str(exc)[:200]})
+            core.alerts_wake.set()
             return jsonify(error=str(exc), connection=apiconn.get(conn(), conn_id)), 502
         except VaultError as exc:
             return jsonify(error=str(exc)), 400
         core.audit(conn(), actor(), 'platform.read', 'ok', row['host'], {'name': row['name'], 'verdict': got['readback']['verdict'], 'counts': got['counts']})
+        core.alerts_wake.set()
         return jsonify(connection=apiconn.get(conn(), conn_id), **got)
 
     @web.post('/api/keys/platforms/<int:conn_id>/token')

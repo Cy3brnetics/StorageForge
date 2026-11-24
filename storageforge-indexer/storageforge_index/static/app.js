@@ -49,7 +49,7 @@ const active = (n) => !S.visible || S.visible.has(n.id);
 const activeNodes = () => S.nodes.filter(active);
 const activeEdges = () => S.edges.filter((e) => active(e.s) && active(e.t));
 
-async function loadGraph() {
+async function loadGraph({ background = false } = {}) {
   const g = await getJSON('/api/graph' + (S.host ? `?host=${encodeURIComponent(S.host)}` : ''));
   const old = S.byId;
   S.byId = new Map(); S.adj = new Map();
@@ -76,7 +76,13 @@ async function loadGraph() {
   if (!old.size) cold = true;                         // laid out when it is first shown: other views never pay for it
   alpha = Math.max(alpha, old.size ? 0.4 : 0.15);
   wake();
-  renderSummary();
+  if (!background || !$('#summary .stageform')) {
+    if (S.selected && S.byId.has(S.selected) && T.mode === 'graph' && (typeof fmActive !== 'function' || !fmActive())) {
+      renderDetails(S.byId.get(S.selected));
+    } else {
+      renderSummary();
+    }
+  }
   if (T.mode === 'topo' && T.order.length) renderTopoSoon();   // refresh the health dots
 }
 
@@ -623,7 +629,7 @@ function copyText(s, what = 'Copied') {
 const dirOf = (p) => p.replace(/\/[^/]*$/, '') || '/';
 
 /* ── tabs, search, jobs, audit ───────────────────────────────────── */
-let jobTimer = 0, followingScans = false;
+let jobTimer = 0, followTimer = 0, followingScans = false, lastDoneJobs = null, scanRefreshAt = 0;
 /* The rail is one tab stop and takes arrow keys (UX-20): Up and Down move between the visible tabs, Home and End go to the first and the last, and
    Enter or Space opens the one that has focus, as its buttons do. It is the rail's own key handling, not a global shortcut. */
 document.querySelector('.tabs').addEventListener('keydown', (ev) => {
@@ -842,15 +848,19 @@ async function runSearch(params) {
 }
 function resultMenu(r) {
   const dir = r.type === 'dir' ? r.path : dirOf(r.path), stage = (type, preset) => () => openTask(type, r.host, preset);
+  const isArc = r.type === 'file' && /\.(tar\.(zst|xz|gz|bz2)|t[gx]z|tbz2|tzst|7z)$/i.test(r.path);
   return [{ heading: r.path },
     { label: 'Show its folder', run: () => browseFolders(r.host, dir, r.mount) },
     { label: 'Largest files in its folder', run: () => runSearch({ under: dir, host: r.host, size_gt: '1MiB' }) },
     { label: 'Copy path', run: () => copyText(r.path) },
     '-', { heading: 'Plan a change' },
+    { label: 'Compress to archive…', run: stage('archive', { path: r.path, dest: `${r.path}.tar.zst`, codec: 'zstd-ultra', verify: true }) },
+    isArc ? { label: 'Extract archive…', run: stage('archive-extract', { archive: r.path, dest: `${r.path.replace(/\.(tar\.(zst|xz|gz|bz2)|t[gx]z|tbz2|tzst|7z)$/i, '')}-extracted`, verify_checksum: true }) } : null,
     { label: 'Rename or move…', run: stage('rename', { path: r.path, dest: r.path }) },
     { label: 'Move to trash', run: stage('trash', { path: r.path }) },
     { label: 'Securely delete…', run: stage('secure-delete', { path: r.path }) },
     { label: 'Owner and permissions…', run: stage('perms', { path: r.path }) },
+    { label: 'Archive via remote CPU agent (Moves)…', run: () => archiveFrom(r.host, r.path, 'worker') },
     { label: 'Copy its folder to another disk (Moves)…', run: () => moveFrom(r.host, dir) }];
 }
 let debounce = 0;
@@ -888,10 +898,58 @@ function progressBar(fraction, words) {
   wrap.append(bar, text('span', fraction != null ? `${Math.round(fraction * 100)}% · ${words}` : words, 'm'));
   return wrap;
 }
+async function afterScanRefresh(fromJobs = false) {
+  const now = Date.now();
+  if (now - scanRefreshAt < 400) return;
+  scanRefreshAt = now;
+  await loadHosts().catch(() => {});
+  if (typeof ntNotifChip === 'function') ntNotifChip();
+  if (typeof threatBanner === 'function') threatBanner();
+  if (user && $('#firstrun') && !$('#firstrun').hidden) firstRun(user);
+  if (typeof FM !== 'undefined') FM.data = null;
+  if (typeof COPIES !== 'undefined') COPIES.loaded.clear();
+  if (typeof OS2 !== 'undefined') OS2.data = null;
+  if (typeof ACCESS !== 'undefined') { ACCESS.hosts = []; ACCESS.script = {}; }
+  if (typeof DK !== 'undefined') DK.usage = [];
+  if (typeof T !== 'undefined' && T.mode !== 'topo') {
+    for (const [h, doc] of T.docs) if (!doc.dirty) T.docs.delete(h);
+  }
+  loadGraph({ background: true });
+  if (typeof T !== 'undefined') {
+    if (T.mode === 'topo') loadDesigns({ background: true });
+    else if (T.mode === 'map' && typeof loadMap === 'function') loadMap();
+    else if (T.mode === 'scan' && typeof loadNetScan === 'function') loadNetScan();
+  }
+  if (typeof fmActive === 'function' && fmActive()) fmLoad();
+  if (document.querySelector('dialog[open]')) return;
+  const tab = curTab();
+  if (tab === 'notifications' && typeof loadNotifications === 'function') loadNotifications();
+  else if (tab === 'jobs') {
+    if (SCANS_SUB === 'access' && typeof loadAccess === 'function') loadAccess();
+    else if (!fromJobs) loadJobs();
+  } else if (tab === 'copies' && typeof loadCopies === 'function') loadCopies();
+  else if (tab === 'infra' && typeof loadInfra === 'function') loadInfra();
+  else if (tab === 'git' && typeof loadGit === 'function') loadGit();
+  else if (tab === 'rebuild') {
+    if (REBUILD_SUB === 'configs' && typeof loadRebuild === 'function') loadRebuild();
+    else if (typeof loadOsInstall === 'function') loadOsInstall();
+  } else if (tab === 'deploy') {
+    if (DEPLOY_SUB === 'schedule' && typeof loadScheduler === 'function') loadScheduler();
+    else if (typeof loadDeploy === 'function' && (typeof DP === 'undefined' || !DP.group || DP.group.done)) loadDeploy();
+  } else if (tab === 'search' && $('#q').value.trim().length >= 2) {
+    runSearch({ q: $('#q').value.trim(), host: S.host });
+  }
+}
+
 async function loadJobs() {
   try {
     const { jobs } = await getJSON('/api/jobs');
     const active = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
+    const doneSig = jobs.filter((j) => j.status !== 'queued' && j.status !== 'running')
+      .map((j) => `${j.job_id}:${j.status}:${j.finished_at || ''}`).join(',');
+    const prevDone = lastDoneJobs;
+    lastDoneJobs = doneSig;
+    const newlyDone = prevDone !== null && doneSig !== prevDone;
     const msg = $('#scanmsg');
     if (active.length) {
       // one round: what is still going, and what was asked for since the oldest of those and has finished
@@ -901,6 +959,8 @@ async function loadJobs() {
       const part = running.reduce((sum, j) => sum + (j.progress ? scanProgress(j.progress).fraction : 0), 0);
       const words = `${done} of ${round.length} scan${round.length === 1 ? '' : 's'} done · ${running.length} running · ${active.length - running.length} waiting`;
       msg.className = ''; msg.hidden = false; msg.replaceChildren(progressBar((done + part) / round.length, words));
+      followingScans = true;
+      if (!followTimer) followTimer = setInterval(loadJobs, 2000);
     } else if (msg.querySelector('.scanprog')) { msg.hidden = true; msg.replaceChildren(); }
     $('#jobs').replaceChildren(...jobs.map((j) => {
       const li = document.createElement('li');
@@ -912,16 +972,27 @@ async function loadJobs() {
       else if (j.status === 'queued') li.append(text('span', j.ahead ? `Waiting: ${j.ahead} scan${j.ahead === 1 ? '' : 's'} before it` : 'Next to start', 'm'));
       return li;
     }));
-    if (!jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
-      clearInterval(jobTimer);
-      if (followingScans) { followingScans = false; loadGraph(); loadDesigns(); }   // a long run outlasts the refresh below
+    if (!active.length) {
+      clearInterval(followTimer); followTimer = 0;
+      if (curTab() !== 'jobs' || SCANS_SUB !== 'jobs') { clearInterval(jobTimer); jobTimer = 0; }
+      const wasFollowing = followingScans;
+      followingScans = false;
+      if (wasFollowing || newlyDone) afterScanRefresh(true);
+    } else if (newlyDone) {
+      afterScanRefresh(true);
     }
-  } catch (err) { clearInterval(jobTimer); $('#jobs').replaceChildren(text('li', err.message, 'muted')); }
+  } catch (err) {
+    clearInterval(jobTimer); jobTimer = 0;
+    clearInterval(followTimer); followTimer = 0;
+    $('#jobs').replaceChildren(text('li', err.message, 'muted'));
+  }
 }
 function followJobs() {
   followingScans = true;
-  loadJobs(); clearInterval(jobTimer); jobTimer = setInterval(async () => { await loadJobs(); }, 2000);
-  setTimeout(() => { loadGraph(); loadDesigns(); }, 15000);
+  if (typeof sfScanQueued === 'function') sfScanQueued();
+  loadJobs();
+  clearInterval(followTimer);
+  followTimer = setInterval(loadJobs, 2000);
 }
 async function queueScan(host) {
   showTab('jobs');
@@ -984,7 +1055,9 @@ const threatBanner = $('#threatbanner') ? sfSecurityChip($('#threatbanner'), () 
 /* ── header controls ─────────────────────────────────────────────── */
 const STALE_DAYS = 14;
 async function loadHosts() {
-  const { indexed, graph } = await getJSON('/api/hosts');
+  const { indexed, graph, scan_mark: scanMark, notif_mark: notifMark } = await getJSON('/api/hosts');
+  if (typeof sfNoteScanMark === 'function') sfNoteScanMark(scanMark);
+  if (typeof sfNoteNotifMark === 'function') sfNoteNotifMark(notifMark);
   const names = [...new Set([...graph, ...indexed.map((h) => h.hostname)])].sort();
   const sel = $('#host');
   const days = (h) => (h && h.last_scanned_at ? Math.floor((Date.now() / 1000 - h.last_scanned_at) / 86400) : 0);
@@ -993,6 +1066,7 @@ async function loadHosts() {
   sel.replaceChildren(new Option('All hosts', ''), ...names.map((n) => new Option(n + stale(n), n)));
   sel.value = S.host;
 }
+document.addEventListener('sf:scan', () => { afterScanRefresh(false); });
 $('#host').addEventListener('change', () => { $('#toplanner').href = '/planner' + (S.host ? `#overview@${encodeURIComponent(S.host)}` : ''); });
 $('#host').addEventListener('change', async () => { S.host = $('#host').value; S.focus = null; S.selected = null; S.byId = new Map(); T.sel = null; routeSync(); await Promise.all([loadGraph(), loadDesigns()]); });
 $('#hops').addEventListener('change', () => { S.hops = Number($('#hops').value); if (S.focus) applyFocus(); });

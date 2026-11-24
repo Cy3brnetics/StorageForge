@@ -164,6 +164,8 @@ def tier20(r):
 
     def controller():
         ssh('sf-ctl', f'{SFNET_COMPOSE} up -d --no-build --wait --quiet-pull')
+        # Recreating the controller invalidates the session used for initial setup.
+        api.post('/api/login', {'username': 'demo', 'password': api.password})
         info = ssh('sf-ctl', "sudo -n docker inspect --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}} {{.HostConfig.Privileged}}' storageforge-sfnet-1").strip()
         want(info in ('0:0 true [ALL] [NET_ADMIN] false', '0:0 true [ALL] [CAP_NET_ADMIN] false'), f'the link runs as: {info}')
         server = ssh('sf-ctl', "sudo -n docker inspect --format '{{.Config.User}} {{.HostConfig.CapAdd}} {{range .Mounts}}{{.Name}} {{end}}' storageforge-storageforge-1").strip()

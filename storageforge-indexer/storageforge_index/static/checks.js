@@ -9,6 +9,8 @@ async function loadAccess() {
   const box = $('#accessbox');
   try { ACCESS.hosts = (await getJSON('/api/access')).hosts; }
   catch (err) { box.replaceChildren(text('p', err.message, 'st-failed')); return; }
+  const blocked = ACCESS.hosts.filter((h) => h.access !== 'capability' && h.scan_id && (h.denied_total || h.read_errors)).length;
+  if ($('#naccess')) $('#naccess').textContent = blocked ? String(blocked) : '';
   renderAccess();
   if (T.mode === 'topo') renderTopoSoon();      // the unreadable-folder badges on host headers
 }
@@ -147,7 +149,8 @@ async function loadDupes() {
     box.replaceChildren(head, ...groups.map((g) => el('details', { class: g.hosts > 1 ? 'across' : 'same' },
       el('summary', {}, `${g.copies} copies of ${fmtBytes(g.size)}${g.reclaimable ? `, ${fmtBytes(g.reclaimable)} to reclaim` : ''}${g.hosts > 1 ? ` · on ${g.hosts} hosts ` : ''}`,
         g.hosts > 1 ? copyElsewherePill() : null),
-      el('ul', { class: 'copies small mono' }, ...g.files.map((f) => el('li', {}, f))))));
+      el('ul', { class: 'copies small mono' }, ...g.files.map((f) => el('li', {}, f))),
+      g.hosts > 1 && can('plans.edit') ? button(cpSyncLabel(g.places.length), () => copiesKeepInSync(g.places, true), 'btn sm') : null)));
   } catch (err) { box.replaceChildren(text('p', err.message, 'muted')); }
 }
 /* Cleanup was five tools down one long panel (bug report 2026-11-10): three sub-panels, each loaded when first shown,

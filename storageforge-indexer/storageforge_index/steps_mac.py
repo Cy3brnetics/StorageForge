@@ -55,7 +55,7 @@ t_vm_mac() { local path=${1%/} want=$2 root=${WLM_ROOT:-} now file prof tmp err 
   printf "# storageforge vm-mac %s\n  \"%s/\" r,\n  \"%s/**\" rwk,\n" "$path" "$path" "$path" >>"$file"
   # checked as libvirt reads it: through a profile that includes the abstraction, which includes this file
   prof=$(mktemp); err=$(mktemp)
-  printf "profile sf-vm-mac-check {\n  #include <abstractions/libvirt-qemu>\n}\n" >"$prof"
+  printf "#include <tunables/global>\nprofile sf-vm-mac-check {\n  #include <abstractions/libvirt-qemu>\n}\n" >"$prof"
   if ! apparmor_parser -Q -K -I "$root/etc/apparmor.d" "$prof" >"$err" 2>&1; then
     if [[ -s $tmp ]]; then cp -a "$tmp" "$file"; else rm -f "$file"; fi
     conflict "apparmor_parser refused it, so the file was put back: $(tail -n 3 "$err" | tr "\n" " ")"; rm -f "$tmp" "$prof" "$err"; return 0

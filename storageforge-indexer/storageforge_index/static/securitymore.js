@@ -328,7 +328,7 @@ SEC_MORE.integrityExtra = async function secIntegrityExtra(host) {
 SEC_MORE.macExtra = function secMacExtra(host, d) {
   const out = el('div', { class: 'stack' }), noise = secArea('smbd /var/cache/*, one a line', (d.noise_rules || []).map((n) => `${n.daemon} ${n.path}`).join('\n')), map = secArea('/data/dept_* samba_share_t, one a line', (d.context_map || []).map((r) => `${r.pattern} ${r.type}`).join('\n'));
   const lateral = (d.avc || []).filter((a) => a.lateral);
-  const profile = secInput('usr.sbin.smbd'), rules = el('textarea', { rows: '4', class: 'mono small', placeholder: '/srv/pool/dataset/** rwk,' }), mode = el('select', { 'aria-label': 'Mode' }, new Option('enforce', 'enforce'), new Option('complain', 'complain'));
+  const profile = secInput('usr.sbin.smbd'), rules = el('textarea', { rows: '4', class: 'mono small', placeholder: '/srv/pool/dataset/** rwk,' }), mode = el('select', { 'aria-label': 'Mode' }, new Option('Block violations (enforce)', 'enforce'), new Option('Log violations while testing (complain)', 'complain'));
   const stage = (task) => async () => { const r = await secPost('/api/map/stage', { plan: `Access control: ${host}`, tasks: [{ host, ...task() }] }, out); secChanges(r ? { ...r, tasks: 1 } : r, out); };
   return el('div', { class: 'stack' },
     lateral.length ? secCard('A daemon reached for something it should not', secTable(['When', 'Program', 'On'], lateral.map((a) => [secWhen(a.at), a.daemon, a.path])), text('p', 'These are never folded away as noise.', 'muted small')) : '',

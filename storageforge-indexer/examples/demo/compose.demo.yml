@@ -1,4 +1,4 @@
-# A disposable SSH target, in a separate compose project so it never shares volumes, the sf0 bridge or port 8443
+# A disposable SSH target, in a separate compose project so it never shares volumes, the br-sforge bridge or port 8443
 # with a real installation, and on its own network so only StorageForge can reach it:
 #   docker compose -f docker-compose.yml -f examples/demo/compose.demo.yml up -d --build
 name: storageforge-demo

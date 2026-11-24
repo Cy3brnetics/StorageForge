@@ -286,7 +286,7 @@ def tier29(r):
         got = stage(api, host, 'uptime-kuma', method='quadlet')
         plan = api.get(f'/api/changes/{got["plan_id"]}')
         plan['tasks'][-1]['params']['sha'] = 'a' * 64
-        api.put(f'/api/changes/{got["plan_id"]}', {'name': plan['name'], 'tasks': plan['tasks']})
+        api('PUT', f'/api/changes/{got["plan_id"]}', {'name': plan['name'], 'tasks': plan['tasks']})
         text = report_only(api, got['plan_id'], 'lab: changed plan')
         want('changed after this step was staged' in text, text[-600:])
         want(quiet((fedora or rocky).name, 'test -e /etc/containers/systemd/uptime-kuma.container') != 0, 'a unit was written')

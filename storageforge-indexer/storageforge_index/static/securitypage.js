@@ -62,6 +62,11 @@ sfPaletteSource(() => {
       secRender();
       document.querySelectorAll('#sec-subnav button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.sub === SEC.panel));
     });
+    document.addEventListener('sf:scan', async () => {
+      if (!secBooted || document.querySelector('dialog[open]')) return;
+      await populateHostSelect($('#host'));
+      await loadSecurity();
+    });
   } catch (err) {
     if (!/Sign in/.test(err.message)) {
       $('#sec-content').replaceChildren(text('p', err.message, 'st-failed'));

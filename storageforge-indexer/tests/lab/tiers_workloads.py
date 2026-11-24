@@ -304,7 +304,8 @@ def tier28(r):
         plan(api, 'lab: incus', ('runtime-install', h, {'runtime': 'incus'}),
              ('incus', h, {'name': 'sflab-c1', 'image': 'images:debian/13', 'publish': '18083:80', 'labels': 'team=lab', 'allow_from': demo.IPS['sf-ctl']}))
         want(sudo(dock.name, 'incus config get sflab-c1 user.team').strip() == 'lab', 'no user.team label')
-        want('listen=tcp:0.0.0.0:18083' in sudo(dock.name, 'incus config device show sflab-c1'), 'no proxy device')
+        listen = sudo(dock.name, 'incus config device get sflab-c1 sf-port-tcp-18083 listen').strip()
+        want(listen == 'tcp:0.0.0.0:18083', f'unexpected proxy listener: {listen!r}')
         want(demo.IPS['sf-ctl'] in sudo(dock.name, 'nft list table inet storageforge_shares'), 'no fence for its port')
         sudo(dock.name, 'incus delete -f sflab-c1', check=False)
         return 'proxy device, user.* label and the fence'
@@ -319,11 +320,12 @@ def tier28(r):
             compose = json.dumps({'services': {'app': {'image': 'localhost:5000/sflab/app:1', 'command': ['sleep', '3000'],
                                                        'healthcheck': {'test': ['CMD-SHELL', 'test ! -e /etc/alpine-release' if broken else 'test -e /bin/sh'],
                                                                        'interval': '2s', 'retries': 2}}}})
-            plan(api, 'lab: app', ('stack', h, {'runtime': 'docker', 'name': 'sflab-app', 'compose': compose}))
+            case = 'rollback' if broken else 'healthy'
+            plan(api, f'lab: app {case}', ('stack', h, {'runtime': 'docker', 'name': 'sflab-app', 'compose': compose}))
             before = sudo(dock.name, 'docker inspect -f "{{.Image}}" sflab-app-app-1').strip()
             sudo(dock.name, 'docker pull -q alpine:3 >/dev/null && docker tag alpine:3 localhost:5000/sflab/app:1 && docker push -q localhost:5000/sflab/app:1 >/dev/null '
                             '&& docker tag ' + before + ' localhost:5000/sflab/app:1')
-            pid = api.post('/api/changes', {'name': 'lab: update app', 'tasks': [{'type': 'image-update', 'host': h, 'params': {'runtime': 'docker', 'stack': 'sflab-app', 'wait': '60'}}]})['id']
+            pid = api.post('/api/changes', {'name': f'lab: update app {case}', 'tasks': [{'type': 'image-update', 'host': h, 'params': {'runtime': 'docker', 'stack': 'sflab-app', 'wait': '60'}}]})['id']
             runs = demo.deploy(api, 'changes', pid, 'update app', may_fail=h if broken else None)
             now = sudo(dock.name, 'docker inspect -f "{{.Image}}" sflab-app-app-1').strip()
             down(dock.name, 'sflab-app')
@@ -342,8 +344,11 @@ def tier28(r):
     def vm_iso():
         h = demo.known_as(api, virt.name)
         sudo(virt.name, PKGS)
+        sudo(virt.name, 'mkdir -p /srv/sflab-iso-pool && '
+                        '(virsh pool-info sflab-iso >/dev/null 2>&1 || virsh pool-define-as sflab-iso dir --target /srv/sflab-iso-pool) && '
+                        '(virsh pool-list --name | grep -qx sflab-iso || virsh pool-start sflab-iso)')
         api.post('/api/infra/measure', {'host': h})
-        plan(api, 'lab: iso vm', ('vm-iso', h, {'name': 'sflab-iso', 'iso': 'alpine324', 'ram_mb': '1024', 'disk_gb': '4', 'console': 'vnc'}))
+        plan(api, 'lab: iso vm', ('vm-iso', h, {'name': 'sflab-iso', 'iso': 'alpine324', 'pool': 'sflab-iso', 'ram_mb': '1024', 'disk_gb': '4', 'console': 'vnc'}))
         state_ = sudo(virt.name, 'virsh -c qemu:///system domstate sflab-iso').strip()
         want(state_ == 'running', f'the VM is {state_}')
         display = sudo(virt.name, 'virsh -c qemu:///system domdisplay sflab-iso').strip()
@@ -401,8 +406,7 @@ def tier28(r):
                        'ContainerName=sflab-q\\n[Install]\\nWantedBy=multi-user.target\\n" >/etc/containers/systemd/sflab-q.container && '
                        'systemctl daemon-reload && systemctl start sflab-q.service')
         api.post('/api/infra/measure', {'host': h})
-        api.post('/api/scan', {'hosts': [h]})
-        time.sleep(20)
+        demo.scan(api, [h])
         w = workload(api, h, 'sflab-q')
         want(w and w.get('quadlet') == '/etc/containers/systemd/sflab-q.container', f'the workload is {w}')
         want((w.get('managed') or {}).get('by') == 'systemd', f'not marked as run by systemd: {w.get("managed")}')
@@ -412,15 +416,13 @@ def tier28(r):
     def adopt_drift():
         h = demo.known_as(api, dock.name)
         sudo(dock.name, 'docker rm -f sflab-loose >/dev/null 2>&1; docker run -d --name sflab-loose -p 18084:80 nginx:1.27-alpine >/dev/null')
-        api.post('/api/scan', {'hosts': [h]})
-        time.sleep(20)
+        demo.scan(api, [h])
         got = api.post('/api/workloads/captures', {'host': h, 'runtime': 'docker', 'name': 'sflab-loose'})
         sudo(dock.name, 'mkdir -p /tmp/sflab-cap && cat >/tmp/sflab-cap/compose.yaml', stdin=got['definition'])
         want(quiet(dock.name, 'docker compose -f /tmp/sflab-cap/compose.yaml config -q') == 0, 'the capture is not valid compose on the host')
         state['adopted'] = got['id']
         sudo(dock.name, 'docker rm -f sflab-loose >/dev/null; docker run -d --name sflab-loose -p 18084:80 -p 18085:80 nginx:1.27-alpine >/dev/null')
-        api.post('/api/scan', {'hosts': [h]})
-        time.sleep(20)
+        demo.scan(api, [h])
         cap = next(c for c in api.get('/api/workloads/captures')['captures'] if c['id'] == got['id'])
         want(cap['state'] == 'drifted' and any('18085' in json.dumps(d) for d in cap['drift']), f'no drift: {cap}')
         api('DELETE', f'/api/workloads/captures/{got["id"]}')
@@ -448,8 +450,7 @@ def tier28(r):
     def external_managed():
         h = demo.known_as(api, dock.name)
         sudo(dock.name, 'docker rm -f sflab-komodo >/dev/null 2>&1; docker run -d --name sflab-komodo --label komodo.stack=lab busybox:latest sleep 3000 >/dev/null')
-        api.post('/api/scan', {'hosts': [h]})
-        time.sleep(20)
+        demo.scan(api, [h])
         w = workload(api, h, 'sflab-komodo')
         want(w and (w.get('managed') or {}).get('by') == 'Komodo', f'not marked as managed by Komodo: {w}')
         items = check_items(api, 'workload-remove', h, {'runtime': 'docker', 'name': 'sflab-komodo'})

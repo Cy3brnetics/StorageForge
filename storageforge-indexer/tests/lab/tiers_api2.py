@@ -160,9 +160,12 @@ def dockhand(r, api, secrets_seen):
         return
     password = 'Sf-lab-' + str(int(time.time()))
     self_signed(node, '/srv/sf-dockhand-tls', node.ip)
-    sudo(node.name, f'docker rm -f sf-dockhand sf-dockhand-tls >/dev/null 2>&1; docker run -d --name sf-dockhand -p 127.0.0.1:3000:3000 -v /var/run/docker.sock:/var/run/docker.sock {DOCKHAND_IMAGE}; '
-                    f'docker run -d --name sf-dockhand-tls --network host -v /srv/sf-dockhand-tls:/tls:ro {CADDY_IMAGE} caddy reverse-proxy --from https://:3443 --to 127.0.0.1:3000 '
-                    '--internal-certs', check=False)
+    sudo(node.name, 'cat > /srv/sf-dockhand-tls/Caddyfile', stdin=(
+        ':3443 {\n  tls /tls/cert.pem /tls/key.pem\n  reverse_proxy 127.0.0.1:3000\n}\n'))
+    sudo(node.name, 'docker rm -f sf-dockhand sf-dockhand-tls >/dev/null 2>&1 || true')
+    sudo(node.name, f'docker run -d --name sf-dockhand -p 127.0.0.1:3000:3000 -v /var/run/docker.sock:/var/run/docker.sock {DOCKHAND_IMAGE}')
+    sudo(node.name, f'docker run -d --name sf-dockhand-tls --network host -v /srv/sf-dockhand-tls:/tls:ro {CADDY_IMAGE} '
+                    'caddy run --config /tls/Caddyfile --adapter caddyfile')
     base = 'http://127.0.0.1:3000/api'
     demo.wait('Dockhand to answer', lambda: 'authEnabled' in json.dumps(http_json(node, 'GET', f'{base}/auth/session')), timeout=180)
     http_json(node, 'POST', f'{base}/environments',

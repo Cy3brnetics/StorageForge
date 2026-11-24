@@ -187,7 +187,7 @@ class Rotation(Base):
                 changes.normalize({'name': 'p', 'tasks': [{'type': 'wg-rotate', 'host': 'nas', 'params': {'iface': 'sf0', **bad}}]})
 
     def test_a_name_another_kind_of_interface_has_is_refused_by_the_check(self):
-        # the machine that runs the StorageForge containers has a bridge called sf0 by default
+        # the machine that runs the StorageForge containers has a legacy bridge called sf0
         host_id = self.conn.all("SELECT host_id FROM hosts WHERE hostname = 'pi'")[0][0]
         self.conn.execute('INSERT INTO host_network (host_id, data_json, updated_at) VALUES (:i, :d, :t)',
                           {'i': host_id, 't': int(time.time()), 'd': json.dumps({'interfaces': [{'name': 'sf0', 'addresses': [{'ip': '172.30.0.1', 'prefix': 24}]}]})})

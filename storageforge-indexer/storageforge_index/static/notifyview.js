@@ -125,3 +125,6 @@ document.getElementById('nt-history-box').addEventListener('toggle', (ev) => { i
 document.getElementById('nt-older').addEventListener('click', () => ntHistory(true));
 let ntTyping = 0;
 document.getElementById('nt-hq').addEventListener('input', (ev) => { NT.q = ev.target.value.trim(); clearTimeout(ntTyping); ntTyping = setTimeout(() => ntHistory(false), 250); });
+document.addEventListener('sf:notifications', () => {
+  if (!document.getElementById('tab-notifications')?.hidden && !document.querySelector('dialog[open]')) loadNotifications();
+});

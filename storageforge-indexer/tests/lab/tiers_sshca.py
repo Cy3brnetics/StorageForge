@@ -76,7 +76,7 @@ def tier21(r):
             demo.scan(api, [node.ip])          # the key in authorized_keys, as before: nobody was locked out
             again = api.post('/api/keys/ssh-ca/plan', {'kind': 'trust', 'hosts': [name], 'users': 'scan'})
             runs = demo.deploy(api, 'changes', again['plan_id'], f'trust the SSH CA on {node.name} again')
-            want(all('ok: trusts the StorageForge CA' in (x.get('output') or '') for x in runs), 'a second run did not find it in place')
+            want(runs and all(re.search(r'^\s*ok\s+trusts the StorageForge CA for scan, with revocation list version \d+', x.get('output') or '', re.M) for x in runs), 'a second run did not find it in place')
             return 'sshd names the CA and the principals of scan; the scan key still logs in; a second run changed nothing'
         r.check('sshca-trust', node.name, trust)
 
@@ -142,8 +142,11 @@ def tier21(r):
         sudo(node.name, f'cp {shlex.quote("/etc/ssh/ssh_host_ed25519_key.pub")} /etc/ssh/lab_own_ca.pub; printf "TrustedUserCAKeys /etc/ssh/lab_own_ca.pub\\n" >{own}; sshd -t')
         try:
             made = api.post('/api/keys/ssh-ca/plan', {'kind': 'trust', 'hosts': [name], 'users': 'scan'})
-            runs = demo.deploy(api, 'changes', made['plan_id'], f'trust on a host with its own CA ({node.name})', may_fail=name)
-            want(runs is None, 'the step did not refuse a host that has a CA of its own')
+            title = f'trust on a host with its own CA ({node.name})'
+            group = api.post('/api/deploy/start', {'kind': 'changes', 'ref': made['plan_id'], 'mode': 'report', 'title': title})['group']
+            runs = demo.wait(title, lambda: demo.finished(api, group))['runs']
+            want(len(runs) == 1 and runs[0]['status'] == 'failed' and '/etc/ssh/lab_own_ca.pub' in runs[0]['output']
+                 and 'StorageForge does not replace it' in runs[0]['output'], 'the report did not identify the existing CA conflict')
             want(sshd_says(node, 'trustedusercakeys') == '/etc/ssh/lab_own_ca.pub', 'the CA the host had was replaced')
             want(sudo(node.name, f'ls {CONF} 2>/dev/null; true', check=False).strip() == '', 'a file was written although the step refused')
         finally:

@@ -405,6 +405,19 @@ class MapViews(Accounts):
         self.as_role('vera', 'viewer')
         self.assertEqual([v['name'] for v in self.client.get('/api/map/views').get_json()['views']], ['team'])
 
+    def test_host_design_migration_preview_preserves_alternatives(self):
+        self.as_role('opal', 'operator')
+        for name in ('before', 'after'):
+            mapdesign.save_design(self.conn, {'name': name, 'doc': {'hosts': [{'name': 'nas'}]}}, 'opal')
+        self.conn.execute('UPDATE map_designs SET updated_at = 1')
+        url = '/api/map/designs/migration-preview?host=nas'
+        result = self.client.get(url).get_json()
+        self.assertEqual(result['current']['source']['name'], 'after')
+        self.assertEqual([d['source']['name'] for d in result['versions']], ['before'])
+        self.assertIsNone(result['current']['document']['sections']['storage'])
+        self.as_role('vera', 'viewer')
+        self.assertEqual(self.client.get(url).status_code, 403)
+
     def test_comparing_a_design_changes_nothing(self):
         did = mapdesign.save_design(self.conn, {'name': 'd', 'doc': {'hosts': []}}, 'admin1')['id']
         before = self.conn.all('SELECT * FROM map_designs WHERE id = :i', {'i': did})

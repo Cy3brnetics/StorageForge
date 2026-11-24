@@ -184,6 +184,12 @@ def run(db, conn: Conn, target: str | None, actor: str, wait: bool = False, runn
         finally:
             c.close()
             _running.release()
+            if getattr(db, 'dialect', None) != 'sqlite' or getattr(db, 'path', '') == ':memory:' or os.path.exists(getattr(db, 'path', '')):
+                try:
+                    from . import alerts
+                    alerts.evaluate(db)
+                except Exception:
+                    errlog.trace()
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()

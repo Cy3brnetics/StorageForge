@@ -84,6 +84,7 @@ function showTab(name, params = {}) {
 async function queueScan(host) {
   try {
     const r = await (await postJSON('/api/scan', { host })).json();
+    if (typeof sfScanQueued === 'function') sfScanQueued();
     toast(`Scan queued for ${host} (job #${r.job_id}). Open Scans on the main page to follow it.`);
   } catch (err) {
     notify(err.message, 'error');

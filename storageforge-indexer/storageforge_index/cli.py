@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 from . import __version__
@@ -39,7 +40,11 @@ def size_arg(text: str) -> int:
 def open_db(args):
     db = Database(args.db)
     conn = db.connect()
-    db.migrate(conn)
+    try:
+        db.migrate(conn)
+    except BaseException:
+        conn.close()
+        raise
     return db, conn
 
 
@@ -103,6 +108,12 @@ def cmd_scan(args) -> int:
         finally:
             t.close()
             sconn.close()
+    if not opts.dry_run:
+        try:
+            from . import alerts
+            alerts.evaluate(db)
+        except Exception:
+            pass
     return 1 if failures else 0
 
 
@@ -1277,30 +1288,11 @@ def _second_lock(args) -> int:
 def cmd_vault(args) -> int:
     from .vault import Vault, importable_keys, secret_from_env
     a = args.vault_cmd
-    if a == 'init':
-        db, conn = open_db(args)
-        v = Vault(db, conn, secret_from_env())
-        created = v.init()
-        v.unlock()
-        if created:
-            _audit(db, conn, v, 'vault.init')
-        print('vault initialised' if created else 'vault already initialised; secret verified')
-        return 0
     if a == 'starter':
         from . import enclave_start
         db, conn = open_db(args)
         conn.close()
         return enclave_start.starter(db, args.address, args.wait, args.watch, say=lambda line: print(line, file=sys.stderr, flush=True))
-    if a == 'status':
-        db, conn = open_db(args)
-        v = Vault(db, conn)
-        if not v.initialized:
-            print('vault: not initialised (run: storageforge-index vault init)')
-            return 1
-        v.unlock()
-        keys = v.list_keys()
-        print(f'vault: unlocked · {len(keys)} key(s) · {len(v.bindings())} binding(s)')
-        return 0
     if a == 'second-lock':
         return _second_lock(args)
     if a == 'enclave-pin':
@@ -1322,8 +1314,23 @@ def cmd_vault(args) -> int:
             return 1
         print(f'{address}\n{base64.b64encode(key).decode()}')
         return 0
-    db, conn, v = _vault(args)
-    with v:
+    db, conn = open_db(args)
+    with closing(conn), Vault(db, conn, secret_from_env() if a == 'init' else None) as v:
+        if a == 'init':
+            created = v.init()
+            v.unlock()
+            if created:
+                _audit(db, conn, v, 'vault.init')
+            print('vault initialised' if created else 'vault already initialised; secret verified')
+            return 0
+        if a == 'status' and not v.initialized:
+            print('vault: not initialised (run: storageforge-index vault init)')
+            return 1
+        v.unlock()
+        if a == 'status':
+            keys = v.list_keys()
+            print(f'vault: unlocked · {len(keys)} key(s) · {len(v.bindings())} binding(s)')
+            return 0
         if a in ('stepup-enroll', 'stepup-forget'):
             from . import enclave, enclave_stepup
             from .vault import VaultError

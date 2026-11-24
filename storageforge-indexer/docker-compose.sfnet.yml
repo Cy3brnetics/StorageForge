@@ -46,7 +46,12 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=4m
     healthcheck:
-      disable: true
+      test:
+        - CMD-SHELL
+        - 'state=/run/storageforge-sfnet/state/sf0.state; test -s "$$state" && test "$$(stat -c %Y "$$state")" -ge "$$(($$(date +%s) - 30))"'
+      interval: 10s
+      timeout: 3s
+      retries: 3
     deploy:
       resources:
         limits: { cpus: "0.25", memory: 32m, pids: 32 }

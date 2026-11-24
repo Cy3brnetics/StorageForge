@@ -198,10 +198,10 @@ Then press **I ran it: test** in the Deploy panel.
 
 ### Scanning the Docker host itself
 
-Connections from the container to the machine it runs on come in on the `sf0` bridge, not from the LAN. A firewall that allows SSH only from the LAN drops them, and those scans time out. With ufw:
+Connections from the container to the machine it runs on come in on the `br-sforge` bridge, not from the LAN. A firewall that allows SSH only from the LAN drops them, and those scans time out. With ufw:
 
 ```bash
-sudo ufw allow in on sf0 to any port 22 proto tcp
+sudo ufw allow in on br-sforge to any port 22 proto tcp
 ```
 
 ## 4. Optional parts

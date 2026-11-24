@@ -230,6 +230,14 @@ def register(web, ctx):
         return jsonify(ok=True)
 
     # ── designs ─────────────────────────────────────────────────────
+    @web.get('/api/map/designs/migration-preview')
+    @login_required
+    def api_design_migration_preview():
+        host = request.args.get('host', '').strip()
+        if not host:
+            raise ValueError('give host')
+        return jsonify(mapdesign.migration_preview(conn(), host))
+
     @web.get('/api/map/designs')
     @login_required
     def api_map_designs():
@@ -416,9 +424,11 @@ def register(web, ctx):
             res = netdevice.read(db, conn(), wanted, actor())
             res['host'] = res.pop('device')
             core.audit(conn(), actor(), 'infra.measure', 'ok' if res.get('ok') else 'failed', res['host'], {})
+            core.alerts_wake.set()
             return jsonify(res), 200 if res.get('ok') else 409
         res = inframeasure.measure(db, conn(), wanted, actor())
         core.audit(conn(), actor(), 'infra.measure', 'ok' if res.get('ok') else 'failed', res.get('host'), {'run_id': res.get('run_id')})
+        core.alerts_wake.set()
         return jsonify(res), 200 if res.get('ok') else 409
 
     # StorageForge's own WireGuard network (sfnetwork.py). Nothing here reaches a host: what changes one is the plan, run like any other

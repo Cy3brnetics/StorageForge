@@ -1125,6 +1125,7 @@ function docState(msg,cls){
     :DOC.source==='scan'?'Built from the latest scan. Save it to keep your design.'
     :'Saved design · '+fmtTime(DOC.savedAt));
   $('#savedesign').hidden=!DOC.host||!DOC.signedIn;$('#versions').hidden=!DOC.host||!DOC.signedIn;$('#fromscan').hidden=!DOC.host||!DOC.scanned||!DOC.signedIn;
+  $('#adoptobject').hidden=$('#fromscan').hidden;
   $('#reset').hidden=!!DOC.host;$('#hostpick').value=DOC.host;
   $('#dropexample').hidden=!!DOC.host||!DOC.signedIn||!DOC.example||!DOC.hosts.length||!$('#dropconfirm').hidden;
   $('#showexample').hidden=!DOC.signedIn||DOC.example;
@@ -1151,6 +1152,47 @@ async function openDoc(host,source,push){
   }catch(e){ docState(e.message,'err') }
 }
 function normalizeIds(){ S.links.forEach((l,i)=>{l.id=l.id||'L'+i}); }
+async function adoptScanObject(){
+  const host=DOC.host;
+  try {
+    const result=await apiJSON('/api/planner/design?source=inventory&host='+encodeURIComponent(host));
+    if(DOC.host!==host) return;
+    const inventory=fromBlueprint(result.blueprint);
+    const items=[];
+    const select=sfNode('select',{'aria-label':'Scanned object'});
+    const groups=[['disks','Disk',d=>d.dev],['links','Link',l=>l.path],
+      ['remotes','Remote mount',r=>r.mount],['exports','Share',e=>e.proto+' '+e.name]];
+    for(const [section,label,key] of groups){
+      for(const obj of inventory[section]){
+        const identity=key(obj);
+        if(!identity || inventory[section].filter(x=>key(x)===identity).length!==1) continue;
+        select.add(new Option(label+' · '+identity,String(items.length)));
+        items.push({section,key,identity,obj});
+      }
+    }
+    if(!items.length){docState('No scanned objects available to adopt.');return}
+    const apply=sfNode('button',{type:'button',class:'btn pri'},'Adopt into draft');
+    const cancel=sfNode('button',{type:'button',class:'btn'},'Cancel');
+    const title=sfNode('h2',{id:'adopt-title'},'Adopt one object from '+host);
+    const dlg=sfModal(sfNode('div',{},title,sfNode('p',{},'Replaces the matching object in this draft or adds it. Save the design to keep it.'),select,cancel,apply),'adopt-title');
+    cancel.onclick=()=>dlg.close();
+    apply.onclick=()=>{
+      dlg.close();
+      if(DOC.host!==host) return;
+      const {section,key,identity,obj}=items[Number(select.value)];
+      const matches=S[section].filter(x=>key(x)===identity);
+      if(matches.length>1){docState('Multiple draft objects match this selection.','err');return}
+      if(matches.length){
+        if(matches[0].id) obj.id=matches[0].id;
+        S[section][S[section].indexOf(matches[0])]=obj;
+      } else {
+        if(obj.id) obj.id=section+'-'+crypto.randomUUID();
+        S[section].push(obj);
+      }
+      commit();
+    };
+  } catch(e){docState(e.message,'err')}
+}
 async function saveDesign(){
   docState('Saving…');
   try{
@@ -1275,6 +1317,7 @@ $('#resetno').addEventListener('click',()=>{$('#resetconfirm').hidden=true;$('#r
 $('#resetyes').addEventListener('click',()=>{S=sample();UI.sel=null;UI.calc=null;$('#resetconfirm').hidden=true;$('#reset').hidden=false;commit()});
 $('#hostpick').addEventListener('change',e=>openDoc(e.target.value,undefined,true));
 $('#savedesign').addEventListener('click',saveDesign);
+$('#adoptobject').addEventListener('click',adoptScanObject);
 $('#versions').addEventListener('click',openVersions);
 $('#fromscan').addEventListener('click',()=>openDoc(DOC.host,'scan'));
 $('#dropexample').addEventListener('click',()=>{$('#dropconfirm').hidden=false;docState()});
@@ -1405,5 +1448,11 @@ whoAmI().then(()=>{ S=load('')||S; return loadHosts() }).then(async()=>{
     const r=readHash();
     if(VIEWS.some(v=>v[0]===r.view)&&r.view!==UI.view){ UI.view=r.view; render(); $('#main').scrollTop=0 }
     if(r.host!==DOC.host&&(r.host===''||DOC.hosts.some(x=>x.host===r.host))){ await openDoc(r.host); $('#hostpick').value=DOC.host }
+  });
+  document.addEventListener('sf:scan',async()=>{
+    if(!DOC.signedIn||document.querySelector('dialog[open]')) return;
+    await loadHosts();
+    if(DOC.host&&!DOC.dirty&&DOC.source==='scan') await openDoc(DOC.host,'scan');
+    else if(DOC.host) loadActivity();
   });
 });

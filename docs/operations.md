@@ -67,7 +67,7 @@ Everything is set with environment variables. In Docker, put them in `.env` next
 | `STORAGEFORGE_KEY_IMPORT_DIR` | `./keys` | Mounted read-only; each file is imported as a key at start |
 | `STORAGEFORGE_TLS_NAMES` | | Extra names and addresses for the self-signed certificate; used when it is created |
 | `STORAGEFORGE_ALLOW_DISK_RUNTIME` | `0` | Let the entrypoint start when the runtime dir is not tmpfs (not recommended) |
-| `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `sf0` | For `docker/egress-firewall.sh`; the bridge name is also used by compose |
+| `STORAGEFORGE_EGRESS_PORTS`, `STORAGEFORGE_BRIDGE` | `22 443`, `br-sforge` | For `docker/egress-firewall.sh`; the bridge name is also used by compose |
 
 ## Key enclave
 

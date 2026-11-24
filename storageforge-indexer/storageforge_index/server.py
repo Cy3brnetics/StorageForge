@@ -319,7 +319,8 @@ class App:
             threading.Thread(target=netconsole.run, args=(self.db, self.alerts_wake.set), name='netconsole', daemon=True).start()
 
     def _alerts(self):
-        time.sleep(30)
+        self.alerts_wake.wait(30)
+        self.alerts_wake.clear()
         while True:
             try:
                 alerts.evaluate(self.db)
@@ -405,7 +406,13 @@ class App:
             finally:
                 self.progress.pop(jid, None)
                 conn.close()
+                if self.scan_db.dialect != 'sqlite' or self.scan_db.path == ':memory:' or Path(self.scan_db.path).exists():
+                    try:
+                        alerts.evaluate(self.scan_db)
+                    except Exception:
+                        errlog.trace()
                 self.scan_done.set()
+                self.alerts_wake.set()
 
     def bound_hosts(self) -> list[str]:
         """Hosts bound by name for scanning, under their indexed hostnames."""
@@ -1114,11 +1121,21 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     @web.get('/api/hosts')
     @login_required
     def api_hosts():
-        rows = conn().all('SELECT hostname, ip_address, os_info, last_scanned_at FROM hosts ORDER BY hostname')
-        graph_hosts = [r[0] for r in conn().all("SELECT label FROM graph_nodes WHERE kind = 'Host' AND host IS NOT NULL ORDER BY label")]
-        return jsonify(indexed=[dict(zip(('hostname', 'ip', 'os', 'last_scanned_at'), (*r[:3], epoch(r[3]))))
-                                for r in rows],
-                       graph=graph_hosts)
+        c = conn()
+        rows = c.all('SELECT hostname, ip_address, os_info, last_scanned_at FROM hosts ORDER BY hostname')
+        graph_hosts = [r[0] for r in c.all("SELECT label FROM graph_nodes WHERE kind = 'Host' AND host IS NOT NULL ORDER BY label")]
+        indexed = [dict(zip(('hostname', 'ip', 'os', 'last_scanned_at'), (*r[:3], epoch(r[3])))) for r in rows]
+        s_id, j_id, n_id, ev_id, open_n, open_last = c.all("""SELECT
+            (SELECT coalesce(max(scan_id), 0) FROM scans WHERE status <> 'running'),
+            (SELECT coalesce(max(job_id), 0) FROM scan_jobs WHERE status NOT IN ('queued', 'running')),
+            (SELECT coalesce(max(scan_id), 0) FROM network_scans WHERE status <> 'running'),
+            (SELECT coalesce(max(event_id), 0) FROM notification_events),
+            (SELECT count(*) FROM alerts WHERE state = 'open'),
+            (SELECT coalesce(max(last_at), 0) FROM alerts WHERE state = 'open')""")[0]
+        last_ts = max((h['last_scanned_at'] or 0 for h in indexed), default=0)
+        return jsonify(indexed=indexed, graph=graph_hosts,
+                       scan_mark=f'{s_id}:{j_id}:{n_id}:{len(indexed)}:{last_ts}',
+                       notif_mark=f'{ev_id}:{open_n}:{open_last}')
 
     @web.delete('/api/hosts/<name>')
     @login_required
@@ -3007,7 +3024,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), offsite=offsite, blueprint=saved, shares_deployed=shares.in_sync(conn(), host))
         if not scanned(host):
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
-        bp = blueprint.merge_intent(scan_design(host), saved)
+        bp = scan_design(host) if source == 'inventory' else blueprint.merge_intent(scan_design(host), saved)
         bp['links'] = quiet_links(host, bp.get('links'))
         bp['protection'] = protection.overlay(conn(), host, bp['protection'])
         return jsonify(host=host, source='scan', saved_at=saved_at, scanned=True, offsite=offsite, blueprint=bp, shares_deployed=shares.in_sync(conn(), host))

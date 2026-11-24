@@ -173,6 +173,7 @@ def register(web, ctx):
     def api_device_remove(name):
         res = netdevice.remove(conn(), name)
         core.audit(conn(), actor(), 'device.remove', 'ok', res['name'], {})
+        core.alerts_wake.set()
         return jsonify(res)
 
     @web.post('/api/devices/<name>/read')
@@ -180,6 +181,7 @@ def register(web, ctx):
     def api_device_read(name):
         res = netdevice.read(db, conn(), name, actor())
         core.audit(conn(), actor(), 'device.read', 'ok' if res['ok'] else 'failed', res['device'], {'error': res.get('error')})
+        core.alerts_wake.set()
         return jsonify(res), 200 if res['ok'] else 409
 
     @web.post('/api/devices/<name>/report')
@@ -273,6 +275,7 @@ def register(web, ctx):
     def api_netscan_settings():
         res = netscan.save_settings(conn(), json_body(), actor())
         core.audit(conn(), actor(), 'netscan.settings', 'ok', None, {'enabled': res['enabled'], 'ranges': res['ranges']})
+        core.alerts_wake.set()
         return jsonify(res)
 
     @web.post('/api/netscan/run')
@@ -280,6 +283,7 @@ def register(web, ctx):
     def api_netscan_run():
         res = netscan.run(db, conn(), json_body().get('target'), actor())
         core.audit(conn(), actor(), 'netscan.run', 'ok', None, {'targets': res['targets'], 'scan': res['scan_id']})
+        core.alerts_wake.set()
         return jsonify(res)
 
     @web.get('/api/netscan/graph')

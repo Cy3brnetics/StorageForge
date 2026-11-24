@@ -38,7 +38,7 @@ const fmtDec = (n) => {
 const bare = (d) => String(d || '').replace(/^\/dev\//, '');
 
 /* ── loading and saving designs ──────────────────────────────────── */
-async function loadDesigns() {
+async function loadDesigns({ background = false } = {}) {
   if (T.mode !== 'topo') return;
   const n = T.loadReq = (T.loadReq || 0) + 1;      // loads overlap (a save, a deploy's end, a scan's end): the last one started wins
   let hosts;
@@ -72,7 +72,7 @@ async function loadDesigns() {
   if (S.host && !want.length) T.error = `${S.host} has no design: it is not scanned and has no saved plan.`;
   if (T.sel && !(T.docs.get(T.sel.host) || {}).bp) T.sel = null;
   renderTopo();
-  if (T.sel) renderEditor();
+  if (T.sel && (!background || !$('#summary .stageform'))) renderEditor();
   if (typeof smLoad === 'function') smLoad();     // the shares manager lists these docs
 }
 const dirtyDocs = () => [...T.docs.values()].filter((d) => d.dirty);

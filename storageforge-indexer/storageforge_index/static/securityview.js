@@ -300,17 +300,28 @@ async function secDecoys() {
 /* ── access control ───────────────────────────────────────────────── */
 async function secMac() {
   const host = S.host, d = await getJSON(`/api/security/mac/status${secQ(host)}`), out = el('div', { class: 'stack' });
-  if (!d.measured_at) return secCard('Access control', text('p', `${host} has not been measured, so nothing is known about it.`, 'muted'), secCan('security.manage') ? secMeasureButton(host, out) : '', out);
+  const setup = secCan('plans.edit') ? secCard('Set up access control',
+    text('p', 'Choose the option for this host. Review and apply the staged plan in Changes. A first SELinux startup can take time to label files. Schedule the reboot, then measure again and review denials before enforcing.', 'muted small'),
+    ...[['apparmor', 'Debian or Ubuntu · AppArmor'], ['selinux', 'Fedora or RHEL family · SELinux'],
+      ...(String(d.selinux_mode).toLowerCase() === 'permissive' ? [['enforce', 'Stage SELinux enforcement']] : [])].map(([framework, label]) =>
+      button(label, async () => {
+        const result = await secPost('/api/map/stage', { plan: 'Access control: ' + host, tasks: [{ host, type: 'mac-setup', params: { framework } }] }, out);
+        if (result) secChanges({ ...result, tasks: 1 }, out);
+      }, 'btn sm'))) : '';
+  if (!d.measured_at) return secCard('Access control', text('p', `${host} has not been measured, so nothing is known about it.`, 'muted'), secCan('security.manage') ? secMeasureButton(host, out) : '', setup, out);
   const path = secInput('/srv/data'), type = el('select', {}, ...d.se_types.map((t) => new Option(t, t)));
   const fix = (name, value) => secActions('/api/security/mac/remediate', () => ({ host, boolean: name, value }), out, { apply: `Set ${value}`, after: () => secRender() });
   const relabel = secActions('/api/security/mac/remediate', () => ({ host, path: path.value.trim(), type: type.value }), out, { apply: 'Relabel', after: () => secRender() });
   return el('div', { class: 'stack' },
     secCard(`Access control on ${host}`, el('div', { class: 'stat-row' }, secStat('Framework', d.framework ? (d.framework === 'selinux' ? 'SELinux' : 'AppArmor') : 'none', d.framework ? '' : 'st-warn'), secStat('Mode', d.selinux_mode || (d.apparmor.enabled ? `${secVal(d.apparmor.enforce)} enforcing, ${secVal(d.apparmor.complain)} complaining` : 'off')), secStat('Measured', secAgo(d.measured_at)), secStat('Storage denials', d.avc.filter((a) => a.storage).length)),
-      text('p', 'Turning SELinux on from here is not offered: it can stop services that have been relying on it being off. Look at the denials first.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : ''),
+      text('p', d.stale ? 'Measure this host again before choosing a change.' :
+        d.apparmor.enabled ? 'Choose the service profile below. Use complain mode while you test normal file access. Review its logged requests, then stage enforce mode to block access outside the profile.' :
+        ['enforcing', 'permissive'].includes(String(d.selinux_mode).toLowerCase()) ? 'Try opening the share as a normal user, then measure again. Find the program and path under Recent denials. Check the mount label before changing a host-wide setting.' :
+        'Start with the access-control framework supported by this host’s distribution. Stage its setup below, then measure again to see the active policy.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : ''),
     d.booleans.length ? secCard('Storage booleans', secTable(['Boolean', 'Now', 'Should be', '', ''], d.booleans.map((b) => [b.name, b.value, secVal(b.expected), secOkPill(b.ok, 'as expected', 'too open'), b.ok ? '' : fix(b.name, b.expected)]))) : '',
     d.fcontext.length ? secCard('Mount labels', secTable(['Mount', 'Now', 'Policy says', ''], d.fcontext.map((f) => [f.path, f.live, secVal(f.expected), secOkPill(f.aligned, 'matches', 'drifted')]))) : '',
     secCard('Recent denials', d.avc.length ? secTable(['When', 'Program', 'Asked for', 'On', 'Its context', 'Target'], d.avc.map((a) => [secWhen(a.at), text('span', a.daemon, a.storage ? 'st-warn' : ''), a.action, a.path, a.scontext, a.tcontext]), 20) : text('p', 'None in the last 10 minutes, as far as ausearch can say.', 'muted')),
-    SEC_MORE.macExtra(host, d),
+    setup, SEC_MORE.macExtra(host, d),
     d.selinux_mode ? secCard('Relabel a share', text('p', 'Registers the type with semanage, so it survives a relabel, then runs restorecon. This is the usual fix for a denial on a share.', 'muted small'), el('div', { class: 'sec-form' }, secField('Path', path), secField('Type', type)), relabel) : '',
     out);
 }
