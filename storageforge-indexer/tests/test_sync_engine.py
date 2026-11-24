@@ -131,6 +131,31 @@ class Engine(unittest.TestCase):
     def events(self, out):
         return [json.loads(x) for x in out.splitlines() if x.startswith('{"event"')]
 
+    def test_remote_single_file_job_preserves_exact_names_and_siblings(self):
+        source = self.src / 'report [1].txt'
+        target = self.dst / 'renamed.txt'
+        source.write_bytes(b'new contents')
+        (self.src / 'other.txt').write_bytes(b'sibling')
+        self.conf(local=False, src=str(source), dst=str(target), single_file=True)
+        # Run the real rsync client and its server, with only the SSH hop substituted.
+        (self.bin / 'rsync').unlink()
+        self.fake('ssh', """#!/bin/bash
+case "${!#}" in
+  .) exec bash "$T/job" --serve "$JOB" "rsync --server --daemon ." ;;
+  *) exec bash "$T/job" --serve "$JOB" "${!#}" ;;
+esac
+""")
+        for action in ('dryrun', 'run', 'verify'):
+            result = self.job(action, 'p1-a')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            if action == 'dryrun':
+                self.assertFalse(target.exists())
+        self.assertEqual(target.read_bytes(), source.read_bytes())
+        self.assertFalse((self.dst / 'other.txt').exists())
+        source.unlink()
+        self.assertNotEqual(self.job('run', 'p1-a').returncode, 0)
+        self.assertEqual(target.read_bytes(), b'new contents')
+
     # ── dedup ──
     def test_a_renamed_file_is_not_sent_again(self):
         self.need_no_reflinks()

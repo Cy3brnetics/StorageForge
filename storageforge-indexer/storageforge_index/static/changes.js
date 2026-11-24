@@ -47,6 +47,8 @@ function taskTitle(t) {
   const p = t.params || {};
   return ({
     dir: () => `Create folder ${p.path}`, rename: () => `Rename ${p.path} → ${p.dest}`, trash: () => `Move ${p.path} to the trash`,
+    archive: () => `Compress ${p.path} → ${p.dest} (${p.codec || 'zstd-ultra'}${p.compress_host ? ', via ' + p.compress_host : ''}${p.trash_source ? ', trash original' : ''})`,
+    'archive-extract': () => `Extract ${p.archive} → ${p.dest}`,
     symlink: () => `Link ${p.path} → ${p.target}`, perms: () => `Owner and permissions of ${p.path}`,
     subvolume: () => `Create subvolume ${p.path}`, snapshot: () => `Snapshot ${p.source} → ${p.dest}`,
     'to-subvolume': () => `Turn ${p.path} into a subvolume`, 'btrfs-add': () => `Add ${p.device} to the pool at ${p.target}`,
@@ -87,6 +89,7 @@ async function openTask(type, host, preset = {}, edit = null) {
   const vmSpecs = type === 'vm-create' ? ((await getJSON('/api/vm/specs').catch(() => ({ specs: [] }))).specs || []) : null;
   showTab('details');
   const inputs = {};
+  const controls = {};
   const fields = spec.fields.map((f) => {
     const v = edit ? edit.params[f.name] : preset[f.name] ?? f.default ?? '';
     let input;
@@ -105,9 +108,24 @@ async function openTask(type, host, preset = {}, edit = null) {
                             placeholder: f.placeholder || defPh, autocomplete: 'off', spellcheck: 'false' });
       input.value = v;
     }
+    controls[f.name] = input;
     inputs[f.name] = () => input.value.trim();
     return el('label', { class: 'field col' }, el('span', {}, f.label + (f.required ? '' : ' (optional)')), input);
   });
+  if (type === 'archive') {
+    const { path, dest, codec } = controls;
+    const suggested = () => path.value.trim() && path.value.trim().replace(/\/+$/, '') +
+      ({ 'xz-extreme': '.tar.xz', '7z-ultra': '.7z' }[codec.value] || '.tar.zst');
+    let previous = suggested();
+    const refresh = () => {
+      const next = suggested();
+      if (!dest.value || dest.value === previous) dest.value = next;
+      previous = next;
+    };
+    path.addEventListener('input', refresh);
+    codec.addEventListener('change', refresh);
+    refresh();
+  }
   const msg = el('p', { class: 'st-failed', hidden: true });
   const form = el('form', { class: 'stack card stageform' },
     el('div', { class: 'row' }, el('b', {}, spec.label), text('span', `${spec.group} · ${host}`, 'muted')),
@@ -193,7 +211,7 @@ function stagedOn(doc, n) {
     if (n.kind === 'mount' && n.planned) return t.type === 'mount' && p.target === n.target;
     if (n.kind === 'mount') {
       if (t.type === 'unmount' || t.type === 'mount') return t.type === 'unmount' && p.target === n.target;
-      const path = p.path || p.dest || p.target || p.source;
+      const path = p.path || p.archive || p.dest || p.target || p.source;
       return !!path && path.startsWith('/') && !path.startsWith('/dev/') && containing(path, mounts) === n.target;
     }
     if (n.kind === 'disk' || n.kind === 'part') {
@@ -217,8 +235,10 @@ function folderActions(host, full, btrfs) {
     { label: 'Securely delete…', run: go('secure-delete', { path: full }) },
     { label: 'Owner and permissions…', run: go('perms', { path: full }) },
     { label: 'Link to it from…', run: go('symlink', { path: '', target: full }) },
+    { label: 'Compress to archive…', run: go('archive', { path: full, dest: `${full}.tar.zst`, codec: 'zstd-ultra', verify: true }) },
     ...(btrfs ? [{ label: 'Turn into a subvolume', run: go('to-subvolume', { path: full }) },
       { label: 'Snapshot (if a subvolume)…', run: go('snapshot', { source: full, dest: full + '-snap' }) }] : []),
+    { label: 'Archive via another host / CPU agent (Moves)…', run: () => archiveFrom(host, full, 'worker') },
     { label: 'Copy to another disk (Moves)…', run: () => moveFrom(host, full) }];
 }
 
@@ -237,6 +257,7 @@ async function browseFolders(host, path, mountTarget) {
       const q = t.params;
       if ((t.type === 'trash') && q.path === p) marks.push('to trash');
       if (t.type === 'rename' && q.path === p) marks.push('→ ' + q.dest);
+      if (t.type === 'archive' && q.path === p) marks.push('archive → ' + q.dest);
       if (t.type === 'rename' && q.dest === p) marks.push('← ' + q.path);
       if (t.type === 'perms' && q.path === p) marks.push('owner/mode');
       if (t.type === 'to-subvolume' && q.path === p) marks.push('→ subvolume');

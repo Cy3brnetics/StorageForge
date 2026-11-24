@@ -58,10 +58,41 @@ SF_SYNC_PY
 # ── source side: what a job key may do (forced command, as root) ──
 serve_load() {
   idok "$1"; [[ -f $ETC/serve/$1.conf ]] || die "this host does not serve job $1"
-  ROOT= SNAP=0 DEDUP=0 HASH=sha256 STREAM=; PRE=(); POST=()
+  ROOT= FILE_PATTERN= SNAP=0 DEDUP=0 HASH=sha256 STREAM= ARCHIVE_CODEC= ARCHIVE_ONEFS=0 COMPRESS_ONLY=0; ARCHIVE_EXCLUDES=(); PRE=(); POST=()
   # shellcheck disable=SC1090
   source "$ETC/serve/$1.conf"
   SID=$1
+}
+sf_idle() {
+  if command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null; then ionice -c3 nice -n 19 "$@"
+  elif command -v nice >/dev/null 2>&1; then nice -n 19 "$@"
+  else "$@"; fi
+}
+sf_compress_verified_stream() { # codec -> stdin raw tar -> stdout round-trip verified archive
+  local codec=${1:-zstd-ultra} tmpd vp rc=0
+  tmpd=$(mktemp -d "$TMPD/sf-comp.XXXXXX" 2>/dev/null || mktemp -d) || return 2
+  mkfifo "$tmpd/v" || { rm -rf "$tmpd"; return 2; }
+  if [[ $codec == xz-extreme ]]; then
+    ( set -o pipefail; sf_idle xz -dc <"$tmpd/v" | tar -tf - >/dev/null ) & vp=$!
+    ( set -o pipefail; sf_idle xz -9 -e -T0 -c | tee "$tmpd/v" ) || rc=$?
+  elif [[ $codec == zstd-high ]]; then
+    ( set -o pipefail; ( sf_idle zstd -dc --long=31 <"$tmpd/v" ) | tar -tf - >/dev/null ) & vp=$!
+    ( set -o pipefail; sf_idle zstd -q -T0 -19 -c | tee "$tmpd/v" ) || rc=$?
+  else
+    ( set -o pipefail; ( sf_idle zstd -dc --long=31 <"$tmpd/v" ) | tar -tf - >/dev/null ) & vp=$!
+    ( set -o pipefail; ( sf_idle zstd -q -T0 --ultra -22 --long=27 -c ) | tee "$tmpd/v" ) || rc=$?
+  fi
+  wait "$vp" || rc=9
+  rm -rf "$tmpd"
+  return "$rc"
+}
+sf_verify_stream_stdin() { # codec -> verifies compressed archive on stdin
+  local codec=${1:-zstd-ultra}
+  if [[ $codec == xz-extreme ]]; then
+    ( set -o pipefail; sf_idle xz -dc | tar -tf - >/dev/null )
+  else
+    ( set -o pipefail; ( sf_idle zstd -dc --long=31 ) | tar -tf - >/dev/null )
+  fi
 }
 subvol_of() { # path -> the btrfs subvolume root holding it (inode 256)
   local d; d=$(realpath -m "$1")
@@ -138,9 +169,35 @@ serve() { # id "ssh command"
   if [[ $1 == r* ]]; then recv_serve "$1" "${2:-}"; exit $?; fi       # job ids start with p or x, and a send's with r
   serve_load "$1"
   local cmd=${2:-} sv snap
+  if ((COMPRESS_ONLY)); then
+    case $cmd in
+      ping) echo pong; exit 0 ;;
+      compress) sf_compress_verified_stream "${ARCHIVE_CODEC:-zstd-ultra}"; exit $? ;;
+      verify-stream) sf_verify_stream_stdin "${ARCHIVE_CODEC:-zstd-ultra}"; exit $? ;;
+      *) die "a remote compression agent key only compresses streams (no filesystem access)" ;;
+    esac
+  fi
+  if [[ -n $FILE_PATTERN && $cmd != ping && $cmd != 'rsync --server --daemon .' ]]; then
+    die "a single-file source only serves its selected file"
+  fi
   case $cmd in
     ping) echo pong ;;
     stream-*) stream_serve "$cmd" ;;
+    archive|archive-raw)
+      [[ -n $ARCHIVE_CODEC ]] || die "job $SID does not serve an archive"
+      snap=$( ((SNAP)) && snap_path || true)
+      local target=${snap:-$(realpath -m "$ROOT")} parent base x ex=()
+      [[ -e $target && ! -L $target ]] || die "archive source $target does not exist or is a symlink"
+      parent=$(dirname -- "$target"); base=$(basename -- "$target")
+      ((ARCHIVE_ONEFS)) && ex+=(--one-file-system)
+      for x in "${ARCHIVE_EXCLUDES[@]}"; do [[ -n $x ]] && ex+=(--exclude="$x"); done
+      if [[ $cmd == archive-raw ]]; then
+        sf_idle tar -C "$parent" --numeric-owner --sparse ${ex[@]+"${ex[@]}"} -cf - -- "$base"; exit $?
+      fi
+      ( set -o pipefail; sf_idle tar -C "$parent" --numeric-owner --sparse ${ex[@]+"${ex[@]}"} -cf - -- "$base" | sf_compress_verified_stream "$ARCHIVE_CODEC" ); exit $? ;;
+    verify-stream)
+      [[ -n $ARCHIVE_CODEC ]] || die "job $SID does not serve an archive"
+      sf_verify_stream_stdin "$ARCHIVE_CODEC"; exit $? ;;
     hashes)
       # the paths are only ever opened below this root and through no link (syncindex.py); the key can read these files anyway
       ((DEDUP)) || die "job $SID does not deduplicate"
@@ -168,11 +225,26 @@ serve() { # id "ssh command"
       # a job key reads that folder (module src) or its snapshot (module snap) and nothing else on this host.
       local conf chroot=yes rc; ((EUID)) && chroot=no     # tests run unprivileged and cannot chroot
       conf=$(mktemp "$TMPD/storageforge-serve.XXXXXX") || die "no temporary file"
-      trap 'rm -f "$conf"' EXIT
+      local rules="$conf.rules" root
+      trap 'rm -f "$conf" "$rules"' EXIT
+      root=$(realpath -m "$ROOT")
+      if [[ -n $FILE_PATTERN ]]; then
+        [[ $root == "$ROOT" && -f $ROOT ]] || die "source is missing or no longer a regular file"
+        # Anchor the module to the open working directory. Serve exactly one basename even if the
+        # receiver requests other paths. A merge file keeps spaces and wildcard literals intact.
+        cd -P -- "$(dirname -- "$ROOT")" || die "cannot open the source directory"
+        [[ $PWD == "$(dirname -- "$ROOT")" ]] || die "source directory moved"
+        root=.
+        printf '+ %s\n- *\n' "$FILE_PATTERN" >"$rules" || die "cannot write the source filter"
+      fi
       snap=$( ((SNAP)) && snap_path || true)
-      { printf 'use chroot = %s\nread only = yes\nwrite only = no\nlist = no\nuid = 0\ngid = 0\nnumeric ids = yes\n' "$chroot"
+      { printf 'use chroot = %s\nread only = yes\nwrite only = no\nlist = no\nnumeric ids = yes\n' "$chroot"
+        ((EUID)) || printf 'uid = 0\ngid = 0\n'
         printf 'refuse options = delete* remove-* write-batch only-write-batch log-file*\n'
-        printf '[src]\npath = %s\n' "$(realpath -m "$ROOT")"
+        printf '[src]\npath = %s\n' "$root"
+        if [[ -n $FILE_PATTERN ]]; then
+          printf 'filter = merge %s\nrefuse options = delete* remove-* write-batch only-write-batch log-file* copy-links copy-unsafe-links copy-dirlinks files-from\n' "$rules"
+        fi
         [[ -n $snap && -d $snap ]] && printf '[snap]\npath = %s\n' "$snap"
       } >"$conf"
       rsync --server --daemon --config="$conf" .; exit $? ;;
@@ -194,13 +266,25 @@ serve() { # id "ssh command"
 load() {
   idok "$1"; [[ -f $ETC/jobs/$1.conf ]] || die "no job $1 on $(uname -n)"
   ID= NAME= METHOD= SRC_LOCAL=1 SRC_HOST= SRC_PORT=22 SRC= DST= DST_MOUNT=/ FLAGS= KEEP= LOWEST= WINDOW= BW_DAY= BW_NIGHT=
-  NIGHT= SNAP=0 HOOKS=0 REPORT_URL=; EXCLUDES=(); ONLY=(); ROUTES=()
+  SINGLE_FILE=0 COMPRESS= ARCHIVE_CODEC= COMPRESS_ON=source COMP_HOST= COMP_PORT=22 NIGHT= SNAP=0 HOOKS=0 REPORT_URL=; EXCLUDES=(); ONLY=(); ROUTES=()
   DEDUP=0 DEDUP_HARDLINK=0 DEDUP_MIN=1048576 HASH=sha256 TRANSPORT=rsync PREFLIGHT=0 RESERVE_GB=1 LOCK_WAIT=3600
   # shellcheck disable=SC1090
   source "$ETC/jobs/$1.conf"
   KEY=$ETC/jobs/$ID.key
+  COMP_KEY=$ETC/jobs/$ID.compress.key
   ROUTE_VIA= ROUTE_IFACE=
   ssh_options
+  comp_ssh_options
+}
+comp_ssh_options() {
+  COMP_SSHO=()
+  [[ -n $COMP_HOST ]] || return 0
+  COMP_SSHO=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -i "$COMP_KEY" -p "${COMP_PORT:-22}")
+  if [[ -s $ETC/jobs/$ID.compress.hostkey ]]; then
+    COMP_SSHO+=(-o HostKeyAlias=storageforge-source -o "UserKnownHostsFile=$ETC/jobs/$ID.compress.hostkey" -o StrictHostKeyChecking=yes)
+  else
+    COMP_SSHO+=(-o "UserKnownHostsFile=$VAR/known_hosts" -o StrictHostKeyChecking=accept-new)
+  fi
 }
 ssh_options() { # SSHO for the current route
   local wait=15; [[ $ROUTE_VIA == lan ]] && wait=4     # ssh keeps the first value of an option it is given twice
@@ -249,7 +333,9 @@ hook() { # verb -> runs it where the source is. A route that dropped gets one ne
 }
 url_host() { if [[ $SRC_HOST == *:* ]]; then printf '[%s]' "$SRC_HOST"; else printf '%s' "$SRC_HOST"; fi; }
 src_spec() { # path -> what rsync reads: the path here, or a module of the source's chrooted rsync (see serve)
-  if ((SRC_LOCAL)); then printf '%s/' "${1%/}"
+  if ((SINGLE_FILE)); then
+    if ((SRC_LOCAL)); then printf '%s' "$SRC"; else printf 'rsync://storageforge-deploy@%s/src/*' "$(url_host)"; fi
+  elif ((SRC_LOCAL)); then printf '%s/' "${1%/}"
   elif [[ ${1%/} == "${SRC%/}" ]]; then printf 'rsync://storageforge-deploy@%s/src/' "$(url_host)"
   else printf 'rsync://storageforge-deploy@%s/snap/' "$(url_host)"; fi
 }
@@ -498,6 +584,14 @@ rsync_cmd() { # source-path extra... -> RS
   has onefs && RS+=(-x)
   has checksum && RS+=(-c)
   has delete && RS+=(--delete-after)
+  if [[ -n $COMPRESS ]]; then
+    if rsync --compress-choice=zstd --version >/dev/null 2>&1; then
+      if [[ $COMPRESS == max ]]; then RS+=(-z --compress-choice=zstd --compress-level=19)
+      else RS+=(-z --compress-choice=zstd --compress-level=3); fi
+    else
+      if [[ $COMPRESS == max ]]; then RS+=(-z --compress-level=9); else RS+=(-z); fi
+    fi
+  fi
   local bw; bw=$(bwlimit); [[ -n $bw ]] && RS+=(--bwlimit="$bw")
   ((SRC_LOCAL)) || RS+=(-e "ssh ${SSHO[*]}")
   ((${#ROUTES[@]})) && RS+=(--timeout=120)     # a path that went quiet ends the attempt, and the next one finds another
@@ -506,10 +600,21 @@ rsync_cmd() { # source-path extra... -> RS
   has dirsonly && RS+=('--include=*/' '--exclude=*')
   has keepold && RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")
   # never --inplace: dedup can leave two names on one inode or shared extents, and only a write to a new file keeps them apart
+  if ((SINGLE_FILE)); then
+    RS+=(--no-recursive --no-dirs --no-links --no-devices --no-specials "$@" -- "$(src_spec "$src")" "$DST")
+    return
+  fi
   RS+=(--exclude=.storageforge-snap --exclude=.storage.lock --exclude='.sf-dedup-*' "$@" "$(src_spec "$src")" "${DST%/}/")
 }
 num() { tr -d ',' <<<"${1:-0}" | grep -o '^[0-9]*' || echo 0; }
-dst_guard() { [[ $DST_MOUNT == / ]] || mountpoint -q "$DST_MOUNT"; }
+dst_guard() {
+  [[ $DST_MOUNT == / ]] || mountpoint -q "$DST_MOUNT" || return 1
+  if ((SINGLE_FILE)); then
+    [[ ! -L $DST && ( ! -e $DST || -f $DST ) ]] || { echo "$DST is not a regular file" >&2; return 1; }
+    ((!SRC_LOCAL)) || [[ -f $SRC && ! -L $SRC ]] || { echo "$SRC is not a regular file" >&2; return 1; }
+  fi
+  return 0
+}
 
 RUN_KIND=run RUN_LEVEL= RUN_START=0 RUN_UUID= BYTES=0 FILES=0
 report() { # rc message
@@ -602,7 +707,8 @@ run_job() { # id [level]
   [[ -n $WINDOW ]] && stop=(timeout --signal=TERM "$(until_end "$WINDOW")")
   case $METHOD in
     copy|move|mirror)
-      mkdir -p "$DST"
+      if ((SINGLE_FILE)); then mkdir -p -- "$(dirname -- "$DST")"
+      else mkdir -p "$DST"; fi
       preflight 0
       dedup_stage "$src"
       ((PREFLIGHT)) && preflight "$(transfer_need "$src")"
@@ -641,6 +747,43 @@ run_job() { # id [level]
       if [[ -d $DST ]]; then git -C "$DST" remote update --prune 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
       else mkdir -p "$(dirname "$DST")"; git clone --mirror "$url" "$DST" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}; fi
       ((rc == 0)) && msg="archive up to date" || msg="git failed (exit $rc): $(tail -3 "$log" | tr '\n' ' ')" ;;
+    archive)
+      mkdir -p -- "$(dirname -- "$DST")"
+      preflight 0
+      local part="$DST.sf-part.$$" codec=${ARCHIVE_CODEC:-zstd-ultra} comp_on=${COMPRESS_ON:-source} sum where_lbl
+      rm -f -- "$part" "$part.sha"
+      emit transferring 0
+      if [[ -n $COMP_HOST ]]; then
+        where_lbl="remote compression agent $COMP_HOST"
+        ( set -o pipefail
+          { if ((SRC_LOCAL)); then "$SELF" --serve "$ID" archive-raw; else ssh "${SSHO[@]}" "storageforge-deploy@$(url_host)" archive-raw; fi; } \
+            | ssh "${COMP_SSHO[@]}" "storageforge-deploy@$COMP_HOST" compress \
+            | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) 2>"$log"; rc=$?
+      elif [[ $comp_on == source ]] && ((!SRC_LOCAL)); then
+        where_lbl="sender $SRC_HOST"
+        ( set -o pipefail
+          ssh "${SSHO[@]}" "storageforge-deploy@$(url_host)" archive \
+            | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) 2>"$log"; rc=$?
+      else
+        where_lbl="receiver $(uname -n)"
+        ( set -o pipefail
+          { if ((SRC_LOCAL)); then "$SELF" --serve "$ID" archive-raw; else ssh "${SSHO[@]}" "storageforge-deploy@$(url_host)" archive-raw; fi; } \
+            | sf_compress_verified_stream "$codec" \
+            | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) 2>"$log"; rc=$?
+      fi
+      sum=$(cat "$part.sha" 2>/dev/null || true)
+      rm -f -- "$part.sha"
+      if ((rc == 0)) && [[ -s $part && -n $sum ]]; then
+        mv -f -- "$part" "$DST" || rc=9
+        printf '%s  %s\n' "$sum" "$(basename -- "$DST")" >"$DST.sha256"
+        BYTES=$(stat -c %s -- "$DST" 2>/dev/null || echo 0)
+        FILES=1
+        msg="archived -> $DST ($BYTES bytes, $codec verified on $where_lbl)"
+      else
+        ((rc == 0)) && rc=9
+        rm -f -- "$part"
+        msg="archive failed (exit $rc): $(tail -3 "$log" | tr '\n' ' ')"
+      fi ;;
   esac
   ((snapped)) && hook unsnap
   ((HOOKS && !posted)) && { hook post || msg+=" (a post command failed)"; }
@@ -658,6 +801,26 @@ verify_job() {
   local target=$DST
   if [[ $METHOD == rsnapshot ]]; then target="${DST%/}/$LOWEST.0/$(basename "${SRC%/}")"; fi
   [[ $METHOD == git ]] && { report 0 "nothing to verify for git archives (git checks objects itself)"; exit 0; }
+  if [[ $METHOD == archive ]]; then
+    [[ -f $DST && ! -L $DST ]] || { report 1 "no archive at $DST yet"; exit 1; }
+    if [[ -f "$DST.sha256" ]]; then
+      local want got
+      want=$(awk '{print $1; exit}' "$DST.sha256")
+      got=$(sha256sum <"$DST" | awk '{print $1}')
+      [[ -z $want || $want == "$got" ]] || { report 1 "archive sha256 mismatch on $DST"; exit 1; }
+    fi
+    local tool=zstd; [[ ${ARCHIVE_CODEC:-zstd-ultra} == xz-extreme ]] && tool=xz
+    if command -v "$tool" >/dev/null && command -v tar >/dev/null; then
+      sf_verify_stream_stdin "${ARCHIVE_CODEC:-zstd-ultra}" <"$DST" || { report 1 "archive $DST failed $tool decompression check"; exit 1; }
+    elif [[ -n $COMP_HOST ]]; then
+      ssh "${COMP_SSHO[@]}" "storageforge-deploy@$COMP_HOST" verify-stream <"$DST" || { report 1 "archive $DST failed remote decompression check on $COMP_HOST"; exit 1; }
+    elif [[ ${COMPRESS_ON:-source} == source ]] && ((!SRC_LOCAL)); then
+      ssh "${SSHO[@]}" "storageforge-deploy@$(url_host)" verify-stream <"$DST" || { report 1 "archive $DST failed remote decompression check on $SRC_HOST"; exit 1; }
+    else
+      report 1 "$tool is not installed to verify $DST"; exit 1
+    fi
+    report 0 "archive $DST verified (lossless decompression + sha256)"; exit 0
+  fi
   local out n err rc=0
   local saved_delete=$FLAGS; FLAGS="$FLAGS checksum"; FLAGS=${FLAGS/delete/}
   local DST=$target; rsync_cmd "$SRC" -n -i
@@ -682,6 +845,7 @@ verify_job() {
 dryrun_job() { # what the next run would transfer, from this host, changing nothing (no pre/post, no snapshot)
   load "$1"
   echo "$NAME: dry run on $(uname -n) (pre/post commands and snapshots are not run)"
+  if ((SINGLE_FILE)); then dst_guard || exit 3; fi
   dst_guard || echo "note: $DST_MOUNT is not mounted now; a real run would wait for it"
   if [[ -n $WINDOW ]]; then in_window "$WINDOW" && echo "inside the run window $WINDOW" || echo "outside the run window $WINDOW: a scheduled run now would skip"; fi
   resolve_route || { echo "no route to the source answers: ${ROUTES[*]}" >&2; exit 1; }
@@ -697,6 +861,13 @@ dryrun_job() { # what the next run would transfer, from this host, changing noth
   case $METHOD in
     git) export GIT_SSH_COMMAND="ssh ${SSHO[*]}"
       if [[ -d $DST ]]; then git -C "$DST" fetch --dry-run --prune origin 2>&1; else echo "would clone into $DST (first run)"; fi
+      exit 0 ;;
+    archive)
+      local where_lbl="receiver $(uname -n)"
+      [[ -n $COMP_HOST ]] && where_lbl="remote compression agent $COMP_HOST"
+      [[ -z $COMP_HOST && ${COMPRESS_ON:-source} == source && $SRC_LOCAL -eq 0 ]] && where_lbl="sender $SRC_HOST"
+      [[ -z $COMP_HOST ]] || { ssh "${COMP_SSHO[@]}" "storageforge-deploy@$COMP_HOST" ping >/dev/null && echo "remote compression agent $COMP_HOST reachable with its job key" || { echo "cannot reach compression agent $COMP_HOST with its job key" >&2; exit 1; }; }
+      echo "would compress $SRC (${ARCHIVE_CODEC:-zstd-ultra} on $where_lbl, lossless) -> $DST (+ $DST.sha256)"
       exit 0 ;;
     rsnapshot) local DST="${DST%/}/$LOWEST.0/$(basename "${SRC%/}")"; [[ -d $DST ]] || echo "no snapshot yet: the first one copies everything" ;;
   esac
@@ -779,9 +950,14 @@ case ${1:-} in
   verify) verify_job "${2:?job id}" ;;
   dryrun) dryrun_job "${2:?job id}" ;;
   cutover) cutover_job "${2:?job id}" ;;
-  test) load "${2:?job id}"; if ((SRC_LOCAL)); then echo "source is on this host"; else
+  test) load "${2:?job id}"
+        if ((SRC_LOCAL)); then echo "source is on this host"; else
           resolve_route || { echo "no route to the source answers: ${ROUTES[*]}" >&2; exit 1; }
-          hook ping >/dev/null && echo "reached $SRC_HOST with the job key" || { echo "cannot reach storageforge-deploy@$SRC_HOST with the job key" >&2; exit 1; }; fi ;;
+          hook ping >/dev/null && echo "reached $SRC_HOST with the job key" || { echo "cannot reach storageforge-deploy@$SRC_HOST with the job key" >&2; exit 1; }
+        fi
+        if [[ -n $COMP_HOST ]]; then
+          ssh "${COMP_SSHO[@]}" "storageforge-deploy@$COMP_HOST" ping >/dev/null && echo "reached compression agent $COMP_HOST with its job key" || { echo "cannot reach storageforge-deploy@$COMP_HOST with its job key" >&2; exit 1; }
+        fi ;;
   status) status_all ;;
   snapshots) snapshots "${2:?job id}" ;;
   ls) ls_snap "${2:?job id}" "${3:?snapshot}" "${4:-}" ;;

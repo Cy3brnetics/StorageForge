@@ -21,7 +21,7 @@ Change plans work like an Ansible playbook for storage: an ordered list of tasks
 
 | Group | Tasks |
 | :--- | :--- |
-| Files and folders | create folder, rename or move (same filesystem), move to trash, symlink, owner and permissions |
+| Files and folders | create folder, rename or move (same filesystem), move to trash, symlink, owner and permissions, compress into lossless archive (`zstd-ultra`, `xz-extreme`, `7z-ultra`, `zstd-high`, with optional remote compression host CPU offload), extract archive |
 | btrfs | create subvolume (optionally no copy-on-write), snapshot, turn a folder into a subvolume, add, replace or remove a pool device, convert profile (balance), reclaim free space, grow to fill a device, restore a subvolume from a snapshot, turn on quotas, scrub |
 | ZFS | create a pool, add a vdev to one, replace a disk, attach a disk (make or widen a mirror), create a dataset with properties, snapshot, send a snapshot to another host, scrub |
 | mdadm | create an array, add a disk, replace a disk, grow an array onto more devices or into larger ones |
@@ -129,6 +129,7 @@ A move plan is a list of steps. Each takes one folder on a scanned host to a fol
 | mirror | a copy kept in sync by a systemd timer (`--install`), optionally deleting files gone from the source |
 | rsnapshot | rotating hard-linked snapshots on a timer, keeping hourly, daily, weekly and monthly counts |
 | git | a `git clone --mirror` archive of a repository, refreshed by `--run` or a timer; `--verify` checks every branch and tag matches |
+| archive | lossless ultra-compressed archive (`.tar.zst` via `zstd --ultra -22 --long=27` or `.tar.xz` via `xz -9 -e`, plus `.sha256` sidecar), with compression CPU assigned to the **sender** (`source`), **receiver** (`destination`), or a **remote compression agent** (`worker`, including same-host archives so weak or busy hosts spend near-zero CPU/RAM); regular `copy`, `move` and `mirror` steps also support lossless wire compression (`compress`: `zstd` or `max`) |
 
 ![Moves panel](images/moves.jpg)
 
@@ -222,3 +223,5 @@ The unified scheduler runs any task StorageForge can do on target client hosts o
 ## From a planner design
 
 The [planner's Export view](planner.md#export) turns a design into change-plan tasks (`POST /api/planner/changes`) and stages them here, so a design reaches a host through the same checks, report-first script and deploy as any other change plan. Drive tasks staged this way need the device typed again before the plan can be saved. Pools, ZFS datasets, mdadm and LVM have no task type yet and are listed as "by hand".
+
+From Cleanup → Duplicates, expand a set of identical files on different hosts and choose **Keep these two in sync**. Select the source, the destination filename, and the schedule. The same plan can be prepared with `storageforge-index copies sync --file nas:/data/report.pdf pc:/archive/report-copy.pdf --keep-replaced`. Review it in Moves and deploy it to start the timer. A single-file mirror updates only the named copy. If the source disappears, the destination is retained.

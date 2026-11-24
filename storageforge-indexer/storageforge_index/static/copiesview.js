@@ -13,8 +13,9 @@ const CP_PILL = { ok: 'pill protected', failed: 'pill broken', stale: 'pill brok
 
 /* ── the dialog: which side is the source ────────────────────────── */
 /* places: the folders of one set of copies, [{host, path}, …]. Answers the prepared plan ({plan, name, existing}), or null. */
-async function copiesKeepInSync(places) {
+async function copiesKeepInSync(places, singleFile = false) {
   const qs = new URLSearchParams();
+  if (singleFile) qs.set('kind', 'file');
   for (const p of places) { qs.append('host', p.host); qs.append('path', p.path); }
   let info;
   try { info = await getJSON(`/api/copies/sides?${qs}`); } catch (err) { notify(err.message, 'error'); return null; }
@@ -27,7 +28,7 @@ async function copiesKeepInSync(places) {
     const dst = sfNode('select', { class: 'cp-dst', 'aria-label': 'Destination: the side that is written to' });
     const fill = () => {                     // the destination is one of the other sides
       const was = dst.value;
-      dst.replaceChildren(...sides.map((s, i) => (String(i) === src.value ? null : sfNode('option', { value: String(i) }, cpAt(s)))).filter(Boolean));
+      dst.replaceChildren(...sides.map((s, i) => ((String(i) === src.value || (singleFile && s.host === sides[Number(src.value)].host)) ? null : sfNode('option', { value: String(i) }, cpAt(s)))).filter(Boolean));
       if ([...dst.options].some((o) => o.value === was)) dst.value = was;
     };
     src.value = String(info.source);
@@ -40,19 +41,19 @@ async function copiesKeepInSync(places) {
     const no = sfNode('button', { type: 'button', class: 'sf-btn ghost' }, 'Cancel');
     const form = sfNode('form', { method: 'dialog', class: 'cp-sync' },
       sfNode('h2', { id }, 'Keep these two in sync'),
-      sfNode('p', { class: 'muted' }, 'One way, from the source to the destination, on a timer. A file that differs at the destination is replaced by the one from the source. Nothing else there is removed unless you tick the box below.'),
+      sfNode('p', { class: 'muted' }, singleFile ? 'On each run, update the selected destination file from the source. A missing source leaves the destination in place.' : 'One way, from the source to the destination, on a timer. A file that differs at the destination is replaced by the one from the source. Nothing else there is removed unless you tick the box below.'),
       sfNode('label', { class: 'sf-field' }, sfNode('span', {}, `Source. The side that changed last is offered: ${cpAt(sides[info.source])}`), src),
       sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Destination'), dst),
       sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Runs'), runs),
       sfNode('label', { class: 'check' }, keep, 'Keep a dated copy of replaced files'),
-      sfNode('label', { class: 'check' }, del, 'Also delete at the destination what is gone from the source'),
+      singleFile ? null : sfNode('label', { class: 'check' }, del, 'Also delete at the destination what is gone from the source'),
       sfNode('p', { class: 'muted small' }, 'This saves a plan in Moves with one mirror step. Nothing is copied until you check it there and deploy it, with your password.'),
       sfNode('div', { class: 'sf-actions' }, no, sfNode('button', { type: 'submit', class: 'sf-btn pri' }, 'Prepare the sync')));
     const dlg = sfModal(form, id);
     form.addEventListener('submit', (ev) => {
       ev.preventDefault();
       const from = sides[Number(src.value)], to = sides[Number(dst.value)];
-      answer = { src: { host: from.host, path: from.path }, dst: { host: to.host, path: to.path }, delete: del.checked, schedule: runs.value, keep_replaced: keep.checked };
+      answer = { src: { host: from.host, path: from.path }, dst: { host: to.host, path: to.path }, ...(singleFile ? { kind: 'file' } : {}), delete: del.checked, schedule: runs.value, keep_replaced: keep.checked };
       dlg.close();
     });
     no.addEventListener('click', () => dlg.close());

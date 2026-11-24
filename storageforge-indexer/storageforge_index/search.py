@@ -288,6 +288,7 @@ def run_dupes(conn: Conn, host: str | None, min_size: int, limit: int) -> list[d
                               WHERE f.checksum_hash = :c ORDER BY h.hostname, d.path, f.filename""", {'c': sha})
         out.append({'sha256': sha, 'copies': n, 'size': size, 'reclaimable': (n - hosts) * size, 'hosts': hosts,
                     'scope': 'same host' if hosts == 1 else 'across hosts', 'elsewhere': (hosts - 1) * size,
+                    'places': [{'host': hn, 'path': join_path(pp, fn)} for hn, pp, fn in members],
                     'files': [f'{hn}:{join_path(pp, fn)}' for hn, pp, fn in members]})
     return out
 

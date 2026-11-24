@@ -27,7 +27,7 @@ import json
 import posixpath
 
 from .db import Conn, epoch
-from .moves import _fmt, _path, _subtree_sql, find_host, get_plan, host_slug, hosts, mount_of, normalize, save_plan
+from .moves import _fmt, _path, _subtree_sql, find_host, get_plan, host_slug, hosts, indexed_file, mount_of, normalize, save_plan
 from .moves import check as moves_check
 from .remote import is_under
 
@@ -56,7 +56,7 @@ STATE_TEXT = {'ok': 'in sync at its last run', 'failed': 'the last run failed', 
 def syncs(conn: Conn, now: float | None = None) -> list[dict]:
     """Every deployed mirror job, with its state and last runs as the Deploy tab has them (jobs.overview)."""
     from .jobs import overview
-    flags = {r[0]: (json.loads(r[1] or '{}').get('flags') or '').split() for r in conn.all(
+    specs = {r[0]: json.loads(r[1] or '{}') for r in conn.all(
         "SELECT job_id, spec_json FROM jobs WHERE removed_at IS NULL AND method = 'mirror'")}
     out = []
     for j in overview(conn, now):
@@ -66,7 +66,8 @@ def syncs(conn: Conn, now: float | None = None) -> list[dict]:
         out.append({'job': j['id'], 'plan': j['plan_id'], 'name': j['name'], 'src': {'host': src_host, 'path': j['src']},
                     'dst': {'host': j['runner'], 'path': j['dst']}, 'across': host_slug(src_host) != host_slug(j['runner']),
                     'state': j['state'], 'state_text': STATE_TEXT.get(j['state'], j['state']), 'schedule': j['schedule'], 'paused': j['paused'],
-                    'deployed_at': j['deployed_at'], 'last': j['last'], 'last_ok': j['last_ok'], 'delete': 'delete' in flags.get(j['id'], ())})
+                    'deployed_at': j['deployed_at'], 'last': j['last'], 'last_ok': j['last_ok'], 'single_file': bool(specs.get(j['id'], {}).get('single_file')),
+                    'delete': 'delete' in (specs.get(j['id'], {}).get('flags') or '').split()})
     return out
 
 
@@ -75,6 +76,8 @@ def kept_by(copy: dict, copies: list[dict], links: list[dict]) -> dict | None:
     duplicate. A file the sync left behind at the destination, with no source any more, is still a duplicate of whatever else holds it."""
     for s in links:
         if s['dst']['host'] != copy['host'] or not is_under(copy['path'], s['dst']['path']):
+            continue
+        if s.get('single_file') and copy['path'] != s['dst']['path']:
             continue
         src = (s['src']['path'].rstrip('/') + _rel(s['dst']['path'], copy['path'])) or '/'
         if any(c['host'] == s['src']['host'] and c['path'] == src for c in copies):
@@ -104,7 +107,7 @@ def prepared(conn: Conn) -> list[dict]:
     for pid, name, body in conn.all('SELECT plan_id, name, body_json FROM move_plans ORDER BY plan_id'):
         for s in json.loads(body).get('steps') or []:
             if s.get('method') == 'mirror' and job_id(pid, s.get('id')) not in live:
-                out.append({'plan': pid, 'name': name, 'src': s['src'], 'dst': s['dst'], 'delete': bool((s.get('options') or {}).get('delete'))})
+                out.append({'plan': pid, 'name': name, 'src': s['src'], 'dst': s['dst'], 'single_file': bool(s.get('single_file')), 'delete': bool((s.get('options') or {}).get('delete'))})
     return out
 
 
@@ -114,17 +117,25 @@ def _place(conn: Conn, hs: dict, p, what: str) -> dict:
     h = find_host(hs, str(p['host']))
     if not h:
         raise ValueError(f'{what}: {p["host"]} has not been scanned')
-    return {'host': h['name'], 'path': _path(p['path'], what)}
+    path = _path(p['path'], what)
+    if path != p['path'] and posixpath.basename(str(p['path'])) and str(p['path']).strip() != p['path']:
+        raise ValueError(f'{what}: the path has leading or trailing whitespace')
+    return {'host': h['name'], 'path': path}
 
 
-def sides(conn: Conn, places: list) -> dict:
+def sides(conn: Conn, places: list, single_file: bool = False) -> dict:
     """For choosing which side is the source: each folder's files, size and newest change from the index, and which changed last."""
     hs = hosts(conn)
     out = []
     for n, p in enumerate(places[:16], 1):
         p = _place(conn, hs, p, f'folder {n}')
         m = mount_of(hs[p['host']], p['path'])
-        if m and m['state'] == 'indexed':
+        if single_file:
+            row = indexed_file(conn, m, p['path']) if m else None
+            if not row or row[2] or row[3]:
+                raise ValueError(f'{p["host"]}:{p["path"]} must be an indexed regular file')
+            out.append({**p, 'indexed': True, 'files': 1, 'bytes': row[0], 'changed_at': epoch(row[1])})
+        elif m and m['state'] == 'indexed':
             where, q = _subtree_sql(p['path'], m['target'])
             files, size, newest = conn.all(f"""SELECT count(*), coalesce(sum(f.file_size_bytes), 0), max(f.modified_at) FROM file_records f
                                                WHERE {where} AND NOT f.is_directory AND NOT f.is_symlink""", {'m': m['id'], **q})[0]
@@ -137,12 +148,22 @@ def sides(conn: Conn, places: list) -> dict:
     return {'sides': out, 'source': newest}
 
 
-def prepare_sync(conn: Conn, src, dst, actor: str, delete: bool = False, schedule: str = 'daily', keep_replaced: bool = False) -> dict:
+def prepare_sync(conn: Conn, src, dst, actor: str, delete: bool = False, schedule: str = 'daily', keep_replaced: bool = False, single_file: bool = False) -> dict:
     """Saves a Moves plan with one mirror step from src to dst and says which. One way, and nothing at the destination is deleted
     unless `delete` is asked for. Nothing runs: the plan is checked, reported and deployed in Moves, behind the password. A pair
     already kept in sync is refused, and a plan already prepared for it is given back instead of a second one."""
     hs = hosts(conn)
     src, dst = _place(conn, hs, src, 'the source'), _place(conn, hs, dst, 'the destination')
+    if single_file:
+        if delete:
+            raise ValueError('single-file sync does not delete a missing source at the destination')
+        sides(conn, [src, dst], single_file=True)
+    else:
+        for place in (src, dst):
+            m = mount_of(hs[place['host']], place['path'])
+            row = indexed_file(conn, m, place['path']) if m else None
+            if row and not row[2]:
+                raise ValueError('folder sync needs two folders. Choose single-file sync for two indexed files')
     if schedule not in SCHEDULES:
         raise ValueError(f'the sync runs {", ".join(SCHEDULES[:-1])} or {SCHEDULES[-1]}: other times are set on the plan in Moves')
     if src['host'] == dst['host'] and (is_under(src['path'], dst['path']) or is_under(dst['path'], src['path'])):
@@ -159,16 +180,18 @@ def prepare_sync(conn: Conn, src, dst, actor: str, delete: bool = False, schedul
         if {(s['src']['host'], s['src']['path']), (s['dst']['host'], s['dst']['path'])} == pair:
             raise ValueError(f'these two are already kept in sync, from {s["src"]["host"]}:{s["src"]["path"]} to {s["dst"]["host"]}:{s["dst"]["path"]} (job {s["job"]})')
     for p in prepared(conn):
-        if (p['src'], p['dst']) == (src, dst):
+        if (p['src'], p['dst']) == (src, dst) and p['single_file'] == single_file:
             plan = get_plan(conn, p['plan'])
             return {'plan': p['plan'], 'name': p['name'], 'existing': True, 'src': src, 'dst': dst, 'check': _levels(conn, plan)}
     base = f'Keep in sync: {src["host"]}:{src["path"]} to {dst["host"]}'
     base = base if len(base) <= 74 else base[:73] + '…'
     taken = {r[0].lower() for r in conn.all('SELECT name FROM move_plans')}
     name = next(n for n in (base if i == 1 else f'{base} ({i})' for i in range(1, 100_000)) if n.lower() not in taken)
-    body = {'name': name, 'notes': 'Prepared from a pair of folder copies. One way, from the source to the destination: a file that differs there is '
-                                   'replaced by the one from the source, and nothing else there is removed unless delete is ticked.',
-            'steps': [{'method': 'mirror', 'src': src, 'dst': dst,
+    notes = ('Prepare a one-way mirror of the selected file at its exact destination path.' if single_file else
+             'Prepared from a pair of folder copies. One way, from the source to the destination: a file that differs there is '
+                                   'replaced by the one from the source, and nothing else there is removed unless delete is ticked.')
+    body = {'name': name, 'notes': notes,
+            'steps': [{'method': 'mirror', 'src': src, 'dst': dst, **({'single_file': True} if single_file else {}),
                        'options': {'delete': bool(delete), 'schedule': schedule, **({'keep_replaced': True} if keep_replaced else {})}}]}
     with conn.tx():
         pid = save_plan(conn, body, actor)

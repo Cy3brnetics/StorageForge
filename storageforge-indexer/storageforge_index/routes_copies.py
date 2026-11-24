@@ -23,7 +23,7 @@ def register(web, ctx):
         hosts, paths = request.args.getlist('host'), request.args.getlist('path')
         if len(hosts) != len(paths):
             raise ValueError('give a host for each path')
-        return jsonify(copies.sides(conn(), [{'host': h, 'path': p} for h, p in zip(hosts, paths)]))
+        return jsonify(copies.sides(conn(), [{'host': h, 'path': p} for h, p in zip(hosts, paths)], single_file=request.args.get('kind') == 'file'))
 
     @web.post('/api/copies/sync')
     @login_required
@@ -32,7 +32,8 @@ def register(web, ctx):
         detail = {'src': body.get('src'), 'dst': body.get('dst'), 'delete': bool(body.get('delete'))}
         try:
             got = copies.prepare_sync(conn(), body.get('src'), body.get('dst'), actor(), delete=bool(body.get('delete')),
-                                      schedule=str(body.get('schedule') or 'daily'), keep_replaced=bool(body.get('keep_replaced')))
+                                      schedule=str(body.get('schedule') or 'daily'), keep_replaced=bool(body.get('keep_replaced')),
+                                      single_file=body.get('kind') == 'file')
         except ValueError as exc:
             core.audit(conn(), actor(), 'copies.sync-prepare', 'denied', None, {**detail, 'why': str(exc)[:300]})
             return jsonify(error=str(exc)), 400

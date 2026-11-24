@@ -1855,7 +1855,8 @@ def cmd_copies(args) -> int:
     _, conn = open_db(args)
     try:
         got = copies.prepare_sync(conn, place(args.src), place(args.dst), 'cli',
-                                  delete=args.delete, schedule=args.schedule, keep_replaced=args.keep_replaced)
+                                  delete=args.delete, schedule=args.schedule, keep_replaced=args.keep_replaced,
+                                  **({'single_file': True} if args.file else {}))
     except (ValueError, LookupError) as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 2
@@ -1863,6 +1864,95 @@ def cmd_copies(args) -> int:
         conn.close()
     print(f"Plan {got['plan']}: {got['name']}")
     return 0
+
+
+def cmd_archive(args) -> int:
+    import posixpath
+    from . import changes, moves, steps_archive
+
+    def split_place(value: str, default_host: str | None = None) -> tuple[str, str]:
+        if ':' in value and not value.startswith('/'):
+            h, _, p = value.partition(':')
+            return h.strip(), p.strip()
+        if not default_host:
+            raise ValueError('specify host:/path')
+        return default_host, value.strip()
+
+    actor = f'cli:{os.environ.get("USER", "?")}'
+    _, conn = open_db(args)
+    try:
+        if args.archive_action == 'extract':
+            sh, arc_path = split_place(args.archive)
+            dh, dst_path = split_place(args.dest, default_host=sh)
+            if dh.lower() != sh.lower():
+                raise ValueError('extract runs on the host holding the archive; copy the archive first or omit the second host')
+            name = args.plan or f'Extract {posixpath.basename(arc_path)} on {sh}'
+            pid = changes.save_plan(conn, {
+                'name': name[:80],
+                'tasks': [{'type': 'archive-extract', 'host': sh, 'params': {
+                    'archive': arc_path, 'dest': dst_path, 'verify_checksum': not args.no_verify,
+                }}],
+            }, actor)
+            chk = _print_check(conn, changes, pid)
+            print(f'saved change plan #{pid}: {name[:80]}')
+            return 1 if chk['crit'] else 0
+
+        sh, src_path = split_place(args.src)
+        codec = args.codec
+        comp_host = (args.compress_host or '').strip()
+        comp_on = args.compress_on or ('worker' if comp_host else 'source')
+        if comp_on == 'worker' and not comp_host:
+            raise ValueError('--compress-on worker requires --compress-host HOST')
+        if comp_host and comp_on != 'worker':
+            comp_on = 'worker'
+        if args.dest:
+            dh, dst_path = split_place(args.dest, default_host=sh)
+        else:
+            dh, dst_path = sh, steps_archive.default_archive_path(src_path, codec)
+        same_host = dh.lower() == sh.lower()
+        if same_host and (not comp_host or args.trash_source):
+            if not any(dst_path.lower().endswith(ext) for ext in steps_archive.ARCHIVE_SUFFIXES):
+                dst_path = posixpath.join(dst_path, posixpath.basename(src_path.rstrip('/')) + steps_archive.archive_ext(codec))
+            name = args.plan or f'Archive {sh}:{src_path}'
+            params = {
+                'path': src_path, 'dest': dst_path, 'codec': codec,
+                'verify': not args.no_verify, 'trash_source': bool(args.trash_source),
+            }
+            if comp_host:
+                params['compress_host'] = comp_host
+            pid = changes.save_plan(conn, {
+                'name': name[:80],
+                'tasks': [{'type': 'archive', 'host': sh, 'params': params}],
+            }, actor)
+            chk = _print_check(conn, changes, pid)
+            print(f'saved change plan #{pid}: {name[:80]}')
+            return 1 if chk['crit'] else 0
+
+        if args.trash_source:
+            raise ValueError('--trash-source is only supported on same-host change plans')
+        if codec == '7z-ultra':
+            raise ValueError('streaming or CPU-offloaded Moves archives use zstd-ultra, xz-extreme or zstd-high so decompression verifies in stream')
+        name = args.plan or (f'Archive {sh}:{src_path} via {comp_host}' if same_host else f'Archive {sh}:{src_path} to {dh}')
+        resolved = moves.archive_path(src_path, dst_path, codec)
+        opts = {'archive_codec': codec, 'compress_on': comp_on}
+        if comp_on == 'worker':
+            opts['compress_host'] = comp_host
+        pid = moves.save_plan(conn, {
+            'name': name[:80],
+            'steps': [{'method': 'archive', 'src': {'host': sh, 'path': src_path}, 'dst': {'host': dh, 'path': resolved},
+                       'options': opts}],
+        }, actor)
+        chk = moves.check(conn, moves.get_plan(conn, pid))
+        for st in chk['steps']:
+            for it in st['items']:
+                print(f'  {it["level"]:<5} {it["text"]}')
+        print(f'saved move plan #{pid}: {name[:80]} -> {dh}:{resolved}')
+        return 1 if chk['crit'] else 0
+    except (ValueError, LookupError) as exc:
+        print(f'error: {exc}', file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1967,8 +2057,31 @@ def build_parser() -> argparse.ArgumentParser:
     cps.add_argument('dst', help='destination host:path')
     cps.add_argument('--delete', action='store_true', help='delete extraneous files at destination')
     cps.add_argument('--schedule', choices=SCHEDULES, default='daily', help='sync schedule')
+    cps.add_argument('--file', action='store_true', help='mirror two indexed regular files by their exact paths')
     cps.add_argument('--keep-replaced', action='store_true', help='keep replaced files')
     cps.set_defaults(fn=cmd_copies)
+
+    ar = sub.add_parser('archive', help='compress files/folders into ultra-lossless archives (in-place or streamed across hosts) and extract')
+    ar_sub = ar.add_subparsers(dest='archive_action', required=True)
+    arc = ar_sub.add_parser('create', help='prepare a lossless archive plan (same host Change plan, or cross-host compressed Moves stream)')
+    arc.add_argument('src', help='source host:/path')
+    arc.add_argument('dest', nargs='?', help='destination [/path or dst_host:/path]; defaults to <src>.tar.zst on the source host')
+    arc.add_argument('--codec', choices=['zstd-ultra', 'xz-extreme', '7z-ultra', 'zstd-high'], default='zstd-ultra',
+                     help='lossless compression profile (default: zstd-ultra)')
+    arc.add_argument('--compress-on', choices=['source', 'destination', 'worker'],
+                     help='who runs compression CPU: source (sender), destination (receiver), or worker (remote compression host)')
+    arc.add_argument('--compress-host', metavar='HOST',
+                     help='remote compression agent host (spares weak or busy sender/receiver CPU, including same-host archives)')
+    arc.add_argument('--trash-source', action='store_true', help='same-host only: move original to .storageforge-trash after archive verifies')
+    arc.add_argument('--no-verify', action='store_true', help='skip round-trip decompression check')
+    arc.add_argument('--plan', help='plan name')
+    arc.set_defaults(fn=cmd_archive)
+    arex = ar_sub.add_parser('extract', help='prepare a safe archive extraction Change plan')
+    arex.add_argument('archive', help='archive host:/path/to/file.tar.zst')
+    arex.add_argument('dest', help='destination folder [/path or host:/path]')
+    arex.add_argument('--no-verify', action='store_true', help='skip .sha256 sidecar check before extracting')
+    arex.add_argument('--plan', help='plan name')
+    arex.set_defaults(fn=cmd_archive)
 
     mv = sub.add_parser('moves', help='data move plans: list, check against the index, write the rsync script')
     mvs = mv.add_subparsers(dest='moves_cmd', required=True)

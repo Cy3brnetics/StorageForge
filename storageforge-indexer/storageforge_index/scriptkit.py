@@ -405,7 +405,10 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'nftables': ('nft', {'apt-get': 'nftables', 'dnf': 'nftables', 'yum': 'nftables', 'pacman': 'nftables', 'zypper': 'nftables'}),
          'yara': ('yara', {'apt-get': 'yara', 'dnf': 'yara', 'yum': 'yara', 'pacman': 'yara', 'zypper': 'yara'}),
          'chrony': ('chronyc', {'apt-get': 'chrony', 'dnf': 'chrony', 'yum': 'chrony', 'pacman': 'chrony', 'zypper': 'chrony'}),
-         'inotify-tools': ('inotifywait', {'apt-get': 'inotify-tools', 'dnf': 'inotify-tools', 'yum': 'inotify-tools', 'pacman': 'inotify-tools', 'zypper': 'inotify-tools'})}
+         'inotify-tools': ('inotifywait', {'apt-get': 'inotify-tools', 'dnf': 'inotify-tools', 'yum': 'inotify-tools', 'pacman': 'inotify-tools', 'zypper': 'inotify-tools'}),
+         'zstd': ('zstd', {'apt-get': 'zstd', 'dnf': 'zstd', 'yum': 'zstd', 'pacman': 'zstd', 'zypper': 'zstd'}),
+         'xz': ('xz', {'apt-get': 'xz-utils', 'dnf': 'xz', 'yum': 'xz', 'pacman': 'xz', 'zypper': 'xz'}),
+         '7z': ('7z', {'apt-get': 'p7zip-full', 'dnf': 'p7zip-plugins', 'yum': 'p7zip-plugins', 'pacman': '7zip', 'zypper': 'p7zip-full'})}
 
 
 def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:

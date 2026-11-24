@@ -471,7 +471,7 @@ def check(conn: Conn, plan: dict) -> dict:
         _check_task(conn, c, h, k, p, say)
         containers = []
         for key in ('path', 'source', 'target', 'dest'):
-            if p.get(key) and k in ('rename', 'trash', 'to-subvolume', 'unmount', 'perms', 'mount-options'):
+            if p.get(key) and k in ('rename', 'trash', 'to-subvolume', 'unmount', 'perms', 'mount-options', 'archive'):
                 containers += _users(conn, h['name'], p[key])
         if containers:
             names = sorted(set(containers))
@@ -2090,6 +2090,7 @@ from . import steps_mac  # noqa: E402,F401  (letting VMs use a folder of disks u
 from . import steps_toolbox  # noqa: E402,F401  (Toolbox installs and removals, after steps_runtime and steps_workloads, whose helpers they call)
 from . import steps_toolbox_b  # noqa: E402,F401  (Caddy routes, bans in CrowdSec and fail2ban, image scans: the 0.5.13 panels)
 from . import steps_storage  # noqa: E402,F401  (partition edit/delete, secure wipe/format, secure delete)
+from . import steps_archive  # noqa: E402,F401  (lossless ultra-compression archive and safe extraction)
 from . import wlmanaged  # noqa: E402  (a warning before a step changes a workload something else manages, after every step it wraps)
 wlmanaged.install()
 from . import secretstore  # noqa: E402  (a step's vault secret, on the runner's stdin)

@@ -415,6 +415,24 @@ class KeepInSync(Index):
             with self.assertRaises(ValueError):
                 copies.sides(self.conn, bad)
 
+    def test_single_file_sync_keeps_the_exact_names_and_refuses_folder_deletion(self):
+        from storageforge_index import jobs
+        src = {'host': 'nas', 'path': '/photos/report [1].txt'}
+        dst = {'host': 'pc', 'path': '/backup/latest.txt'}
+        self.file('nas', src['path'], mtime=200)
+        self.file('pc', dst['path'], mtime=100)
+        self.assertEqual(copies.sides(self.conn, [dst, src], single_file=True)['source'], 1)
+        with self.assertRaisesRegex(ValueError, 'does not delete'):
+            copies.prepare_sync(self.conn, src, dst, 'test', single_file=True, delete=True)
+        prepared = copies.prepare_sync(self.conn, src, dst, 'test', single_file=True)
+        plan = moves.get_plan(self.conn, prepared['plan'])
+        spec, = jobs.specs(self.conn, plan)
+        self.assertEqual((spec['single_file'], spec['src'], spec['dst']), (True, src['path'], dst['path']))
+        self.assertIn('SINGLE_FILE=1', jobs.conf_text(spec, None))
+        self.assertIn(r'/report \[1].txt', jobs.serve_text(spec))
+        again = copies.prepare_sync(self.conn, src, dst, 'test', single_file=True)
+        self.assertEqual((again['existing'], again['plan']), (True, prepared['plan']))
+
     def test_preparing_refuses_a_filesystem_nested_under_the_destination(self):
         self.pair()
         self.conn.execute("""INSERT INTO mounts (host_id, mount_point, source, filesystem_type, scan_state)

@@ -29,7 +29,10 @@ from . import site
 from .db import Conn
 from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line, package_check
 
-METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git')
+METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git', 'archive')
+ARCHIVE_CODECS = ('zstd-ultra', 'xz-extreme', 'zstd-high')
+COMPRESS_ON = ('source', 'destination', 'worker')
+WIRE_COMPRESS = ('', 'zstd', 'max')
 SCHEDULES = ('hourly', 'daily', 'weekly', 'monthly')
 LOCAL_MBPS, NET_MBPS = 400, 110            # rough MB/s for the time estimate: disk to disk, and gigabit
 PATH_RE = re.compile(r'/[^\0\n]*')
@@ -58,6 +61,15 @@ def _path(p, what) -> str:
     if not PATH_RE.fullmatch(p) or '/../' in p + '/' or '/./' in p + '/':
         raise ValueError(f'{what} must be an absolute path without .. or line breaks')
     return posixpath.normpath(p)
+
+
+def archive_path(src_path: str, dst_path: str, codec: str = 'zstd-ultra') -> str:
+    """Resolve the output archive file path for an archive step."""
+    ext = '.tar.xz' if codec == 'xz-extreme' else '.tar.zst'
+    if dst_path.lower().endswith(('.tar.zst', '.tzst', '.tar.xz', '.txz')):
+        return dst_path
+    base = posixpath.basename(src_path.rstrip('/')) or 'archive'
+    return posixpath.join(dst_path, base + ext)
 
 
 # The Moves form writes these to stop containers around a copy: a fixed verb and a checked name, so they are not raw commands
@@ -144,9 +156,33 @@ def _engine(o: dict, i: int, method: str, excludes: list, snapshot: bool) -> dic
     if o.get('extent_dedup'):
         if o['extent_dedup'] not in ('weekly', 'monthly'):
             raise ValueError(f'step {i}: extent dedup runs weekly or monthly')
-        if method == 'git' or transport != 'rsync':
-            raise ValueError(f'step {i}: extent dedup needs writable files: not git archives or snapshot streams')
+        if method in ('git', 'archive') or transport != 'rsync':
+            raise ValueError(f'step {i}: extent dedup needs writable files: not git/compressed archives or snapshot streams')
         out['extent_dedup'] = o['extent_dedup']
+    if o.get('compress'):
+        comp = str(o['compress']).strip()
+        if comp not in ('zstd', 'max'):
+            raise ValueError(f'step {i}: wire compression must be zstd or max')
+        if method not in ('copy', 'move', 'mirror'):
+            raise ValueError(f'step {i}: wire compression is for copy, move and mirror steps (archive already compresses)')
+        out['compress'] = comp
+    if method == 'archive':
+        codec = str(o.get('archive_codec') or 'zstd-ultra').strip()
+        if codec not in ARCHIVE_CODECS:
+            raise ValueError(f'step {i}: archive_codec must be one of {", ".join(ARCHIVE_CODECS)}')
+        out['archive_codec'] = codec
+        comp_on = str(o.get('compress_on') or 'source').strip()
+        if comp_on not in COMPRESS_ON:
+            raise ValueError(f'step {i}: compress_on must be one of {", ".join(COMPRESS_ON)}')
+        out['compress_on'] = comp_on
+        if comp_on == 'worker':
+            comp_host = host_name(o.get('compress_host') or '', f'step {i}: the remote compression host')
+            out['compress_host'] = comp_host
+            comp_login = str(o.get('compress_login') or '').strip()
+            if comp_login:
+                if not LOGIN_RE.fullmatch(comp_login):
+                    raise ValueError(f'step {i}: compression host login must look like user@host')
+                out['compress_login'] = comp_login
     return out
 
 
@@ -191,12 +227,20 @@ def normalize(body: dict) -> dict:
                 raise ValueError(f'step {i}: up to 10 {k} commands, one line each')
             hooks[k] = cmds
         only = _only(s.get('only'), i, method)
+        if s.get('single_file'):
+            if method != 'mirror' or any(o.get(k) for k in ('delete', 'dirs_only', 'dedup', 'extent_dedup', 'snapshot')) or only or excludes or o.get('transport', 'rsync') != 'rsync':
+                raise ValueError(f'step {i}: a single file needs a regular rsync mirror without folder options')
+            for side in (src, dst):
+                path = _path(side.get('path'), f'step {i} file')
+                if path == '/' or '\r' in path or side['path'] != path:
+                    raise ValueError(f'step {i}: specify the exact absolute file path on each host')
         steps.append({
             'id': str(s.get('id') or f's{i}'), 'method': method, 'note': one_line(s.get('note') or '')[:300],
             'src': {'host': src_host, 'path': _path(src.get('path'), f'step {i} source')},
             'dst': {'host': dst_host, 'path': _path(dst.get('path'), f'step {i} destination')},
             'excludes': excludes,
             **({'only': only} if only else {}),
+            **({'single_file': True} if s.get('single_file') else {}),
             'options': {'checksum': bool(o.get('checksum')), 'delete': bool(o.get('delete')) and method == 'mirror',
                         'remote_sudo': o.get('remote_sudo', True) is not False, 'one_fs': o.get('one_fs', True) is not False,
                         'link_back': o.get('link_back', True) is not False and method == 'move',
@@ -250,6 +294,13 @@ def _subtree_sql(path: str, mount_target: str) -> tuple[str, dict]:
         return 'f.mount_id = :m', {}
     return ('f.dir_id IN (SELECT dir_id FROM directories WHERE mount_id = :m AND (path = :p OR (path >= :lo AND path < :hi)))',
             {'p': path, 'lo': path + '/', 'hi': path + '0'})          # '0' sorts right after '/'
+
+
+def indexed_file(conn: Conn, mount: dict, path: str):
+    return conn.execute('''SELECT f.file_size_bytes, f.modified_at, f.is_directory, f.is_symlink
+                           FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                           WHERE d.mount_id = :m AND d.path = :p AND f.filename = :n''',
+                        {'m': mount['id'], 'p': posixpath.dirname(path), 'n': posixpath.basename(path)}).fetchone()
 
 
 def subtree(conn: Conn, mount: dict, path: str) -> dict:
@@ -330,17 +381,38 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             continue
         same_host = sh['id'] == dh['id']
         info.update(runner=dh['name'], same_host=same_host)
-        if s['method'] != 'git':
+        o = s['options']
+        arch_dst = archive_path(src, dst, o.get('archive_codec') or 'zstd-ultra') if s['method'] == 'archive' else dst
+        comp_on = (o.get('compress_on') or 'source') if s['method'] == 'archive' else ''
+        wh = find_host(hs, o.get('compress_host') or '') if (s['method'] == 'archive' and comp_on == 'worker') else None
+        if s['method'] == 'archive':
+            arc_tool = 'xz' if o.get('archive_codec') == 'xz-extreme' else 'zstd'
+            if comp_on == 'worker':
+                if not wh:
+                    say('crit', f'remote compression host {o.get("compress_host")} has not been scanned')
+                else:
+                    say(*package_check(conn, wh, arc_tool))
+                    comp_login = o.get('compress_login') or f'{wh["ssh_user"] or "root"}@{wh["ssh_host"]}'
+                    info['compress_host'] = wh['name']
+                    info['compress_login'] = comp_login
+            elif same_host or comp_on == 'destination':
+                say(*package_check(conn, dh, arc_tool))
+            else:
+                say(*package_check(conn, sh, arc_tool))
+        elif s['method'] != 'git':
             say(*package_check(conn, dh, 'rsync'))
             if not same_host:
                 say(*package_check(conn, sh, 'rsync'))
+            if o.get('compress'):
+                say(*package_check(conn, dh, 'zstd'))
+                if not same_host:
+                    say(*package_check(conn, sh, 'zstd'))
             if s['method'] == 'rsnapshot':
                 say(*package_check(conn, dh, 'rsnapshot'))
         else:
             say(*package_check(conn, dh, 'git'))
             if not same_host:
                 say(*package_check(conn, sh, 'git'))
-        o = s['options']
         if o.get('dedup'):
             say(*package_check(conn, dh, 'python3'))
             if not same_host:
@@ -361,7 +433,10 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
                     say('crit', f'the {side} {p0} is on {fs}: a {o["transport"]} stream needs {o["transport"]} on both sides')
             say('note', f'{src} must be the root of its own {"subvolume" if o["transport"] == "btrfs" else "dataset"}: '
                         'only a whole one can be sent, and the run refuses anything else')
-        if same_host and (_under(dst, src) or _under(src, dst)):
+        if same_host and s['method'] == 'archive':
+            if arch_dst == src or _under(arch_dst, src):
+                say('crit', f'archive destination {arch_dst} cannot be the same as {src} or inside it')
+        elif same_host and (_under(dst, src) or _under(src, dst)):
             say('crit', 'source and destination overlap: one is inside the other, so rsync would copy into itself')
         for h0, p0 in moved_away:
             if h0 == sh['name'] and _under(src, p0):
@@ -387,7 +462,13 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
         elif sm['state'] != 'indexed':
             say('warn', f'{sm["target"]} on {sh["name"]} was not indexed (skipped); size unknown')
         else:
-            size = subtree(conn, sm, src)
+            if s.get('single_file'):
+                row = indexed_file(conn, sm, src)
+                if row and (row[2] or row[3]):
+                    say('crit', f'{src} must be a regular file')
+                size = {'entries': int(bool(row)), 'files': int(bool(row)), 'bytes': (row[0] or 0) if row else 0}
+            else:
+                size = subtree(conn, sm, src)
             if s.get('only'):                 # just the chosen files, which must be directly in the folder
                 rows = conn.all('''SELECT f.filename, f.file_size_bytes FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
                                    WHERE d.mount_id = :m AND d.path = :p AND NOT f.is_directory''', {'m': sm['id'], 'p': src})
@@ -434,7 +515,8 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             if size and s['method'] != 'rsnapshot':
                 key = (dh['name'], dm['target'])
                 space.setdefault(key, {'host': dh['name'], 'mount': dm['target'], 'free': free, 'need': 0, 'steps': []})
-                space[key]['need'] += size['bytes']
+                need_bytes = max(1, int(size['bytes'] * 0.5)) if s['method'] == 'archive' and size['bytes'] else size['bytes']
+                space[key]['need'] += need_bytes
                 space[key]['steps'].append(i)
             if sm and same_host and dm['target'] == sm['target'] and s['method'] in ('copy', 'move'):
                 if s['method'] == 'move':
@@ -442,7 +524,17 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
                 elif dm['fstype'] in ('btrfs', 'xfs'):
                     say('note', f'same {dm["fstype"]} filesystem: rsync copies every byte, where '
                                 'cp -a --reflink=always would share the data instantly')
-            if size and sm and dm['state'] == 'indexed' and size['files']:
+            if s['method'] == 'archive':
+                info['archive_dst'] = arch_dst
+                target_row = indexed_file(conn, dm, arch_dst)
+                if target_row:
+                    say('warn', f'{arch_dst} already exists in the index; --run refuses to overwrite an existing archive unless removed first')
+                say('note', f'lossless {o.get("archive_codec") or "zstd-ultra"} archive -> {arch_dst} (verified round-trip + .sha256)')
+            elif s.get('single_file'):
+                target = indexed_file(conn, dm, dst)
+                if target and (target[2] or target[3]):
+                    say('crit', f'{dst} must be a regular file')
+            elif size and sm and dm['state'] == 'indexed' and size['files']:
                 there = subtree(conn, dm, dst)
                 if there['files']:
                     a, b = (None, None) if s.get('only') else (_relset(conn, sm, src, compare_limit), _relset(conn, dm, dst, compare_limit))
@@ -457,12 +549,27 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
             say('crit', f'{dst} is not under any mount of {dh["name"]}')
         if size:
             mbps = LOCAL_MBPS if same_host else min(plan.get('net_mbps') or NET_MBPS, (s['options']['bwlimit'] or 1e12) / 1000)
-            info['eta_s'] = int(size['bytes'] / (mbps * 1e6)) + size['files'] // 2000
+            wire_factor = 0.45 if (not same_host and ((s['method'] == 'archive' and comp_on == 'source') or o.get('compress') == 'max')) else 0.6 if (not same_host and o.get('compress') == 'zstd') else 1.0
+            info['eta_s'] = int((size['bytes'] * wire_factor) / (mbps * 1e6)) + size['files'] // 2000
+        if not same_host and o.get('compress'):
+            say('note', f'lossless wire compression ({o["compress"]}) compresses data on {sh["name"]} before sending over the network')
+        if s['method'] == 'archive':
+            codec_lbl = o.get('archive_codec') or 'zstd-ultra'
+            if comp_on == 'worker' and wh:
+                say('note', f'CPU-offloaded compression via remote agent {wh["name"]} ({info["compress_login"]}): {codec_lbl} + round-trip check run in RAM on {wh["name"]}, sparing {sh["name"]}{"" if same_host else " and " + dh["name"]} CPU')
+            elif same_host:
+                say('note', f'compresses locally on {dh["name"]} under idle CPU/IO priority (choose Remote compression agent to offload CPU to another host)')
+            elif comp_on == 'destination':
+                say('note', f'receiver-side compression: {sh["name"]} streams raw tar (zero compression CPU/RAM on {sh["name"]}) and {dh["name"]} runs {codec_lbl}')
+            else:
+                say('note', f'sender-side compression: {sh["name"]} runs {codec_lbl} before crossing the wire (faster network transfer, zero compression CPU on {dh["name"]})')
         if not same_host:
             login = s['options']['src_login'] or f'{sh["ssh_user"] or "root"}@{sh["ssh_host"]}'
             info['src_login'] = login
             say('note', f'runs on {dh["name"]} and pulls from {login} over SSH'
                         + (' (git reads the repository as that user)' if s['method'] == 'git'
+                           else f' (raw tar stream from {sh["name"]})' if (s['method'] == 'archive' and comp_on != 'source')
+                           else f' (compressed on {sh["name"]} before crossing the wire)' if s['method'] == 'archive'
                            else ' with sudo rsync there' if s['options']['remote_sudo'] else ''))
         from .runtimes.docker import users_of
         for side, h0, p0 in (('source', sh, src), ('destination', dh, dst)):
@@ -586,27 +693,38 @@ def script(conn: Conn, plan: dict) -> str:
     plan = normalize(plan)
     hs, chk = hosts(conn), check(conn, plan)
     q = shlex.quote
-    arrays = {k: [] for k in ('S_METHOD', 'S_RUNNER', 'S_SRC_HOST', 'S_SRC', 'S_SRC_LOGIN', 'S_SRC_PORT', 'S_DST',
-                              'S_DST_MOUNT', 'S_BYTES', 'S_FILES', 'S_EXCLUDES', 'S_ONLY', 'S_FLAGS', 'S_SCHEDULE', 'S_KEEP', 'S_DESC')}
+    arrays = {k: [] for k in ('S_METHOD', 'S_RUNNER', 'S_SRC_HOST', 'S_SRC', 'S_SRC_LOGIN', 'S_SRC_PORT',
+                              'S_COMP_HOST', 'S_COMP_LOGIN', 'S_COMP_PORT', 'S_DST',
+                              'S_REMOTE_FILE', 'S_DST_MOUNT', 'S_BYTES', 'S_FILES', 'S_EXCLUDES', 'S_ONLY', 'S_FLAGS', 'S_SCHEDULE', 'S_KEEP', 'S_DESC')}
     summary = []
     for s, c in zip(plan['steps'], chk['steps']):
         sh, dh = find_host(hs, s['src']['host']), find_host(hs, s['dst']['host'])
         o = s['options']
+        wh = find_host(hs, o.get('compress_host') or '') if (s['method'] == 'archive' and o.get('compress_on') == 'worker') else None
         dst_mount = (c.get('dst') or {}).get('planned_mount') or (c.get('dst') or {}).get('mount') or '/'
+        dst_out = archive_path(s['src']['path'], s['dst']['path'], o.get('archive_codec') or 'zstd-ultra') if s['method'] == 'archive' else s['dst']['path']
         flags = ' '.join(f for f, on in (('checksum', o['checksum']), ('delete', o['delete']), ('sudo', o['remote_sudo']),
                                           ('onefs', o['one_fs']), ('link', o['link_back']), ('dirsonly', o.get('dirs_only')),
-                                          ('keepold', o.get('keep_replaced'))) if on)
+                                          ('keepold', o.get('keep_replaced')), ('singlefile', s.get('single_file'))) if on)
         if o['bwlimit']:
             flags += f' bwlimit={o["bwlimit"]}'
+        if o.get('compress'):
+            flags += f' compress={o["compress"]}'
+        if s['method'] == 'archive':
+            flags += f' codec={o.get("archive_codec") or "zstd-ultra"} comp_on={o.get("compress_on") or "source"}'
         vals = {
             'S_METHOD': s['method'], 'S_RUNNER': host_slug(dh['name'] if dh else s['dst']['host']),
             'S_SRC_HOST': host_slug(sh['name'] if sh else s['src']['host']), 'S_SRC': s['src']['path'],
             'S_SRC_LOGIN': c.get('src_login') or o['src_login'] or '', 'S_SRC_PORT': str((sh or {}).get('ssh_port') or 22),
-            'S_DST': s['dst']['path'], 'S_DST_MOUNT': dst_mount,
+            'S_COMP_HOST': host_slug(wh['name'] if wh else (o.get('compress_host') or '')) if o.get('compress_on') == 'worker' else '',
+            'S_COMP_LOGIN': (c.get('compress_login') or o.get('compress_login') or (f'root@{o["compress_host"]}' if o.get('compress_host') else '')) if o.get('compress_on') == 'worker' else '',
+            'S_COMP_PORT': str((wh or {}).get('ssh_port') or 22) if o.get('compress_on') == 'worker' else '22',
+            'S_REMOTE_FILE': re.sub(r'([*?\[\\])', r'\\\1', s['src']['path']) if s.get('single_file') else '',
+            'S_DST': dst_out, 'S_DST_MOUNT': dst_mount,
             'S_BYTES': str((c.get('src') or {}).get('bytes') or 0), 'S_FILES': str((c.get('src') or {}).get('files') or 0),
             'S_EXCLUDES': '\n'.join(s['excludes']), 'S_ONLY': '\n'.join(only_filters(s.get('only') or [])), 'S_FLAGS': flags.strip(), 'S_SCHEDULE': o['schedule'],
             'S_KEEP': ' '.join(f'{k}={v}' for k, v in o['keep'].items() if v),
-            'S_DESC': f'{s["method"]} {s["src"]["host"]}:{s["src"]["path"]} -> {s["dst"]["host"]}:{s["dst"]["path"]}',
+            'S_DESC': f'{s["method"]} {s["src"]["host"]}:{s["src"]["path"]} -> {s["dst"]["host"]}:{dst_out}',
         }
         for k, v in vals.items():
             arrays[k].append(v)
@@ -681,7 +799,12 @@ ME=$(host_slug "$(uname -n)")
 if [[ $MODE =~ ^(run|verify|cutover|install)$ && $EUID -ne 0 ]]; then
   echo "--$MODE needs root (ownership, permissions and every unreadable folder): sudo $0 ${ARGS[*]}" >&2; exit 1
 fi
-command -v rsync >/dev/null || { echo "rsync is not installed on $(uname -n)" >&2; exit 1; }
+for ((i = 0; i < N; i++)); do
+  if [[ ${S_RUNNER[$i]} == "$ME" && ${S_METHOD[$i]} =~ ^(copy|move|mirror|rsnapshot)$ ]]; then
+    command -v rsync >/dev/null || { echo "rsync is not installed on $(uname -n)" >&2; exit 1; }
+    break
+  fi
+done
 if [[ $MODE != check ]]; then
   exec 9>"/run/lock/sf-move-$PLAN.lock" 2>/dev/null || { mkdir -p /var/lib/storageforge/locks; exec 9>"/var/lib/storageforge/locks/sf-move-$PLAN.lock"; }
   flock -n 9 || { echo "another run of $PLAN_NAME is in progress on this machine" >&2; exit 1; }
@@ -695,8 +818,29 @@ fi
 STATE=/var/lib/storageforge/moves/$PLAN
 
 src_is_local() { [[ ${S_SRC_HOST[$1]} == "$ME" ]]; }
-src_spec() { if src_is_local "$1"; then printf '%s/' "${S_SRC[$1]%/}"; else printf '%s:%s/' "${S_SRC_LOGIN[$1]}" "${S_SRC[$1]%/}"; fi; }
+src_spec() {
+  if has "$1" singlefile; then
+    if src_is_local "$1"; then printf '%s' "${S_SRC[$1]}"; else printf '%s:%s' "${S_SRC_LOGIN[$1]}" "${S_REMOTE_FILE[$1]}"; fi
+    return
+  fi
+  if src_is_local "$1"; then printf '%s/' "${S_SRC[$1]%/}"; else printf '%s:%s/' "${S_SRC_LOGIN[$1]}" "${S_SRC[$1]%/}"; fi; }
 ssh_src() { local i=$1; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${S_SRC_PORT[$i]}" "${S_SRC_LOGIN[$i]}" "$@"; }
+ssh_comp() { local i=$1; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${S_COMP_PORT[$i]}" "${S_COMP_LOGIN[$i]}" "$@"; }
+sf_idle() {
+  if command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null; then ionice -c3 nice -n 19 "$@"
+  elif command -v nice >/dev/null 2>&1; then nice -n 19 "$@"
+  else "$@"; fi
+}
+rsync_compress_flags() { # mode -> appends wire compression flags to RS
+  local mode=$1
+  [[ -n $mode ]] || return 0
+  if rsync --compress-choice=zstd --version >/dev/null 2>&1; then
+    if [[ $mode == max ]]; then RS+=(-z --compress-choice=zstd --compress-level=19)
+    else RS+=(-z --compress-choice=zstd --compress-level=3); fi
+  else
+    if [[ $mode == max ]]; then RS+=(-z --compress-level=9); else RS+=(-z); fi
+  fi
+}
 rsync_args() { # step [extra...] -> RS array
   local i=$1; shift
   RS=(rsync -aHAXS '--filter=-x_system.*' --filter=-x_security.selinux --numeric-ids --protect-args --partial --partial-dir=.rsync-partial --human-readable)
@@ -704,6 +848,7 @@ rsync_args() { # step [extra...] -> RS array
   { has "$i" checksum || ((CHECKSUM)); } && RS+=(-c)
   has "$i" delete && RS+=(--delete-after)
   local bw; bw=$(flag_val "$i" bwlimit); [[ -n $bw ]] && RS+=(--bwlimit="$bw")
+  rsync_compress_flags "$(flag_val "$i" compress)"
   if ! src_is_local "$i"; then
     RS+=(-e "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p ${S_SRC_PORT[$i]}")
     has "$i" sudo && RS+=(--rsync-path="sudo -n rsync")
@@ -712,10 +857,18 @@ rsync_args() { # step [extra...] -> RS array
   while IFS= read -r x; do [[ -n $x ]] && RS+=("$x"); done <<<"${S_ONLY[$i]}"
   has "$i" dirsonly && RS+=('--include=*/' '--exclude=*')
   has "$i" keepold && RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")
-  RS+=("$@" "$(src_spec "$i")" "${S_DST[$i]%/}/")
+  local target="${S_DST[$i]%/}/"
+  if has "$i" singlefile; then
+    target=${S_DST[$i]}
+    RS+=(--no-recursive --no-dirs --no-links --no-devices --no-specials)
+  fi
+  RS+=("$@" -- "$(src_spec "$i")" "$target")
 }
 avail() { local p=$1; while [[ ! -e $p && $p != / ]]; do p=$(dirname "$p"); done; df -B1 --output=avail "$p" | tail -1 | tr -d ' '; }
 dst_guard() { # step -> 0 if the destination mount is really there
+  if has "$1" singlefile && { [[ -L ${S_DST[$1]} ]] || { [[ -e ${S_DST[$1]} ]] && [[ ! -f ${S_DST[$1]} ]]; }; }; then
+    conflict "destination ${S_DST[$1]} is not a regular file"; return 1
+  fi
   local m=${S_DST_MOUNT[$1]}
   if [[ $m != / ]] && ! mountpoint -q "$m"; then
     conflict "$m is not mounted: the copy would land on the root filesystem. Mount it first."; return 1
@@ -755,13 +908,147 @@ git_step() { # step mode
       conflict "archive differs from the source:"; diff <(echo "$a") <(echo "$b") | grep '^[<>]' | head -10 | sed 's/^/            /'; return 1 ;;
   esac
 }
+archive_verify_file() { # file codec
+  local f=$1 codec=$2
+  if [[ $codec == xz-extreme ]]; then ( set -o pipefail; sf_idle xz -dc -- "$f" | tar -tf - >/dev/null )
+  else ( set -o pipefail; ( sf_idle zstd -dc --long=31 -- "$f" ) | tar -tf - >/dev/null ); fi
+}
+archive_compress_cmd() { # codec -> self-contained bash snippet: stdin raw tar -> stdout round-trip verified archive
+  local codec=$1 comp ver
+  if [[ $codec == xz-extreme ]]; then
+    comp="xz -9 -e -T0 -c"
+    ver="xz -dc <\"\$d/v\" | tar -tf - >/dev/null"
+  elif [[ $codec == zstd-high ]]; then
+    comp="zstd -q -T0 -19 -c"
+    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
+  else
+    comp="( zstd -q -T0 --ultra -22 --long=27 -c )"
+    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
+  fi
+  printf '%s' "set -o pipefail; d=\$(mktemp -d) || exit 2; mkfifo \"\$d/v\" || { rm -rf \"\$d\"; exit 2; }; ( $ver ) & vp=\$!; nice -n 19 sh -c \"$comp\" | tee \"\$d/v\"; rc=\$?; wait \"\$vp\" || rc=9; rm -rf \"\$d\"; exit \"\$rc\""
+}
+archive_tar_local() { # step -> streams raw tar of S_SRC[step] on stdout under idle IO/CPU priority
+  local i=$1 src parent base x ex=()
+  src=$(realpath -m -- "${S_SRC[$i]}")
+  parent=$(dirname -- "$src"); base=$(basename -- "$src")
+  has "$i" onefs && ex+=(--one-file-system)
+  while IFS= read -r x; do [[ -n $x ]] && ex+=(--exclude="$x"); done <<<"${S_EXCLUDES[$i]}"
+  sf_idle tar -C "$parent" --numeric-owner --sparse ${ex[@]+"${ex[@]}"} -cf - -- "$base"
+}
+archive_tar_remote_cmd() { # step -> remote tar command string
+  local i=$1 sudo_prefix="" parent base qparent qbase x qex=""
+  has "$i" sudo && sudo_prefix="sudo -n "
+  parent=$(dirname -- "${S_SRC[$i]}"); base=$(basename -- "${S_SRC[$i]}")
+  qparent=$(printf %q "$parent"); qbase=$(printf %q "$base")
+  has "$i" onefs && qex+=" --one-file-system"
+  while IFS= read -r x; do [[ -n $x ]] && qex+=" --exclude=$(printf %q "$x")"; done <<<"${S_EXCLUDES[$i]}"
+  printf '%s' "nice -n 19 ${sudo_prefix}tar -C $qparent --numeric-owner --sparse$qex -cf - -- $qbase"
+}
+archive_tar_remote() { # step -> streams raw tar from S_SRC_LOGIN[step] over SSH
+  local i=$1
+  ssh_src "$i" "$(archive_tar_remote_cmd "$i")"
+}
+archive_stream_remote_compressed() { # step codec -> runs tar + verified compression on S_SRC_LOGIN[step]
+  local i=$1 codec=$2
+  ssh_src "$i" "set -o pipefail; $(archive_tar_remote_cmd "$i") | ( $(archive_compress_cmd "$codec") )"
+}
+archive_step() { # step mode
+  local i=$1 mode=$2 codec comp_on worker_remote=0 tool dst part sum rc=0 after_sz where_lbl
+  codec=$(flag_val "$i" codec); codec=${codec:-zstd-ultra}
+  comp_on=$(flag_val "$i" comp_on); comp_on=${comp_on:-source}
+  [[ $comp_on == worker && -n ${S_COMP_HOST[$i]} && ${S_COMP_HOST[$i]} != "$ME" ]] && worker_remote=1
+  dst=${S_DST[$i]}
+  tool=zstd; [[ $codec == xz-extreme ]] && tool=xz
+  if ((worker_remote)); then where_lbl="remote compression agent ${S_COMP_LOGIN[$i]}"
+  elif [[ $comp_on == source ]] && ! src_is_local "$i"; then where_lbl="sender ${S_SRC_LOGIN[$i]}"
+  else where_lbl="this host ($(uname -n))"; fi
+  case $mode in
+    check)
+      if src_is_local "$i"; then
+        command -v tar >/dev/null || conflict "tar is not installed on $(uname -n)"
+        [[ -e ${S_SRC[$i]} ]] && ok "source ${S_SRC[$i]}" || conflict "source ${S_SRC[$i]} does not exist"
+      else
+        local src_need="command -v tar >/dev/null"
+        [[ $comp_on == source && $worker_remote -eq 0 ]] && src_need+=" && command -v $tool >/dev/null"
+        if ssh_src "$i" "$src_need && test -e $(printf %q "${S_SRC[$i]}")" 2>/dev/null; then
+          ok "source ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} (SSH works)"
+        else conflict "cannot reach ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} or required tools are missing there"; fi
+      fi
+      if ((worker_remote)); then
+        if ssh_comp "$i" "command -v tar >/dev/null && command -v $tool >/dev/null" 2>/dev/null; then
+          ok "remote compression agent ${S_COMP_LOGIN[$i]} ($tool installed, SSH works)"
+        else conflict "cannot reach remote compression agent ${S_COMP_LOGIN[$i]} or $tool/tar is missing there"; fi
+      elif [[ $comp_on == destination ]] || src_is_local "$i"; then
+        command -v tar >/dev/null && command -v "$tool" >/dev/null && ok "compressor $tool on $(uname -n)" || conflict "tar and $tool must be installed on $(uname -n)"
+      fi
+      dst_guard "$i" && ok "destination mount ${S_DST_MOUNT[$i]}"
+      [[ -e $dst ]] && info "archive $dst already exists" || info "archive $dst will be created ($codec on $where_lbl)" ;;
+    dryrun)
+      dst_guard "$i" || return 1
+      info "would compress ${S_SRC[$i]} ($codec on $where_lbl, lossless) -> $dst (+ $dst.sha256)" ;;
+    run)
+      dst_guard "$i" || return 1
+      [[ -e $dst || -L $dst ]] && { conflict "$dst already exists: refusing to overwrite an existing archive"; return 1; }
+      mkdir -p -- "$(dirname -- "$dst")" || return 1
+      part="$dst.sf-part.$$"
+      rm -f -- "$part" "$part.sha"
+      doing "compress ${S_SRC[$i]} ($codec on $where_lbl) -> $dst"
+      if ((worker_remote)); then
+        ( set -o pipefail
+          { if src_is_local "$i"; then archive_tar_local "$i"; else archive_tar_remote "$i"; fi; } \
+            | ssh_comp "$i" "$(archive_compress_cmd "$codec")" \
+            | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) || rc=$?
+      elif [[ $comp_on == source ]] && ! src_is_local "$i"; then
+        ( set -o pipefail
+          archive_stream_remote_compressed "$i" "$codec" \
+            | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) || rc=$?
+      else
+        command -v tar >/dev/null && command -v "$tool" >/dev/null || { conflict "tar and $tool must be installed on $(uname -n)"; return 1; }
+        ( set -o pipefail
+          { if src_is_local "$i"; then archive_tar_local "$i"; else archive_tar_remote "$i"; fi; } \
+            | bash -c "$(archive_compress_cmd "$codec")" \
+            | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) || rc=$?
+      fi
+      sum=$(cat "$part.sha" 2>/dev/null || true)
+      rm -f -- "$part.sha"
+      if ((rc != 0)) || [[ ! -s $part || -z $sum ]]; then
+        rm -f -- "$part"; conflict "archive stream failed (exit $rc)"; return 1
+      fi
+      mv -n -- "$part" "$dst" || { rm -f -- "$part"; conflict "could not finalize $dst"; return 1; }
+      printf '%s  %s\n' "$sum" "$(basename -- "$dst")" >"$dst.sha256"
+      after_sz=$(stat -c %s -- "$dst" 2>/dev/null || echo 0)
+      mkdir -p "$STATE"; date '+%F %T' >"$STATE/$i.done"
+      ok "archived -> $dst ($(human "$after_sz"), verified on $where_lbl + sha256)" ;;
+    verify)
+      dst_guard "$i" || return 1
+      [[ -f $dst && ! -L $dst ]] || { conflict "no archive at $dst yet: --run creates it"; return 1; }
+      if [[ -f "$dst.sha256" ]]; then
+        local want got
+        want=$(awk '{print $1; exit}' "$dst.sha256")
+        got=$(sha256sum <"$dst" | awk '{print $1}')
+        [[ -z $want || $want == "$got" ]] || { conflict "checksum mismatch on $dst"; return 1; }
+      fi
+      if command -v "$tool" >/dev/null && command -v tar >/dev/null; then
+        archive_verify_file "$dst" "$codec" || { conflict "$dst failed lossless decompression check"; return 1; }
+      elif ((worker_remote)); then
+        ssh_comp "$i" "set -o pipefail; $tool -dc | tar -tf - >/dev/null" <"$dst" || { conflict "$dst failed remote decompression check on ${S_COMP_LOGIN[$i]}"; return 1; }
+      elif [[ $comp_on == source ]] && ! src_is_local "$i"; then
+        ssh_src "$i" "set -o pipefail; $tool -dc | tar -tf - >/dev/null" <"$dst" || { conflict "$dst failed remote decompression check on ${S_SRC_LOGIN[$i]}"; return 1; }
+      else
+        conflict "$tool is not installed to verify $dst decompression"; return 1
+      fi
+      ok "archive $dst verified (lossless decompression + sha256)" ;;
+  esac
+}
 check_step() {
   local i=$1
   if [[ ${S_METHOD[$i]} == git ]]; then git_step "$i" check; dst_guard "$i" && ok "destination mount ${S_DST_MOUNT[$i]}"; return 0; fi
+  if [[ ${S_METHOD[$i]} == archive ]]; then archive_step "$i" check; return 0; fi
+  local kind=-d; has "$i" singlefile && kind=-f
   if src_is_local "$i"; then
-    if [[ -d ${S_SRC[$i]} ]]; then ok "source ${S_SRC[$i]}"; else conflict "source ${S_SRC[$i]} does not exist"; fi
+    if test "$kind" "${S_SRC[$i]}"; then ok "source ${S_SRC[$i]}"; else conflict "source ${S_SRC[$i]} does not exist"; fi
   else
-    if ssh_src "$i" test -d "$(printf %q "${S_SRC[$i]}")" 2>/dev/null; then ok "source ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} (SSH works)"
+    if ssh_src "$i" test "$kind" "$(printf %q "${S_SRC[$i]}")" 2>/dev/null; then ok "source ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} (SSH works)"
     else conflict "cannot reach ${S_SRC_LOGIN[$i]}:${S_SRC[$i]} with a key over SSH (BatchMode). As root here: ssh-copy-id ${S_SRC_LOGIN[$i]}, or run with --host --forward-agent from a machine whose agent has the key"; fi
     if has "$i" sudo; then
       # only rsync's sending (read-only) side is needed on the source, so sudoers can allow just that
@@ -785,7 +1072,9 @@ run_step() {
   local i=$1 rc=0
   dst_guard "$i" || return 1
   [[ ${S_METHOD[$i]} == git ]] && { git_step "$i" run; return; }
-  mkdir -p "${S_DST[$i]}"
+  [[ ${S_METHOD[$i]} == archive ]] && { archive_step "$i" run; return; }
+  if has "$i" singlefile; then mkdir -p "$(dirname -- "${S_DST[$i]}")" || return 1
+  else mkdir -p "${S_DST[$i]}" || return 1; fi
   rsync_args "$i" --info=progress2,stats2
   doing "${RS[*]}"
   "${RS[@]}" || rc=$?
@@ -797,6 +1086,7 @@ dryrun_step() {
   local i=$1
   dst_guard "$i" || return 1
   [[ ${S_METHOD[$i]} == git ]] && { git_step "$i" dryrun; return; }
+  [[ ${S_METHOD[$i]} == archive ]] && { archive_step "$i" dryrun; return; }
   rsync_args "$i" -n --stats
   "${RS[@]}" | grep -E '^(Number of (created|regular) files|Number of regular files transferred|Total file size|Total transferred file size)' | sed 's/^/            /' \
     || conflict "rsync could not list what this step would transfer"
@@ -805,6 +1095,7 @@ verify_step() { # -> 0 if destination matches source
   local i=$1 out n rc=0
   dst_guard "$i" || return 1
   [[ ${S_METHOD[$i]} == git ]] && { git_step "$i" verify; return; }
+  [[ ${S_METHOD[$i]} == archive ]] && { archive_step "$i" verify; return; }
   rsync_args "$i" -n -i
   # rsync's errors go to stderr: a run that failed (host down, source gone) lists no differences, and cutover
   # trusts this check, so only a clean exit counts
@@ -864,6 +1155,10 @@ install_step() {
     mirror)
       root_key_ok "$i" || return 1
       rsync_args "$i" --info=stats2
+      local fileguard=
+      if has "$i" singlefile; then
+        fileguard="ExecStartPre=$(sd_words /bin/bash -c '[[ ! -L $1 && ( ! -e $1 || -f $1 ) ]]' -- "${S_DST[$i]}")"
+      fi
       write_new "/etc/systemd/system/$u.service" "[Unit]
 Description=StorageForge mirror: ${S_DESC[$i]}
 After=network-online.target
@@ -874,6 +1169,7 @@ RequiresMountsFor=${S_DST_MOUNT[$i]}
 Type=oneshot
 Nice=10
 IOSchedulingClass=idle
+$fileguard
 ExecStart=$(sd_words "${RS[@]}")"
       write_new "/etc/systemd/system/$u.timer" "[Unit]
 Description=StorageForge mirror timer: ${S_DESC[$i]}

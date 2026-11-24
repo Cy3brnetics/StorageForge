@@ -10,6 +10,7 @@ const METHOD_HELP = {
   mirror: 'Keep a copy in sync on a timer (systemd). Optionally remove files at the destination that are gone from the source.',
   rsnapshot: 'Rotating hard-linked snapshots of the source at the destination, on timers (needs rsnapshot there).',
   git: 'A bare archive of a git repository (git clone --mirror): every branch and tag, refreshed by --run and on a timer after --install.',
+  archive: 'Lossless ultra-compressed archive (.tar.zst or .tar.xz + .sha256): compress on the sender (smaller network transfer), the receiver (spares sender CPU), or a remote compression agent host (offloads compression from busy hosts).',
 };
 const SCHEDULE_PRESETS = { hourly: 'hourly', daily: 'daily (midnight)', '*-*-* 02:30:00': 'daily at 02:30', '*-*-* 00/4:00:00': 'every 4 hours',
   '*-*-* 00/6:00:00': 'every 6 hours', weekly: 'weekly (Monday 00:00)', 'Sun *-*-* 03:00:00': 'Sundays at 03:00', monthly: 'monthly (the 1st)' };
@@ -95,15 +96,55 @@ function openBrowser(box, host, path, choose) {     // the shared index browser 
 function stepCard(s, i) {
   const p = MV.plan, o = s.options;
   const method = el('select', { 'aria-label': 'Method', onchange: () => { s.method = method.value; touch(); renderMoves(); } },
-    ...['copy', 'move', 'mirror', 'rsnapshot', 'git'].map((m) => new Option(m, m)));
+    ...['copy', 'move', 'mirror', 'rsnapshot', 'git', 'archive'].map((m) => new Option(m, m)));
   method.value = s.method;
   const opt = (key, label) => { const c = el('input', { type: 'checkbox', onchange: () => { o[key] = c.checked; touch(); } }); c.checked = !!o[key]; return el('label', { class: 'check' }, c, label); };
   const excl = el('textarea', { rows: 2, class: 'mono', placeholder: 'excludes, one per line: *.tmp  .Trash-*  cache/', 'aria-label': 'Excludes',
     onchange: () => { s.excludes = excl.value.split('\n').map((x) => x.trim()).filter(Boolean); touch(); } });
   excl.value = (s.excludes || []).join('\n');
-  const opts = el('div', { class: 'opts' }, opt('remote_sudo', 'sudo rsync on the source host'), opt('one_fs', 'stay on one filesystem'), opt('checksum', 'compare by checksum'));
+  const opts = el('div', { class: 'opts' }, opt('remote_sudo', 'sudo on the source host'), opt('one_fs', 'stay on one filesystem'), opt('checksum', 'compare by checksum'));
   if (s.method === 'move') opts.append(opt('link_back', 'leave a symlink at the old path (same host)'));
-  if (s.method === 'mirror') opts.append(opt('delete', 'delete files gone from the source (--delete-after)'));
+  if (s.method === 'mirror' && !s.single_file) opts.append(opt('delete', 'delete files gone from the source (--delete-after)'));
+  if (['copy', 'move', 'mirror'].includes(s.method)) {
+    const wc = el('select', { 'aria-label': 'Wire compression', onchange: () => { o.compress = wc.value || null; touch(); } },
+      new Option('off (LAN default)', ''),
+      new Option('Zstandard lossless (faster WAN/mesh)', 'zstd'),
+      new Option('Maximum lossless (-19 / -9, smallest transfer)', 'max'));
+    wc.value = o.compress || '';
+    opts.append(el('div', { class: 'row wrap' }, el('label', { class: 'field' }, el('span', {}, 'Wire compression'), wc)));
+  }
+  if (s.method === 'archive') {
+    const cd = el('select', { 'aria-label': 'Lossless compression', onchange: () => {
+      const oldSuffix = o.archive_codec === 'xz-extreme' ? '.tar.xz' : '.tar.zst';
+      if (s.dst.path === s.src.path + oldSuffix) {
+        s.dst.path = s.src.path + (cd.value === 'xz-extreme' ? '.tar.xz' : '.tar.zst');
+      }
+      o.archive_codec = cd.value; touch(); renderMoves();
+    } },
+      new Option('Zstandard ultra (-22 --long, .tar.zst — smallest + fast restore)', 'zstd-ultra'),
+      new Option('XZ LZMA2 extreme (-9e, .tar.xz — max dictionary ratio)', 'xz-extreme'),
+      new Option('Zstandard high (-19, .tar.zst — low RAM)', 'zstd-high'));
+    cd.value = o.archive_codec || 'zstd-ultra';
+    const co = el('select', { 'aria-label': 'Compress on', onchange: () => { o.compress_on = co.value; touch(); renderMoves(); } },
+      new Option('Sender (source host — faster network transfer, spares receiver CPU)', 'source'),
+      new Option('Receiver (destination host — spares weak/busy sender CPU & RAM)', 'destination'),
+      new Option('Remote compression agent (another host runs the compressor)', 'worker'));
+    co.value = o.compress_on || 'source';
+    const row = el('div', { class: 'row wrap' },
+      el('label', { class: 'field' }, el('span', {}, 'Lossless profile'), cd),
+      el('label', { class: 'field' }, el('span', {}, 'Compress on (CPU)'), co));
+    opts.append(row);
+    if ((o.compress_on || 'source') === 'worker') {
+      const clogin = el('input', { type: 'text', class: 'mono', placeholder: 'agent SSH login (optional for script), e.g. root@10.42.0.10',
+        'aria-label': 'Compression agent SSH login', onchange: () => { o.compress_login = clogin.value.trim() || null; touch(); } });
+      clogin.value = o.compress_login || '';
+      opts.append(el('div', { class: 'row wrap' },
+        el('label', { class: 'field' }, el('span', {}, 'Compression agent host'), hostSelect(o.compress_host, (h) => { o.compress_host = h; touch(); })),
+        clogin));
+    } else if (s.src.host && s.src.host === s.dst.host) {
+      opts.append(text('p', 'Same-host archive: runs under idle CPU/IO priority here, or pick "Remote compression agent" above to offload compression CPU to another machine.', 'muted small'));
+    }
+  }
   if (s.method === 'mirror' || s.method === 'rsnapshot' || s.method === 'git') {
     const custom = el('input', { type: 'text', class: 'mono', placeholder: 'systemd time, e.g. Mon..Fri 22:00', 'aria-label': 'Custom schedule',
       onchange: () => { o.schedule = custom.value.trim() || 'daily'; touch(); } });
@@ -136,7 +177,7 @@ function stepCard(s, i) {
         i ? button('↑', () => { [p.steps[i - 1], p.steps[i]] = [p.steps[i], p.steps[i - 1]]; touch(); renderMoves(); }, 'btn ghost sm') : '',
         i < p.steps.length - 1 ? button('↓', () => { [p.steps[i + 1], p.steps[i]] = [p.steps[i], p.steps[i + 1]]; touch(); renderMoves(); }, 'btn ghost sm') : '',
         button('Remove', () => { p.steps.splice(i, 1); touch(); renderMoves(); }, 'btn ghost sm danger'))),
-    text('p', METHOD_HELP[s.method], 'muted small'),
+    text('p', s.single_file ? 'Mirror this file to the exact destination filename on a timer.' : METHOD_HELP[s.method], 'muted small'),
     marks.length ? text('p', `${marks.join(' · ')} (at the last scan of ${s.dst.host})`, 'st-ok small') : '',
     endEditor(s, 'src', 'From'), endEditor(s, 'dst', 'To'),
     s.only?.length ? el('div', { class: 'muted small' }, text('p', `Only these ${s.only.length} file${s.only.length === 1 ? '' : 's'} from that folder:`), sfMoreList(s.only, (f) => el('li', { class: 'mono' }, f), { limit: 8, label: 'files', tag: 'ul' })) : null,
@@ -274,5 +315,15 @@ async function delPlan() {
 function moveFrom(host, path) {
   if (!MV.plan) MV.plan = { name: '', steps: [] };
   MV.plan.steps.push(blankStep({ host, path })); MV.dirty = true; MV.result = null;
+  showTab('moves');
+}
+function archiveFrom(host, path, compressOn = 'source') {
+  if (!MV.plan) MV.plan = { name: '', steps: [] };
+  const dstHost = compressOn === 'worker' ? host : '';
+  const step = blankStep({ host, path }, { host: dstHost, path: `${path}.tar.zst` });
+  step.method = 'archive';
+  step.options.archive_codec = 'zstd-ultra';
+  step.options.compress_on = compressOn;
+  MV.plan.steps.push(step); MV.dirty = true; MV.result = null;
   showTab('moves');
 }

@@ -117,17 +117,31 @@ def specs(conn: Conn, plan: dict) -> list[dict]:
         if not sh or not dh:
             raise ValueError(f'step {s["id"]}: {s["src"]["host"] if not sh else s["dst"]["host"]} has not been scanned')
         o = s['options']
+        comp_on = (o.get('compress_on') or 'source') if s['method'] == 'archive' else ''
+        wh = None
+        if s['method'] == 'archive' and comp_on == 'worker':
+            wh = moves.find_host(hs, o.get('compress_host') or '')
+            if not wh:
+                raise ValueError(f'step {s["id"]}: {o.get("compress_host")} has not been scanned')
+        remote_worker = wh if (wh and wh['name'] != dh['name']) else None
         keep = [f'{lv}={o["keep"][lv]}' for lv in LEVELS if o['keep'].get(lv)]
         jid = job_id(plan['id'], s['id'])
+        dst_resolved = moves.archive_path(s['src']['path'], s['dst']['path'], o.get('archive_codec') or 'zstd-ultra') if s['method'] == 'archive' else s['dst']['path']
         out.append({
             'id': jid, 'plan_id': plan['id'], 'step': s['id'], 'method': s['method'],
-            'name': f'{s["method"]} {sh["name"]}:{s["src"]["path"]} -> {dh["name"]}:{s["dst"]["path"]}',
+            'name': f'{s["method"]} {sh["name"]}:{s["src"]["path"]} -> {dh["name"]}:{dst_resolved}' + (f' (via {remote_worker["name"]})' if remote_worker else ''),
             'runner': dh['name'], 'source': sh['name'], 'local': sh['name'] == dh['name'],
             'src_host': sh['ssh_host'], 'src_port': sh['ssh_port'] or 22,
-            'src': s['src']['path'], 'dst': s['dst']['path'],
+            'src': s['src']['path'], 'dst': dst_resolved,
             'dst_mount': (c.get('dst') or {}).get('planned_mount') or (c.get('dst') or {}).get('mount') or '/',
             'flags': ' '.join(f for f, on in (('checksum', o['checksum']), ('delete', o['delete']), ('onefs', o['one_fs']),
                                                ('link', o['link_back']), ('dirsonly', o.get('dirs_only')), ('keepold', o.get('keep_replaced'))) if on),
+            **({'single_file': True} if s.get('single_file') else {}),
+            **({'compress': o['compress']} if o.get('compress') else {}),
+            **({'archive_codec': o.get('archive_codec') or 'zstd-ultra',
+                'compress_on': 'destination' if (comp_on == 'worker' and not remote_worker) else comp_on} if s['method'] == 'archive' else {}),
+            **({'compressor': remote_worker['name'], 'comp_host': remote_worker['ssh_host'],
+                'comp_port': remote_worker['ssh_port'] or 22, 'comp_hostkey': pinned_key(remote_worker)} if remote_worker else {}),
             'excludes': s['excludes'], **({'only': s['only']} if s.get('only') else {}), 'schedule': o['schedule'] if s['method'] in SCHEDULED else None,
             'window': o['window'], 'bw_day': o['bwlimit'], 'bw_night': o['bwlimit_night'], 'night': o['night'],
             'pre': o['pre'], 'post': o['post'], 'snapshot': o['snapshot'], 'verify': o['verify'],
@@ -186,6 +200,11 @@ def conf_text(spec: dict, report_url: str | None) -> str:
     routes = [f'{r["via"]}|{r["address"]}|{r["iface"] or ""}' for r in spec.get('routes') or []] if not spec['local'] else []
     return ('# StorageForge job: written by deploys, replaced by the next one\n'
             + ''.join(f'{k}={q(val)}\n' for k, val in v.items())
+            + ('SINGLE_FILE=1\n' if spec.get('single_file') else '')
+            + (f'COMPRESS={q(spec["compress"])}\n' if spec.get('compress') else '')
+            + (f'ARCHIVE_CODEC={q(spec["archive_codec"])}\n' if spec.get('archive_codec') else '')
+            + (f'COMPRESS_ON={q(spec["compress_on"])}\n' if spec.get('compress_on') else '')
+            + (f'COMP_HOST={q(spec["comp_host"])}\nCOMP_PORT={q(str(spec["comp_port"]))}\n' if spec.get('compressor') else '')
             + 'EXCLUDES=(' + ' '.join(q(x) for x in spec['excludes']) + ')\n'
             + ('ONLY=(' + ' '.join(q(x) for x in moves.only_filters(spec['only'])) + ')\n' if spec.get('only') else '')
             + 'ROUTES=(' + ' '.join(q(x) for x in routes) + ')\n')
@@ -193,11 +212,24 @@ def conf_text(spec: dict, report_url: str | None) -> str:
 
 def serve_text(spec: dict) -> str:
     q = shlex.quote
+    pattern = ''
+    if spec.get('single_file'):
+        pattern = moves.only_filters([spec['src'].rsplit('/', 1)[1]])[0].removeprefix('--include=')
     return ('# StorageForge: what job ' + spec['id'] + ' may read and run here (its key\'s forced command)\n'
+            f'FILE_PATTERN={q(pattern)}\n'
             f'ROOT={q(spec["src"])}\nSNAP={1 if spec["snapshot"] else 0}\n'
             f'DEDUP={1 if spec.get("dedup") else 0}\nHASH={q(spec.get("hash") or "sha256")}\n'
             f'STREAM={q("" if (spec.get("transport") or "rsync") == "rsync" else spec["transport"])}\n'
-            f'PRE=({" ".join(q(c) for c in spec["pre"])})\nPOST=({" ".join(q(c) for c in spec["post"])})\n')
+            + (f'ARCHIVE_CODEC={q(spec["archive_codec"])}\nARCHIVE_ONEFS={1 if "onefs" in (spec.get("flags") or "").split() else 0}\nARCHIVE_EXCLUDES=({" ".join(q(x) for x in spec["excludes"])})\n'
+               if spec.get('archive_codec') else '')
+            + f'PRE=({" ".join(q(c) for c in spec["pre"])})\nPOST=({" ".join(q(c) for c in spec["post"])})\n')
+
+
+def compress_serve_text(spec: dict) -> str:
+    q = shlex.quote
+    return (f'# StorageForge: remote CPU-offloaded compression agent for job {spec["id"]} (stdin -> stdout only, zero filesystem access)\n'
+            f'COMPRESS_ONLY=1\n'
+            f'ARCHIVE_CODEC={q(spec.get("archive_codec") or "zstd-ultra")}\n')
 
 
 def units(spec: dict) -> tuple[dict, list[str]]:
@@ -284,7 +316,7 @@ for f in "$ETC"/jobs/"$PREFIX"*.conf "$ETC"/serve/"$PREFIX"*.conf "$UNITS"/sf-jo
     [[ $f == *.timer ]] && systemctl disable --now "$(basename "$f")" >/dev/null 2>&1
     # a removed job's stream snapshots would pin their disk space on the source for good
     [[ $f == "$ETC"/serve/*.conf && -x $SELF_BIN ]] && grep -q '^STREAM=[a-z]' "$f" && "$SELF_BIN" --serve "$(basename "$f" .conf)" stream-clean >/dev/null 2>&1
-    rm -f -- "$f"; [[ $f == *.conf && $f == "$ETC"/jobs/* ]] && rm -f -- "${f%.conf}.key" "${f%.conf}.token" "${f%.conf}.hostkey"
+    rm -f -- "$f"; [[ $f == *.conf && $f == "$ETC"/jobs/* ]] && rm -f -- "${f%.conf}.key" "${f%.conf}.token" "${f%.conf}.hostkey" "${f%.conf}.compress.key" "${f%.conf}.compress.hostkey"
     [[ $f == *.conf ]] && rm -f -- "/var/lib/storageforge/index/$(basename "$f" .conf)".*
     doing "removed $f"
   else missing "would remove $f"; fi
@@ -333,15 +365,20 @@ def _heredoc(cmd: str, body: str) -> str:
 
 
 def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: list[dict], report_url: str | None,
-                secrets_: dict | None = None) -> str:
+                secrets_: dict | None = None, compressor_specs: list[dict] | None = None) -> str:
     """The deploy script for one host and one plan. secrets_ (apply only): {job id: {'key': private, 'pub': public,
-    'token': token}}."""
+    'token': token, ...}}."""
+    compressor_specs = list(compressor_specs or ())
     q = shlex.quote
     prefix = f'p{int(plan["id"])}-'
     parts = [HOST_HEAD.format(name=one_line(plan['name']), host=one_line(host), date=time.strftime('%Y-%m-%d %H:%M'),
                               prefix=q(prefix)), HOST_FUNCS]
     methods = {s['method'] for s in runner_specs}
     parts.append('section "tools"\n')
+    def _runner_compresses(s: dict) -> bool:
+        return s['method'] == 'archive' and not s.get('compressor') and (s['local'] or s.get('compress_on') == 'destination')
+    def _source_compresses(s: dict) -> bool:
+        return s['method'] == 'archive' and not s.get('compressor') and (s['local'] or s.get('compress_on', 'source') == 'source')
     if runner_specs:
         parts.append('need systemctl "systemd runs the timers"\n')
         if methods & {'copy', 'move', 'mirror', 'rsnapshot'}:
@@ -350,6 +387,10 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
             parts.append(need_line('rsnapshot'))
         if 'git' in methods:
             parts.append(need_line('git'))
+        if any(s.get('compress') or (_runner_compresses(s) and s.get('archive_codec') != 'xz-extreme') for s in runner_specs):
+            parts.append(need_line('zstd'))
+        if any(_runner_compresses(s) and s.get('archive_codec') == 'xz-extreme' for s in runner_specs):
+            parts.append(need_line('xz'))
         if any(s.get('dedup') for s in runner_specs):
             parts.append(need_line('python3'))
         if any(s.get('hash') == 'blake3' and s.get('dedup') for s in runner_specs + source_specs):
@@ -377,11 +418,15 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
     if any(s.get('dedup') for s in source_specs):
         parts.append(need_line('python3'))
     remote_sources = [s for s in source_specs if not s['local']]
-    if any(s['method'] != 'git' for s in remote_sources):
+    if any(s['method'] not in ('git', 'archive') for s in remote_sources):
         parts.append(need_line('rsync'))
     if any(s['method'] == 'git' for s in remote_sources):
         parts.append(need_line('git'))
-    if runner_specs or source_specs:
+    if any(s.get('compress') or (_source_compresses(s) and s.get('archive_codec') != 'xz-extreme') for s in source_specs) or any(s.get('archive_codec') != 'xz-extreme' for s in compressor_specs):
+        parts.append(need_line('zstd'))
+    if any(_source_compresses(s) and s.get('archive_codec') == 'xz-extreme' for s in source_specs) or any(s.get('archive_codec') == 'xz-extreme' for s in compressor_specs):
+        parts.append(need_line('xz'))
+    if runner_specs or source_specs or compressor_specs:
         parts.append('section "storageforge-job"\n' + _heredoc(f'want_file {deploy.JOBBIN} 0755', JOB_SCRIPT))
         ca = report_ca(report_url) if runner_specs else None
         if ca:          # public: lets reports check StorageForge's self-signed certificate
@@ -395,6 +440,8 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         parts.append(_heredoc(f'want_file {q("/etc/storageforge/jobs/" + s["id"] + ".conf")} 0644', conf_text(s, report_url)))
         if s.get('hostkey'):
             parts.append(_heredoc(f'want_file {q("/etc/storageforge/jobs/" + s["id"] + ".hostkey")} 0644', s['hostkey']))
+        if s.get('comp_hostkey'):
+            parts.append(_heredoc(f'want_file {q("/etc/storageforge/jobs/" + s["id"] + ".compress.hostkey")} 0644', s['comp_hostkey']))
         for r in s.get('routes') or []:
             if r['iface'] and not s['local']:
                 parts.append(f'[[ -e {q("/sys/class/net/" + r["iface"])} ]] && ok {q("interface " + r["iface"])} '
@@ -408,13 +455,16 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
             parts.append(_heredoc(f'secret_file {q("/etc/storageforge/jobs/" + s["id"] + ".token")}', sec['token'] + '\n'))
             if not s['local']:
                 parts.append(_heredoc(f'secret_file {q("/etc/storageforge/jobs/" + s["id"] + ".key")}', sec['key']))
+            if s.get('compressor') and sec.get('comp_key'):
+                parts.append(_heredoc(f'secret_file {q("/etc/storageforge/jobs/" + s["id"] + ".compress.key")}', sec['comp_key']))
         else:
             parts.append(f'[[ -e /etc/storageforge/jobs/{s["id"]}.token ]] && ok "job token present (apply makes a new one)" '
-                         f'|| missing "would write the job token{"" if s["local"] else " and SSH key"}"\n')
+                         f'|| missing "would write the job token{"" if (s["local"] and not s.get("compressor")) else " and SSH key(s)"}"\n')
     keylines = []
     for s in source_specs:
         parts.append(f'section {q("serves job " + s["id"] + " (" + s["runner"] + " pulls " + s["src"] + ")")}\n')
-        parts.append(f'[[ -d {q(s["src"])} ]] && ok {q("source " + s["src"])} || conflict {q("source " + s["src"] + " does not exist")}\n')
+        src_test = '-f' if s.get('single_file') else '-e' if s['method'] == 'archive' else '-d'
+        parts.append(f'[[ {src_test} {q(s["src"])} ]] && ok {q("source " + s["src"])} || conflict {q("source " + s["src"] + " does not exist")}\n')
         if s['snapshot']:      # a btrfs snapshot stops at subvolume boundaries: what is below one is not in it
             parts.append(f'nested=$(btrfs subvolume list -o {q(s["src"])} 2>/dev/null | grep -c . || true)\n'
                          f'((nested)) && info "$nested"{q(" subvolume(s) below " + s["src"] + " are not in its snapshot: add a step for each")}\n')
@@ -425,6 +475,14 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
             pub = secrets_[s['id']]['pub']
             keylines.append(f'restrict,command="sudo -n {deploy.JOBBIN} --serve {s["id"]} \\"$SSH_ORIGINAL_COMMAND\\"" {pub} '
                             f'storageforge:job:{s["id"]}\n')
+    for s in compressor_specs:
+        cid = f'{s["id"]}-compress'
+        parts.append(f'section {q("compresses stream for job " + s["id"] + " (" + s["runner"] + ")")}\n')
+        parts.append(_heredoc(f'want_file {q("/etc/storageforge/serve/" + cid + ".conf")} 0644', compress_serve_text(s)))
+        if secrets_ and secrets_[s['id']].get('comp_pub'):
+            cpub = secrets_[s['id']]['comp_pub']
+            keylines.append(f'restrict,command="sudo -n {deploy.JOBBIN} --serve {cid} \\"$SSH_ORIGINAL_COMMAND\\"" {cpub} '
+                            f'storageforge:job:{cid}\n')
     parts.append(f'TIMERS=({" ".join(q(t) for t in timers)})\nPAUSED=({" ".join(q(t) for t in paused)})\n')
     parts.append(_heredoc('KEYLINES=$(cat', ''.join(keylines)) + ')\n' if keylines else "KEYLINES=''\n")
     parts.append(f'KEYLINES_SET={"1" if secrets_ is not None else ""}\n')
@@ -441,12 +499,18 @@ def new_secrets(specs_: list[dict]) -> dict:
     out = {}
     for s in specs_:
         k = ed25519.Ed25519PrivateKey.generate()
-        out[s['id']] = {
+        entry = {
             'token': secrets.token_urlsafe(32),
             'key': k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
                                    serialization.NoEncryption()).decode(),
             'pub': k.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode(),
         }
+        if s.get('compressor'):
+            ck = ed25519.Ed25519PrivateKey.generate()
+            entry['comp_key'] = ck.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+                                                 serialization.NoEncryption()).decode()
+            entry['comp_pub'] = ck.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
+        out[s['id']] = entry
     return out
 
 
@@ -465,9 +529,11 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
     before = {d['host'] for d in deploy.deployed(conn, kind='jobs') if d['ref'] == ref}
     runners = {s['runner'] for s in sp}
     sources = {s['source'] for s in sp}
-    order = sorted(sources) + sorted(runners - sources) + sorted(before - sources - runners)
-    serving = sorted(sources | runners)
-    phase = {h: 0 if h in sources else 1 for h in order}    # a source's serve config and keys go first: runners test them
+    compressors = {s['compressor'] for s in sp if s.get('compressor')}
+    backends = sources | compressors
+    order = sorted(backends) + sorted(runners - backends) + sorted(before - backends - runners)
+    serving = sorted(backends | runners)
+    phase = {h: 0 if h in backends else 1 for h in order}    # serve configs and keys go first: runners test them
     sec = new_secrets(sp) if mode == 'apply' else None     # {} for a plan with no steps left: apply still cleans up
     if sec is not None:      # store before the hosts get them: a run may report the moment its timer fires
         now = int(time.time())
@@ -487,13 +553,13 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
     items = []
     for h in order:
         script = site.stamp(conn, host_script(plan, h, [s for s in sp if s['runner'] == h], [s for s in sp if s['source'] == h],
-                                              report_url, sec))
+                                              report_url, sec, [s for s in sp if s.get('compressor') == h]))
 
         def done(res, h=h):
             c = db.connect()
             try:
                 if h in serving:
-                    deploy.mark_deployed(c, h, 'jobs', ref, plan_hash(plan), {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'])], 'hosts': serving}, actor)
+                    deploy.mark_deployed(c, h, 'jobs', ref, plan_hash(plan), {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'], s.get('compressor'))], 'hosts': serving}, actor)
                 else:   # its jobs have just been removed: a mark would keep the plan from being deleted, and the host from being retired
                     c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'jobs' AND ref = :r", {'h': h, 'r': ref})
             finally:
@@ -502,7 +568,7 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
                       'mode': mode, 'phase': phase[h], **({'on_ok': done} if mode == 'apply' else {})})
     if mode == 'apply':
         for h in sorted(runners):
-            remote = [s['id'] for s in sp if s['runner'] == h and not s['local']]
+            remote = [s['id'] for s in sp if s['runner'] == h and (not s['local'] or s.get('compressor'))]
             if remote:
                 items.append({'host': h, 'kind': 'job-test', 'ref': ref, 'mode': 'apply', 'phase': 2,
                               'script': ''.join(f'{deploy.JOBBIN} test {j} || rc=1\n' for j in remote) + 'exit ${rc:-0}\n'})

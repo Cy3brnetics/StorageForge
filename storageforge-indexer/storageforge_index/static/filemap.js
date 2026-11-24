@@ -764,6 +764,7 @@ function fmPickBar() {
 const FM_OPS = {
   copy: { label: 'Copy to…', verb: 'copy', help: 'The source is left alone.' },
   move: { label: 'Move to…', verb: 'move', help: 'Copy, verify, then rename the source to *.migrated-<date>.', folders: true },
+  archive: { label: 'Archive to…', verb: 'compress and archive', help: 'Losslessly compress (on sender, receiver, or a remote CPU agent) into a verified .tar.zst archive there.' },
   mirror: { label: 'Keep in sync…', verb: 'keep in sync', help: 'Runs on a timer once installed.', folders: true },
   rsnapshot: { label: 'Snapshot backups…', verb: 'back up', help: 'Rotating snapshots there, on timers.', folders: true },
 };
@@ -775,6 +776,10 @@ function fmOpButtons(items, folders) {
   out.push(button('Trash', () => fmTrash(items.map(({ host, path }) => ({ host, path }))), 'btn ghost sm danger'));
   if (items.length === 1) {
     const it = items[0], t = (type, preset) => () => openTask(type, it.host, preset);
+    out.push(button('Compress…', t('archive', { path: it.path, dest: `${it.path}.tar.zst`, codec: 'zstd-ultra', verify: true }), 'btn ghost sm'));
+    if (it.file && /\.(tar\.(zst|xz|gz|bz2)|t[gx]z|tbz2|tzst|7z)$/i.test(it.path)) {
+      out.push(button('Extract…', t('archive-extract', { archive: it.path, dest: `${it.path.replace(/\.(tar\.(zst|xz|gz|bz2)|t[gx]z|tbz2|tzst|7z)$/i, '')}-extracted`, verify_checksum: true }), 'btn ghost sm'));
+    }
     out.push(button('Rename…', t('rename', { path: it.path, dest: it.path }), 'btn ghost sm'),
       button('Owner…', t('perms', { path: it.path }), 'btn ghost sm'),
       button('Link…', t('symlink', { target: it.path }), 'btn ghost sm'));
@@ -787,9 +792,15 @@ async function fmSend(method, items, dest) {  // one step per folder, and one fo
   const toFolder = joinPath;
   const steps = [], loose = new Map();
   for (const i of items) {
-    if (i.host === dest.host && fmUnder(dest.path, i.path)) { toast(`${i.path} cannot go inside itself`); fmPickBar(); return; }
+    if (i.host === dest.host && method !== 'archive' && fmUnder(dest.path, i.path)) { toast(`${i.path} cannot go inside itself`); fmPickBar(); return; }
+    if (method === 'archive') {
+      const step = blankStep({ host: i.host, path: i.path }, { host: dest.host, path: toFolder(dest.path, `${i.name}.tar.zst`) });
+      step.method = 'archive'; step.options.archive_codec = 'zstd-ultra'; step.options.compress_on = 'source';
+      steps.push(step);
+      continue;
+    }
     if (i.file) {
-      if (method !== 'copy') { toast('Only a copy can take single files. Pick the folder to move or sync it.'); fmPickBar(); return; }
+      if (method !== 'copy') { toast('Only a copy or archive can take single files. Pick the folder to move or sync it.'); fmPickBar(); return; }
       const k = fmKeyOf(i.host, dirOf(i.path));
       if (!loose.has(k)) loose.set(k, { host: i.host, path: dirOf(i.path), only: [] });
       loose.get(k).only.push(i.name);
@@ -825,6 +836,7 @@ function fmMenu(n) {
     ...Object.entries(FM_OPS).map(([k, o]) => ({ label: o.label, run: () => fmStart(k, n) })),
     { label: 'Move to trash', danger: true, run: () => fmTrash([{ host: n.host, path: n.path }]) },
     { label: 'Rename…', run: () => openTask('rename', n.host, { path: n.path, dest: n.path }) },
+    { label: 'Compress to archive…', run: () => openTask('archive', n.host, { path: n.path, dest: `${n.path}.tar.zst`, codec: 'zstd-ultra', verify: true }) },
     { label: 'New folder here…', run: () => openTask('dir', n.host, { path: `${n.path}/` }) },
     { label: 'Owner and permissions…', run: () => openTask('perms', n.host, { path: n.path }) },
     '-',
@@ -847,6 +859,8 @@ function fmFolderMenu(f) {
     '-', { heading: 'Plan a change' },
     f.whole && fmCopyOnItsHost(f) ? { label: 'Move this folder to trash', run: () => fmTrash([{ host: f.host, path: f.path }]) } : null,
     { label: 'Rename or move…', run: stage('rename', { path: f.path, dest: f.path }) },
+    { label: 'Compress to archive…', run: stage('archive', { path: f.path, dest: `${f.path}.tar.zst`, codec: 'zstd-ultra', verify: true }) },
+    { label: 'Archive via remote CPU agent (Moves)…', run: () => archiveFrom(f.host, f.path, 'worker') },
     { label: 'Copy to another disk (Moves)…', run: () => moveFrom(f.host, f.path) },
     '-', { label: 'Ignore this folder', run: () => fmIgnore(f.host, f.path) }];
 }
@@ -880,8 +894,8 @@ function fmNote() {
    another on its own host is a duplicate there, and is offered as before. */
 const fmOnlyOnItsHost = (g, c) => !g.copies.some((x) => x !== c && x.host === c.host);
 function fmBackupPill() { return Object.assign(text('span', 'possible backup', 'pill unknown'), { title: COPY_ELSEWHERE_WHY }); }
-function fmSyncButton(places) {            // from a whole-folder copy across hosts: the dialog of copiesview.js, which saves a Moves plan
-  return Object.assign(button(cpSyncLabel(places.length), async () => { if (await copiesKeepInSync(places.map(({ host, path }) => ({ host, path })))) fmDraw(); }, 'btn sm pri'),
+function fmSyncButton(places, singleFile = false) {            // from a whole-folder copy across hosts: the dialog of copiesview.js, which saves a Moves plan
+  return Object.assign(button(cpSyncLabel(places.length), async () => { if (await copiesKeepInSync(places.map(({ host, path }) => ({ host, path })), singleFile)) fmDraw(); }, 'btn sm pri'),
     { title: 'Prepares a plan in Moves that copies one side to the other on a timer. Nothing syncs until you deploy it there' });
 }
 function fmFileRow(g, c, checks) {        // one file, its size and where its other copies are
@@ -983,7 +997,7 @@ function fmBrokenPanel(l) {
 function fmGroupPanel(g) {
   const checks = [];
   return [el('div', { class: 'node-head' }, text('span', `${g.copies.length} copies · ${fmtBytes(g.size)} each`, 'muted'), text('h2', g.copies[0].path.split('/').pop())),
-    el('div', { class: 'fmacts' }, fmChecked(checks)),
+    el('div', { class: 'fmacts' }, fmChecked(checks), g.hosts > 1 && can('plans.edit') ? fmSyncButton(g.copies, true) : null),
     el('ul', { class: 'fmlist' }, ...g.copies.map((c) => fmFileRow(g, c, checks))), fmNote()];
 }
 function fmDirPanel(n) {
