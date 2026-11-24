@@ -1,6 +1,6 @@
 'use strict';
 /* Infrastructure tab: what runs on each host, its network, its firewall rules and who can reach what. Everything is read from
-   the index and says how old it is. "Measure now" is the one action, and it only reads. DOM APIs only. Loaded after
+   the index and says how old it is. Capture definitions and drift come from the same readings. DOM APIs only. Loaded after
    dockerview.js; uses the shared helpers. */
 
 const INF = { view: 'workloads', wlRuntime: '', wlState: '', wlFind: '', vmTab: 'all', fwFind: '' };
@@ -171,7 +171,74 @@ async function infWorkloads(content) {
     listBox.replaceChildren(...kids);
   }
   drawList();
-  content.replaceChildren(out, kpis, bar, listBox);
+  const sections = [infWorkloadSection('Saved captures and drift', async () => {
+    const { captures } = await getJSON('/api/workloads/captures' + qs);
+    if (!captures.length) return text('p', 'No saved captures.', 'muted small');
+    return infTable(['Host', 'Workload', 'Capture', 'Drift', 'Definition'], captures.map((c) => [
+      c.host, `${c.runtime} · ${c.name}`, infWhen(c.captured_at), infCaptureDrift(c),
+      button('Download ' + c.format, () => download(`/api/workloads/captures/${c.id}?raw=1`, c.name + INF_CAPTURE_SUFFIX[c.format]), 'btn sm'),
+    ]));
+  })];
+  if (can('plans.view') && can('plans.scripts')) sections.push(infWorkloadSection('Export a change plan', async () => {
+    const { plans } = await getJSON('/api/changes');
+    if (!plans.length) return text('p', 'No saved change plans.', 'muted small');
+    const plan = el('select', { 'aria-label': 'Change plan to export' }, ...plans.map((p) => new Option(p.name, p.id)));
+    return el('div', { class: 'row wrap' }, plan, ...['Terraform', 'OpenTofu', 'Puppet'].map((target) =>
+      button('Export ' + target, () => download(`/api/changes/${plan.value}/export/${target.toLowerCase()}`, target === 'Puppet' ? 'workloads.pp' : 'main.tf'), 'btn sm')));
+  }));
+  content.replaceChildren(out, kpis, bar, ...sections, listBox);
+}
+
+// Fetch when opened so the list includes the latest captures, even for workloads that have disappeared.
+function infWorkloadSection(label, read) {
+  const body = el('div', { class: 'stack' });
+  const section = el('details', {}, el('summary', {}, label), body);
+  section.addEventListener('toggle', async () => {
+    if (!section.open) return;
+    const fresh = latest('workloads-' + label);
+    body.replaceChildren(text('p', 'Loading…', 'muted small'));
+    try {
+      const result = await read();
+      if (fresh()) body.replaceChildren(result);
+    } catch (err) { if (fresh()) body.replaceChildren(text('p', err.message, 'st-failed')); }
+  });
+  return section;
+}
+
+const INF_CAPTURE_SUFFIX = { compose: '.compose.yaml', quadlet: '.container', libvirt: '.xml', incus: '.yaml' };
+
+function infCaptureDrift(c) {
+  if (c.state === 'gone') return text('span', 'Gone from the index', 'st-warn');
+  if (!c.drift.length) return text('span', 'Matches the index', 'st-ok');
+  const value = (v) => (Array.isArray(v) ? v.join(', ') : String(v ?? '')) || '—';
+  return el('details', {}, el('summary', {}, `${c.drift.length} changed field${c.drift.length === 1 ? '' : 's'}`),
+    infTable(['Field', 'Captured', 'Latest reading'], c.drift.map((d) => [d.field, value(d.captured), value(d.now)])));
+}
+
+function infCaptureControls(w) {
+  if (w.source === 'api' || w.state === 'defined' || !['docker', 'podman', 'incus', 'libvirt'].includes(w.runtime)) return null;
+  const formats = ['docker', 'podman'].includes(w.runtime) ? ['compose', 'quadlet'] : [w.runtime];
+  const preview = el('div', { class: 'stack' });
+  const format = el('select', { 'aria-label': 'Capture format', onchange: () => preview.replaceChildren() },
+    ...formats.map((f) => new Option(f, f)));
+  format.value = w.capture?.format || formats[0];
+  const capture = button('Preview capture', async () => {
+    const params = { host: w.host, name: w.name, runtime: w.runtime, format: format.value };
+    try {
+      const { definition } = await getJSON('/api/workloads/capture?' + new URLSearchParams(params));
+      if (params.format !== format.value) return;
+      preview.replaceChildren(text('pre', definition));
+      if (can('plans.edit')) preview.append(button(w.capture ? 'Replace saved capture' : 'Adopt workload', async () => {
+        try {
+          await postJSON('/api/workloads/captures', params);
+          notify(`Saved the ${params.format} capture of ${w.name}.`);
+          if (preview.isConnected) await loadInfra();
+        } catch (err) { notify(err.message, 'error'); }
+      }, 'btn sm'));
+    } catch (err) { notify(err.message, 'error'); }
+  }, 'btn sm');
+  return el('div', { class: 'stack' }, el('div', { class: 'row wrap' }, format, capture,
+    w.capture ? infCaptureDrift(w.capture) : null), preview);
 }
 
 function infWorkloadApi(w) {
@@ -198,7 +265,7 @@ function infGuest(panel, host, w) {
   const head = el('div', { class: 'row wrap' }, el('b', { class: 'mono' }, w.name), text('span', w.state || '?', INF_VM_STATE[w.state] || ''),
     text('span', `${w.runtime} · ${w.kind}${w.user ? ` (${w.user})` : ''}`, 'muted small'),
     button('Close', () => panel.replaceChildren(), 'btn ghost sm'));
-  const kids = [head, infWorkloadApi(w)];
+  const kids = [head, infWorkloadApi(w), infCaptureControls(w)];
   if (edit) {
     const acts = el('div', { class: 'row wrap', role: 'group', 'aria-label': `Plan a change to ${w.name}` });
     if (w.state !== 'running') acts.append(stage('Start', 'start'));
@@ -234,7 +301,7 @@ function infVm(panel, host, w) {
     el('div', { class: 'pve-kpi accent' }, text('span', 'Compute', 'pve-kpi-lbl'), el('b', {}, `${w.vcpus || '?'} vCPU`), text('small', w.memory_mib != null ? fmtBytes(w.memory_mib * 2 ** 20) : 'Memory ?')),
     el('div', { class: 'pve-kpi' }, text('span', 'Firmware & Agent', 'pve-kpi-lbl'), el('b', {}, (w.firmware || 'bios').toUpperCase()), text('small', `${w.tpm ? 'TPM · ' : ''}${w.agent === 'connected' ? 'QEMU agent OK' : 'Agent offline'}`)),
     el('div', { class: 'pve-kpi' }, text('span', 'Disks & Snapshots', 'pve-kpi-lbl'), el('b', {}, `${(w.disks || []).length} / ${(w.snapshots || []).length}`), text('small', 'disks / snapshots')));
-  const kids = [head, vmKpis, infWorkloadApi(w)];
+  const kids = [head, vmKpis, infWorkloadApi(w), infCaptureControls(w)];
   if (edit) {
     const acts = el('div', { class: 'row wrap', role: 'group', 'aria-label': `Plan a change to ${w.name}` });
     const lv = { runtime: 'libvirt', name: w.name };

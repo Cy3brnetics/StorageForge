@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 
-from storageforge_index import security, server, users
+from storageforge_index import changes, security, server, users
 from storageforge_index.db import Database
 
 try:
@@ -66,6 +66,7 @@ class BrowserVms(unittest.TestCase):
         self.page.on('pageerror', lambda e: self.errors.append(str(e)))
         self.page.on('dialog', lambda d: (self.errors.append(f'dialog: {d.message}'), d.dismiss()))
         self.page.goto(self.base + '/login')
+        self.page.wait_for_function("typeof waBtn !== 'undefined'")
         self.page.fill('input[type=text], input[name=username], #username', 'admin')
         self.page.fill('input[type=password]', PW)
         self.page.press('input[type=password]', 'Enter')
@@ -117,6 +118,35 @@ class BrowserVms(unittest.TestCase):
         self.assertIn('Listed by the platform API only.', guest.inner_text())
         self.assertIn('unscanned', guest.inner_text())
         self.assertEqual(guest.get_by_role('button', name='Remove…').count(), 0)
+        self.assertEqual(self.errors, [])
+
+    def test_capture_adopt_review_and_export(self):
+        conn = self.db.connect()
+        self.addCleanup(conn.close)
+        plan = changes.save_plan(conn, {'name': 'Web deployment', 'tasks': [
+            {'type': 'container', 'host': 'kvm1', 'params': {'runtime': 'docker', 'name': 'proxy', 'image': 'caddy:2'}}]}, 'admin')
+        self.addCleanup(changes.delete_plan, conn, plan)
+        self.addCleanup(conn.execute, 'DELETE FROM workload_captures')
+
+        box = self.page.locator('#infrabox')
+        box.get_by_role('button', name='web', exact=True).click()
+        vm = box.get_by_role('region', name='VM web')
+        vm.get_by_role('button', name='Preview capture').click()
+        self.assertIn('<name>web</name>', vm.locator('pre').inner_text())
+        vm.get_by_role('button', name='Adopt workload').click()
+        self.page.get_by_text('Saved the libvirt capture of web.', exact=True).first.wait_for()
+        box.get_by_text('Saved captures and drift', exact=True).click()
+        box.get_by_text('Matches the index', exact=True).wait_for()
+        with self.page.expect_download() as capture:
+            box.get_by_role('button', name='Download libvirt').click()
+        self.assertEqual(capture.value.suggested_filename, 'web.xml')
+        self.assertIn('<name>web</name>', capture.value.path().read_text())
+
+        box.get_by_text('Export a change plan', exact=True).click()
+        box.get_by_label('Change plan to export').select_option(str(plan))
+        with self.page.expect_download() as exported:
+            box.get_by_role('button', name='Export OpenTofu').click()
+        self.assertIn('docker_container', exported.value.path().read_text())
         self.assertEqual(self.errors, [])
 
     def test_networks_and_pools_under_the_host(self):
