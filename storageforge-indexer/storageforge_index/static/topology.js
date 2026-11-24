@@ -49,15 +49,24 @@ async function loadDesigns() {
   const docs = new Map();
   if (typeof loadAccess === 'function' && !ACCESS.hosts.length) loadAccess();
   if (typeof loadDocker === 'function' && !DK.usage.length) getJSON('/api/docker/usage').then((r) => { DK.usage = r.usage; renderTopoSoon(); }).catch(() => {});
-  await Promise.all(want.map(async (h) => {
+  async function readHost(h) {
     const keep = T.docs.get(h.host);
     if (keep && keep.dirty) { docs.set(h.host, keep); return; }      // unsaved edits survive a reload
     try {   // a scanned host: fresh hardware from the scan plus the intent in its saved design
       const r = await getJSON(`/api/planner/design?host=${encodeURIComponent(h.host)}${h.scanned ? '&source=scan' : ''}`);
       docs.set(h.host, { host: h.host, bp: r.blueprint, source: r.source, savedAt: r.saved_at, sharesDeployed: r.shares_deployed, dirty: false, changed: new Set() });
     } catch (err) { docs.set(h.host, { host: h.host, error: err.message }); }
-  }));
-  if (n !== T.loadReq) return;
+  }
+  // Leave room for interactive requests on large fleets and stop fetching when the operator leaves.
+  const queue = want.values();
+  async function readHosts() {
+    for (const h of queue) {
+      if (n !== T.loadReq || T.mode !== 'topo') return;
+      await readHost(h);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, want.length) }, readHosts));
+  if (n !== T.loadReq || T.mode !== 'topo') return;
   for (const h of docs.keys()) if (T.docs.get(h)?.dirty) docs.set(h, T.docs.get(h));      // edited while this load was out
   T.docs = docs; T.order = want.map((h) => h.host); T.error = '';
   if (S.host && !want.length) T.error = `${S.host} has no design: it is not scanned and has no saved plan.`;
@@ -1277,4 +1286,4 @@ try { T.mode = ['graph', 'tasks', 'map', 'scan'].includes(localStorage.getItem('
 
 T.bootMode = T.mode;
 setMode(T.mode, false);
-boot();
+document.addEventListener('DOMContentLoaded', boot, { once: true });

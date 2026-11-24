@@ -76,7 +76,12 @@ class BrowserPolish(unittest.TestCase):
     # ── Ctrl+K ───────────────────────────────────────────────────────────────────────────────────────────────────────
     def test_the_palette_filters_runs_and_gives_focus_back(self):
         page = self.open(self.full)
-        page.wait_for_selector('#sesslen')                                  # the account's permissions are known once the session box shows
+        # Hold the graph response while navigating. A slow scan must not swallow the first history entry.
+        pending = []
+        page.route('**/api/graph', lambda route: pending.append(route))
+        with page.expect_request('**/api/graph'):
+            page.reload()
+        page.wait_for_selector('#sesslen')
         page.focus('#q')
         self.palette()                                                       # Ctrl+K works from inside a text field
         self.assertEqual(page.get_attribute('dialog.sf-palette input', 'aria-expanded'), 'true')
@@ -89,6 +94,7 @@ class BrowserPolish(unittest.TestCase):
         page.wait_for_selector('.tabs button[data-tab="deploy"][aria-selected="true"]')
         page.wait_for_selector('#deploy-sub-schedule[aria-pressed="true"]')
         self.assertIn('sub=schedule', page.evaluate('location.hash'))      # the router's own form, so Back returns
+        pending.pop().continue_()
         page.go_back()
         page.wait_for_selector('.tabs button[data-tab="deploy"][aria-selected="false"]')
         self.assertEqual(self.errors, [])

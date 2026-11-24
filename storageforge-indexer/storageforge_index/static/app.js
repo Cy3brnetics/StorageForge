@@ -1111,12 +1111,13 @@ async function boot() {
     // the first setMode() ran before mapview.js and netscanview.js were loaded, so their views were shown empty (filemap.js
     // fills its own when it loads); a link that named another view has shown that one since, so only the one start-up chose is left
     if (T.mode === T.bootMode && ['map', 'scan'].includes(T.mode)) setMode(T.mode, false);
-    await Promise.all([loadGraph(), loadDesigns()]);
     if (tab) showTab(tab);
+    routeStart();
+    await Promise.all([loadGraph(), loadDesigns()]);
     if (T.mode === 'tasks' && typeof loadTasks === 'function') loadTasks();
     firstRun(me.username);
   }
   catch (err) { if (!/Sign in/.test(err.message)) alertPanel(err.message); }
-  finally { routeStart(); }
+  finally { if (!ROUTE.ready) routeStart(); }
 }
 // boot() runs at the end of topology.js, once both scripts are loaded
