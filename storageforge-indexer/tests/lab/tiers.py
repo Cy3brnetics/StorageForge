@@ -121,10 +121,11 @@ def seed_file(vm, root, rel='shared/docs/handbook.txt'):
 
 
 def job_run(api, job, verb, kind, since):
+    previous = {r['run'] for r in api.get(f'/api/deploy/jobs/{job}')['runs']}
     api.post(f'/api/deploy/jobs/{job}/{verb}')
 
     def done():
-        runs = [r for r in api.get(f'/api/deploy/jobs/{job}')['runs'] if r['kind'] == kind and r['start'] >= since - 5]
+        runs = [r for r in api.get(f'/api/deploy/jobs/{job}')['runs'] if r['run'] not in previous and r['kind'] == kind and r['start'] >= since - 5]
         return runs[0] if runs else None
     run = wait_for(f'{job} {verb}', done, 600)
     if run['rc'] != 0:

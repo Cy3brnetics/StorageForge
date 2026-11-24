@@ -555,8 +555,7 @@ def tier10(r):
         ss = sudo(node.name, 'command -v ss').strip()
         sudo(node.name, f'mv {ss} {ss}.lab-away')
         try:
-            demo.scan(api, [node.ip])
-            job = next(j for j in api.get('/api/jobs')['jobs'] if j['host'] == node.ip)
+            job, = demo.scan(api, [node.ip]).values()
             if job['status'] not in ('ok', 'partial'):
                 demo.fail(f'the scan ended {job["status"]}')
             got = api.get(f'/api/network?host={node.name}')['network']

@@ -189,10 +189,16 @@ def copies_across_hosts(api, a, b):
             g = mine[0]
             want((g['scope'], g['reclaimable'], g['elsewhere'], g['hosts']) == ('across hosts', 0, sum(sizes.values()), 2), f'the pair across hosts reads: {g}')
             out = demo.cli('folders', '--min-files', '3', '--min-size', '1MiB', '--limit', '100000')
-            lines = out.splitlines()
-            at = lines.index(f'    {a.name}:{src}') if f'    {a.name}:{src}' in lines else 0
-            want(at and lines[at - 1].startswith('2× 4 files') and 'a copy on another host: a possible backup' in lines[at - 1] and 'reclaim' not in lines[at - 1],
-                 f'the command line does not say it is a possible backup: {out[-600:]}')
+            groups = []
+            for line in out.splitlines():
+                if line.startswith('    ') and groups:
+                    groups[-1].append(line.strip())
+                else:
+                    groups.append([line])
+            matches = [rows[0] for rows in groups if sorted(rows[1:]) == key]
+            want(len(matches) == 1 and matches[0].startswith('2× 4 files') and
+                 'a copy on another host: a possible backup' in matches[0] and 'reclaim' not in matches[0],
+                 f'the CLI backup group for {key} has headers {matches}')
 
             # the plan check: one side leaves the only copy on the other host, both sides are the last copy
             trash = lambda *where: api.post('/api/changes/check', {'name': 'check', 'tasks': [     # noqa: E731
@@ -210,7 +216,7 @@ def copies_across_hosts(api, a, b):
             want(key in listed('dismissed') and key not in listed('suggested'), 'set aside, it is still suggested')
             api.post('/api/copies/dismiss', {'copies': [here, there], 'dismissed': False})
             want(key in listed('suggested'), 'asked for again, it is not suggested')
-            want(any(kind == 'copies-not-synced' for kind, _, _ in t.alerts_now()), 'no notification while a pair is left to answer')
+            want(any(a['kind'] == 'copies-not-synced' for a in t.alerts_now()), 'no notification while a pair is left to answer')
 
             # which side changed last, and a plan that copies nothing until it is deployed
             sides = api.get('/api/copies/sides?' + urllib.parse.urlencode([('host', a.name), ('path', src), ('host', b.name), ('path', dst)]))
@@ -248,11 +254,11 @@ def copies_across_hosts(api, a, b):
             since = int(ssh(b.name, 'date +%s'))
             api.post(f'/api/deploy/jobs/{jid}/run')
             t.wait_for('the failed run', lambda: [r for r in api.get(f'/api/deploy/jobs/{jid}')['runs'] if r['kind'] == 'run' and r['start'] >= since - 5 and r['rc'] != 0], 600)
-            want(any(kind == 'job-failed' and ref == jid for kind, ref, _ in t.alerts_now()), 'a sync that failed raised no notification')
+            want(any(a['kind'] == 'job-failed' and a['ref'] == jid for a in t.alerts_now()), 'a sync that failed raised no notification')
             want([k['state'] for k in api.get('/api/copies')['kept'] if k['job'] == jid] == ['failed'], 'the kept pair does not say its last run failed')
             sudo(a.name, f'mv {shlex.quote(src + ".away")} {shlex.quote(src)}')
             t.job_run(api, jid, 'run', 'run', int(ssh(b.name, 'date +%s')))
-            want(not any(kind == 'job-failed' and ref == jid for kind, ref, _ in t.alerts_now()), 'the notification stayed after a good run')
+            want(not any(a['kind'] == 'job-failed' and a['ref'] == jid for a in t.alerts_now()), 'the notification stayed after a good run')
             return 'not reclaimable, the plan check names the last copy, set aside and back, prepared without copying, synced by checksum, nothing deleted, a failed run notified'
         finally:
             sudo(a.name, f'[ -e {shlex.quote(src + ".away")} ] && mv {shlex.quote(src + ".away")} {shlex.quote(src)}; true', check=False)

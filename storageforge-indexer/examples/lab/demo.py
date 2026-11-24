@@ -125,11 +125,15 @@ def scan(api, hosts):
     def done():
         jobs = {j['job_id']: j for j in api.get('/api/jobs')['jobs'] if j['job_id'] in ids}
         return jobs if len(jobs) == len(ids) and all(j['status'] not in ('queued', 'running') for j in jobs.values()) else None
-    for jid, job in wait('scans', done).items():
+    jobs = wait('scans', done)
+    for jid, job in jobs.items():
         if job['status'] == 'partial':     # a mount the scan user can't read, such as Podman's overlay folder
             say(f'  {ids[jid]}: partial, {job["result"]["failed"]} mount unreadable')
         elif job['status'] != 'ok':
             fail(f'scan of {ids[jid]} ended {job["status"]}: {json.dumps(job["result"])[:800]}')
+
+
+    return jobs
 
 
 def deploy(api, kind, ref, title, may_fail=None, **options):
