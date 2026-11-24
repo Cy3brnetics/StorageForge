@@ -145,6 +145,7 @@ class Adapters(Base):
 
 
 PROBE_STUBS = {
+    'openvpn': '[[ $1 == --version ]] && echo "OpenVPN 2.6.12"',
     'id': 'if [[ $1 == -u && ($2 == sf-headscale || $2 == sf-zerotier) ]]; then echo 1001; exit 0; fi; exit 1',
     'runuser': 'shift 2; [[ $1 == -- ]] && shift; exec "$@"',
     'podman': r"""case "$*" in
@@ -174,7 +175,7 @@ class Probes(unittest.TestCase):
         self.assertNotIn('mkey:', p.stdout)
         self.assertEqual(got['zerotier'], {'address': '8c38767c7b', 'version': '1.14.2', 'state': 'ONLINE'})
         self.assertEqual(got['units'], {'strongswan.service': {'active': 'active', 'enabled': 'enabled'}})
-        self.assertEqual(got['versions'], {'strongswan': '6.0.1'})
+        self.assertEqual(got['versions'], {'strongswan': '6.0.1', 'openvpn': '2.6.12'})
         self.assertEqual(got['ike'], [{'name': 'site', 'id': 1, 'state': 'ESTABLISHED'}])
         self.assertEqual(got['child'], [{'name': 'net', 'id': 1, 'state': 'INSTALLED'}])
         self.assertNotIn('c767774a', p.stdout, 'SPIs and traffic lines are not read')
