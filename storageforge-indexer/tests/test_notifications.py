@@ -238,6 +238,15 @@ class Fixes(Center):
         with self.assertRaisesRegex(ValueError, 'no way back'):
             notifications.prepare_undo(self.conn, got['plan'], 'gabe')
 
+    def test_undo_refuses_a_restart_retargeted_to_another_unit(self):
+        got = notifications.prepare_fix(self.conn, self.failing(), 'gabe')
+        edited = changes.get_plan(self.conn, got['plan'])
+        edited['tasks'][0]['params']['unit'] = 'postgresql.service'
+        changes.save_plan(self.conn, edited, 'gabe', got['plan'])
+        with self.assertRaisesRegex(ValueError, 'no way back'):
+            notifications.prepare_undo(self.conn, got['plan'], 'gabe')
+        self.assertFalse(notifications.history(self.conn, event='undo-prepared')['events'])
+
     def test_nothing_is_offered_where_there_is_no_way_back(self):
         """A job run now and a scan run again cannot be taken back, a full disk is never cleared from here, and SSH is done by hand."""
         got = self.wrong(a=problem('job-stale', 'j1'), b=problem('scan-failed', 'pc'), c=problem('disk-crit', 'nas:/srv', 'crit'), d=problem('drift', 'nas:fstab'))

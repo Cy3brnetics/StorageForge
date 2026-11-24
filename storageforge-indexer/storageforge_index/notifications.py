@@ -158,7 +158,6 @@ def center(conn: Conn, host: str | None = None, kind: str | None = None, level: 
 # has both: a service that keeps failing is restarted, and the way back stops it again, which is how it was found. A stale job run now,
 # a scan run again or a full disk have no fix here: the first two cannot be taken back, and nothing here deletes data.
 _UNIT_IN_LINE = re.compile(r'(?<![A-Za-z0-9:_.@-])([A-Za-z0-9:_@-][A-Za-z0-9:_.@-]{0,190}\.service)\b')
-_INVERSE = {'restarted': 'stopped', 'started': 'stopped'}
 
 
 def fix_for(conn: Conn, x: dict) -> dict | None:
@@ -204,24 +203,26 @@ def prepare_undo(conn: Conn, plan_id: int, actor: str) -> dict:
     """The way back of a fix that was prepared here, as a plan of its own. Its notification may be resolved by now: the history says what
     the fix was. A plan that was not prepared as a fix has no way back made for it."""
     from . import changes
-    row = conn.all("""SELECT alert_key, kind, host, level, title FROM notification_events
+    row = conn.all("""SELECT alert_key, kind, host, level, title, note FROM notification_events
                       WHERE event = 'fix-prepared' AND (note = :n OR note LIKE :p) ORDER BY event_id DESC LIMIT 1""", {'n': f'plan {plan_id}', 'p': f'plan {plan_id}:%'})
     if not row:
         raise LookupError('no fix was prepared as that plan')
-    key, kind, host, level, title = row[0]
+    key, kind, host, level, title, note = row[0]
     if kind != 'log-rule':
         raise ValueError('this notification fix has no supported undo')
     try:
         plan = changes.get_plan(conn, plan_id)
     except (KeyError, LookupError, ValueError):
         raise LookupError('that plan is gone: there is nothing to work the way back out from') from None
-    tasks = []
-    for t in plan['tasks']:
-        back = _INVERSE.get((t.get('params') or {}).get('state')) if t.get('type') == 'unit-state' else None
-        if not back:
-            raise ValueError('that plan was changed since it was prepared, and holds a step with no way back')
-        tasks.append({'type': 'unit-state', 'host': t['host'], 'params': {'unit': t['params']['unit'], 'state': back}})
-    label = '; '.join(f'stop {t["params"]["unit"]} on {t["host"]}' for t in tasks)
+    steps = plan['tasks']
+    step = steps[0] if len(steps) == 1 else {}
+    params = step.get('params') or {}
+    unit = params.get('unit')
+    if (step.get('type') != 'unit-state' or step.get('host') != host or params.get('state') != 'restarted'
+            or not unit or note != f'plan {plan_id}: Restart {unit} on {host}'):
+        raise ValueError('that plan differs from the prepared restart and has no way back here')
+    tasks = [{'type': 'unit-state', 'host': host, 'params': {'unit': unit, 'state': 'stopped'}}]
+    label = f'stop {unit} on {host}'
     with conn.tx():
         undo = changes.save_plan(conn, {'name': f'Undo: {label}'[:120], 'tasks': tasks}, actor)
         record(conn, key, kind, host, level, title, 'undo-prepared', actor, f'plan {undo}: the way back of plan {plan_id}')
@@ -231,7 +232,9 @@ def prepare_undo(conn: Conn, plan_id: int, actor: str) -> dict:
 def summary(conn: Conn) -> dict:
     """What the shared chrome shows on every page: how many are open at each level, without the snoozed and muted."""
     c = center(conn)
-    return {'counts': c['counts'], 'total': c['total']}
+    ev, last = conn.all("SELECT (SELECT coalesce(max(event_id), 0) FROM notification_events), (SELECT coalesce(max(last_at), 0) FROM alerts WHERE state = 'open')")[0]
+    counts = c['counts']
+    return {'counts': counts, 'total': c['total'], 'mark': f"{ev}:{last}:{c['total']}:{counts['crit']}:{counts['warn']}:{counts['info']}"}
 
 
 # ── what a person does with one ─────────────────────────────────────

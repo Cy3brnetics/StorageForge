@@ -5,6 +5,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ## Unreleased
 
 ### Fixed
+- Preparing a notification rollback checks that the plan still targets the original host and service.
 
 - The sign-in form waits for its submit handler and uses POST for native submissions so credentials stay out of URLs.
 
