@@ -130,6 +130,30 @@ t_stack() { local runtime=$1 name=$2 compose=$3 dir=${4:-@STACKS@/$2} labels=$5 
   wl_fw stack "$name" "$hook" "$ports" "$allow"
 }
 
+t_managed_workload_remove() { local runtime=$1 name=$2 ids id labels expected path
+  if [[ $runtime == lxc ]]; then
+    path=$(lxc-config lxc.lxcpath) && [[ $path == /* && -d $path && -x $path ]] || { conflict "cannot read the LXC container folder"; return 0; }
+    if [[ ! -e $path/$name && ! -L $path/$name ]]; then ok "no LXC container named $name"; return 0; fi
+    if [[ -L $path/$name || ! -f $path/$name/storageforge.made || -L $path/$name/storageforge.made ]]; then
+      conflict "StorageForge did not make the LXC container $name"; return 0
+    fi
+    act "destroy LXC container $name and its root filesystem" || return 0
+    try lxc-destroy -P "$path" -n "$name" -f && ok "destroyed LXC container $name"
+    return 0
+  fi
+  ids=$("$runtime" ps -aq --no-trunc --filter "label=com.docker.compose.project=$name") || { conflict "cannot list $runtime containers"; return 0; }
+  [[ -n $ids ]] || { ok "no containers in stack $name"; return 0; }
+  expected="true:$name"
+  local members=()
+  while IFS= read -r id; do
+    labels=$("$runtime" inspect -f "{{index .Config.Labels \"storageforge.managed\"}}:{{index .Config.Labels \"storageforge.stack\"}}" "$id") || { conflict "cannot inspect stack member $id"; return 0; }
+    [[ $labels == "$expected" ]] || { conflict "stack $name includes a container StorageForge did not deploy"; return 0; }
+    members+=("$id")
+  done <<<"$ids"
+  act "remove ${#members[@]} containers from stack $name, keeping its volumes and networks" || return 0
+  try "$runtime" rm -f "${members[@]}" && ok "removed stack $name"
+}
+
 wl_lxc_rest() { # name dir labels network bridge ports allow: the labels file, and the firewall
   local l
   if ((APPLY)) && [[ -d $2 ]]; then
@@ -726,6 +750,34 @@ changes.register('incus', {'group': 'Workloads', 'label': 'Run an Incus instance
     'help': 'Profiles, pool and network are checked first. Labels are user.* keys, published ports are proxy devices, and only the addresses you allow reach them.'},
     INCUS_ARGS, lambda p: f'Incus {p["type"] or "container"} {p["name"]} from {p["image"] or "images:debian/13"}', check_incus,
     ansible_of('t_incus', INCUS_ARGS, _incus_extra), args_of=_incus_extra)
+
+
+REMOVE_ARGS = ('runtime', 'name')
+
+
+def check_managed_remove(conn, c, h, p, say):
+    if p['runtime'] == 'lxc':
+        say('warn', 'destroying an LXC container deletes its root filesystem')
+    else:
+        if not PROJECT.fullmatch(p['name']):
+            say('crit', 'give the lower-case compose project name')
+        say('warn', 'removing the stack deletes its container writable layers and keeps its volumes, networks and compose files')
+
+
+def ansible_managed_remove(t):
+    task = ansible_of('t_managed_workload_remove', REMOVE_ARGS)(t)
+    task.update(tags=['destructive'], when='storageforge_destructive | default(false) | bool')
+    return task
+
+
+changes.register('managed-workload-remove', {'group': 'Workloads', 'label': 'Remove a managed stack or LXC container',
+    'destructive': True, 'confirm_of': 'name', 'fields': [
+        F('runtime', 'choice', 'Runtime', options=['docker', 'podman', 'lxc'], required=True),
+        F('name', 'vmname', 'Compose project or LXC container name', required=True),
+        F('confirm', 'confirm', 'Type its name again to confirm', required=True)],
+    'help': 'Removes every managed container in a compose stack, or destroys a managed LXC container and its root filesystem.'},
+    REMOVE_ARGS, lambda p: f'Remove managed {p["runtime"]} {"container" if p["runtime"] == "lxc" else "stack"} {p["name"]}',
+    check_managed_remove, ansible_managed_remove)
 
 
 # ── image updates ───────────────────────────────────────────────────

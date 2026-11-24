@@ -69,6 +69,7 @@ function taskTitle(t) {
     'libvirt-network': () => (p.state === 'absent' ? `Remove network ${p.name}` : `Network ${p.name} (${p.mode || 'nat'}${p.address ? ' ' + p.address : ''})`),
     'libvirt-pool': () => (p.state === 'absent' ? `Remove pool ${p.name}` : `Pool ${p.name} (${p.type || 'dir'} ${p.path || p.source || ''})`),
     'vm-send': () => `Send VM ${p.name} to ${p.dest_host}:${p.dest}${p.live ? ' (live)' : ''}`, 'vm-define': () => `Define VM ${p.name} on ${p.folder}`,
+    'managed-workload-remove': () => `Remove managed ${p.runtime} ${p.runtime === 'lxc' ? 'container' : 'stack'} ${p.name}`,
     'workload-action': () => `${(p.action || '').replace('-', ' ').replace(/^./, (c) => c.toUpperCase())} ${p.runtime} ${p.name}`, 'workload-remove': () => `Remove ${p.runtime} ${p.name}`,
   }[t.type] || (() => t.type))();
 }
@@ -111,7 +112,7 @@ async function openTask(type, host, preset = {}, edit = null) {
   const form = el('form', { class: 'stack card stageform' },
     el('div', { class: 'row' }, el('b', {}, spec.label), text('span', `${spec.group} · ${host}`, 'muted')),
     spec.help ? text('p', spec.help, 'muted small') : '',
-    spec.destructive ? text('p', 'Destroys data on the device. The script only does this with --apply --destructive, and the Ansible playbook only with -e storageforge_destructive=true.', 'st-failed small') : '',
+    spec.destructive ? text('p', 'This step is destructive. The script only does this with --apply --destructive, and the Ansible playbook only with -e storageforge_destructive=true.', 'st-failed small') : '',
     ...fields, msg,
     el('div', { class: 'row end' }, button('Cancel', () => { if (T.sel) renderEditor(); else renderSummary(); }, 'btn ghost sm'),
       el('button', { type: 'submit', class: 'btn pri sm' }, edit ? 'Update task' : 'Stage it')));
@@ -365,6 +366,7 @@ function renderChanges() {
   const move = (i, j) => { [p.tasks[i], p.tasks[j]] = [p.tasks[j], p.tasks[i]]; chTouch(); renderChanges(); };
   const list = el('ol', { class: 'chtasks' }, ...p.tasks.map((t, i) => {
     const r = res && res.tasks[i];
+    const confirmTarget = t.params.partition || t.params.device || t.params.disk || t.params.devices || t.params[CH.types?.[t.type]?.confirm_of];
     const worst = r ? (r.items.some((x) => x.level === 'crit') ? 'crit' : r.items.some((x) => x.level === 'warn') ? 'warn' : 'ok') : '';
     const li = el('li', { class: `card ${worst ? 'lv-border-' + worst : ''}` },
       el('div', { class: 'row' }, el('b', {}, `${i + 1}. ${taskTitle(t)}`),
@@ -375,8 +377,8 @@ function renderChanges() {
           button('Remove', () => { p.tasks.splice(i, 1); chTouch(); renderChanges(); }, 'btn ghost sm danger'))),
       text('span', `${t.host}${(CH.types && CH.types[t.type] && CH.types[t.type].destructive) ? ' · destructive' : ''}${t.note ? ' · ' + t.note : ''}`, 'muted small'),
       // drive tasks staged from a planner design arrive unconfirmed: the server refuses them until the device is typed
-      CH.types?.[t.type]?.destructive && t.params.confirm !== (t.params.device || t.params.disk || t.params.devices)
-        ? text('p', `Not confirmed: Edit it and type ${t.params.device || t.params.disk} again. Until then the plan can't be checked or saved.`, 'st-failed small') : '',
+      CH.types?.[t.type]?.destructive && confirmTarget && t.params.confirm !== confirmTarget
+        ? text('p', `Not confirmed: Edit it and type ${confirmTarget} again. Until then the plan can't be checked or saved.`, 'st-failed small') : '',
       r ? el('ul', { class: 'mvcheck' }, ...r.items.map((x) => el('li', { class: `lv-${x.level}` }, x.text))) : '');
     li._menu = () => [{ heading: `${i + 1}. ${taskTitle(t)}` }, { label: 'Edit…', run: () => openTask(t.type, t.host, {}, t) },
       { label: 'Move up', disabled: !i, run: () => move(i, i - 1) }, { label: 'Move down', disabled: i === p.tasks.length - 1, run: () => move(i, i + 1) },

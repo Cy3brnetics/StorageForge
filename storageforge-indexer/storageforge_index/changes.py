@@ -477,7 +477,7 @@ def check(conn: Conn, plan: dict) -> dict:
             names = sorted(set(containers))
             say('warn', f'running containers use this: {", ".join(names[:6])}{" …" if len(names) > 6 else ""}. Stop them first')
         if TYPES[k].get('destructive'):
-            say('note', 'destroys data on the device: the script only does it with --apply --destructive')
+            say('note', 'the script runs this destructive step only with --apply --destructive')
         undo = {'unmount': ('mount', 'target'), 'trash': ('dir', 'path')}.get(k)
         if undo:
             for j, e in enumerate(plan['tasks'][:i - 1], 1):

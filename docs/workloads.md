@@ -32,7 +32,11 @@ Three steps under **Workloads** in the plan editor. Each one leaves alone what S
 
 **What the check refuses.** A secret written into a compose file (an `environment` key such as `POSTGRES_PASSWORD` with a value): keep it in a [vault secret](secrets.md), write it to a file with a `secret-file` step, and point `env_file` at that file. A service built from source (this step runs images only). Labels starting `storageforge.`, and on Incus the `user.*` keys cloud-init reads (`user-data`, `vendor-data`, `meta-data`, `network-config`). Ports published to an Incus VM, which Incus forwards only in NAT mode with fixed addresses.
 
-Removing: `workload-remove` takes away an Incus instance or a container, keeping volumes and disks. A stack is taken down with `docker compose down` in its folder by hand for now, and an LXC container with `lxc-destroy`: neither has a step yet.
+## Removing a managed workload
+
+In a change plan, choose **Remove a managed stack or LXC container**, select the runtime, then enter and confirm its name. Run the report to inspect the target. Applying the step requires destructive changes to be enabled.
+
+For a Docker or Podman compose project, StorageForge checks the ownership labels of every member before removing the containers. This deletes their writable layers. Volumes, networks, compose files and firewall rules remain available for redeployment. For plain LXC, the step checks the creation marker, then destroys the container and its root filesystem.
 
 ## Image updates with rollback
 

@@ -142,6 +142,16 @@ class Check(Db):
         self.assertFalse([t for l, t in ok if l == 'crit'], ok)
         self.assertTrue(any('a fence on input' in t for _, t in ok))
 
+    def test_managed_removal_needs_the_exact_name_and_destructive_permission(self):
+        p = {'runtime': 'lxc', 'name': 'web', 'confirm': 'other'}
+        with self.assertRaisesRegex(ValueError, 'type web again'):
+            self.items('managed-workload-remove', **p)
+        p['confirm'] = 'web'
+        self.assertIn(('warn', 'destroying an LXC container deletes its root filesystem'), self.items('managed-workload-remove', **p))
+        plan = {'name': 'remove', 'tasks': [{'type': 'managed-workload-remove', 'host': 'nas', 'params': p}]}
+        self.assertIn('managed-workload-remove', changes.script(self.conn, plan))
+        self.assertIn('storageforge_destructive | default(false) | bool', changes.ansible(self.conn, plan))
+
     def test_the_whole_script_is_valid_bash_and_ansible_renders(self):
         plan = {'name': 'w', 'tasks': [
             {'type': 'stack', 'host': 'nas', 'params': {'runtime': 'docker', 'name': 'wiki', 'compose': COMPOSE, 'allow_from': '10.0.0.0/8'}},
@@ -226,6 +236,41 @@ class Scripts(unittest.TestCase):
         self.assertIn('behind NAT on lxcbr0', out.stdout)
         out = self.run_fn('t_lxc', True, 'br', 'debian', 'trixie', 'amd64', 'bridge', 'nobr', '', '', '', '')
         self.assertIn('there is no bridge nobr here', out.stdout)
+
+    def test_remove_stack_checks_all_members_before_removing_any(self):
+        stub(self.bin, 'docker', """
+case "$1" in
+  ps) cat "$FAKE/members" ;;
+  inspect) cat "$FAKE/labels-${!#}" ;;
+  rm) : >"$FAKE/members" ;;
+esac""")
+        members = self.fake / 'members'
+        members.write_text('web1\nweb2\n')
+        (self.fake / 'labels-web1').write_text('true:wiki')
+        (self.fake / 'labels-web2').write_text('false:')
+        args = ('docker', 'wiki')
+        self.assertIn('did not deploy', self.run_fn('t_managed_workload_remove', True, *args).stdout)
+        self.assertNotIn('docker rm', self.log())
+        (self.fake / 'labels-web2').write_text('true:wiki')
+        self.assertIn('would: remove 2 containers', self.run_fn('t_managed_workload_remove', False, *args).stdout)
+        self.assertNotIn('docker rm', self.log())
+        self.assertIn('removed stack wiki', self.run_fn('t_managed_workload_remove', True, *args).stdout)
+        self.assertIn('docker rm -f web1 web2', self.log())
+        self.assertIn('no containers', self.run_fn('t_managed_workload_remove', True, *args).stdout)
+
+    def test_remove_lxc_requires_creation_marker(self):
+        self.lxc_stubs()
+        directory = self.d / 'lxc/web'
+        directory.mkdir()
+        stub(self.bin, 'lxc-destroy', 'exit 0')
+        args = ('lxc', 'web')
+        self.assertIn('did not make', self.run_fn('t_managed_workload_remove', True, *args).stdout)
+        self.assertNotIn('lxc-destroy', self.log())
+        (directory / 'storageforge.made').touch()
+        self.assertIn('would: destroy', self.run_fn('t_managed_workload_remove', False, *args).stdout)
+        self.assertNotIn('lxc-destroy', self.log())
+        self.assertIn('destroyed LXC container web', self.run_fn('t_managed_workload_remove', True, *args).stdout)
+        self.assertIn(f'lxc-destroy -P {directory.parent} -n web -f', self.log())
 
     def incus_stubs(self):
         stub(self.bin, 'incus', r'''
@@ -342,6 +387,13 @@ class RealDockerStack(unittest.TestCase):
         self.assertIn(f'a stack named {self.name} runs from {self.dir}', other.stdout)
         bad = self.run_stack(False, 'services:\n  app:\n    image: busybox:latest\n    ports: ["notaport"]\n')
         self.assertIn('compose refuses this file', bad.stdout)
+        remove = HARNESS + 'APPLY=1\n' + wl.BASH + f'\nt_managed_workload_remove docker {self.name}\nexit "$PROBLEMS"'
+        removed = subprocess.run(['bash', '-c', remove], capture_output=True, text=True, timeout=60)
+        self.assertEqual(removed.returncode, 0, removed.stderr + removed.stdout)
+        self.assertIn(f'removed stack {self.name}', removed.stdout)
+        self.assertTrue((self.dir / 'compose.yaml').exists())
+        again = subprocess.run(['bash', '-c', remove], capture_output=True, text=True, timeout=60)
+        self.assertIn(f'no containers in stack {self.name}', again.stdout)
 
 
 if __name__ == '__main__':
