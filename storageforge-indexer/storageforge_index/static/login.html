@@ -10,15 +10,16 @@
 </head>
 <body class="loginpage">
 <main>
-  <form id="loginform" class="logincard">
+  <form method="post" action="/api/login" id="loginform" class="logincard">
     <div class="brand"><svg width="22" height="22" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" class="t1"/><rect x="2" y="11" width="24" height="6" rx="1.5" class="t2"/><rect x="2" y="19" width="24" height="6" rx="1.5" class="t3"/></svg><b>StorageForge</b></div>
     <h1>Sign in</h1>
     <p id="loginmsg" class="st-failed" hidden></p>
     <label class="field col"><span>Username</span><input id="username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required autofocus></label>
     <label class="field col"><span>Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
-    <button type="submit" class="btn pri">Sign in</button>
+    <button id="login-submit" disabled type="submit" class="btn pri">Sign in</button>
     <button type="button" id="loginwebauthn" class="btn ghost">Sign in with security key</button>
     <p class="muted small">Need an account? Ask an admin for an invite link.</p>
+    <noscript>Enable JavaScript to sign in.</noscript>
   </form>
 </main>
 <script src="/login.js"></script>

@@ -35,6 +35,8 @@ document.getElementById('loginform').addEventListener('submit', async (ev) => {
   } catch (err) { say(err.message); }
 });
 
+document.getElementById('login-submit').disabled = false;
+
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64u = (t) => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 const waBtn = document.getElementById('loginwebauthn');

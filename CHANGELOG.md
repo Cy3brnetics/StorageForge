@@ -4,6 +4,10 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 ## Unreleased
 
+### Fixed
+
+- The sign-in form waits for its submit handler and uses POST for native submissions so credentials stay out of URLs.
+
 ### Added
 - **Toolbox catalog completion (85 official entries), WireGuard peer QR codes, Trivy CVE deltas & remaining roadmap §2/§11/§14 features** (live lab validation pending): completed all 12 catalog groups of roadmap §4.2 (`dokploy`, `incus-ui`, `netbird`, `netmaker`, `openvpn`, `pangolin`, `pomerium`, `teleport`, `boundary`, `kanidm`, `samba-ad-dc`, `freeipa`, `falco`, `wazuh`, `prometheus`, `grafana`, `loki`, `beszel`, `netdata`, `smartd`, `ntfy`, `gotify`, `apprise`, `kopia`, `proxmox-backup-server`, `renovate`, `minio`) with matching read-only adapters; pure-Python ISO 18004 SVG QR code and peer config template generation (`qrsvg.py`, `tbadapters.py`) in the WireGuard peer manager; Trivy/Grype CVE deltas on catalog updates (`toolbox.cve_delta`, `toolbox.cve_summary`, `GET /api/toolbox/updates`); optional IPv6 ULA `/64` overlay ranges (`sfnet.pick_v6_range`, `range6`) and roaming peer pull scripts (`sfnet.mirror_pull_script`); OpenVPN `.ovpn` profile and strongSwan site-to-site templates (`overlays.py`); Teleport/Boundary inventory target generation and recording hold checks (`accessproxies.py`); agent Toolbox status ingestion (`agentplugins.take_toolbox_status`), ransomware modification burst detection (`agentfiles.ransomware_signs`), and scan mount usage/ZFS pool comparison (`agentscan.py`); and full secret policy scopes (`steps`, `hosts`, `platforms`, `sensitive`) in the Keys → Secrets UI (`static/secretsview.js`).
 - **Toolbox publisher signatures** (live lab validation pending). Binary entries can require a detached minisign signature or a Cosign Sigstore bundle on the download, and container, Quadlet and compose entries (including sidecars) can verify each digest-pinned image with `cosign verify --key`, using a public key pinned in the catalog.

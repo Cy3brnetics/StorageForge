@@ -1396,6 +1396,7 @@ class ServerTests(DBCase):
         r = self.client.get('/login')
         self.assertEqual(r.status_code, 200)
         self.assertIn(b'/login.js', r.data)
+        self.assertIn(b'<form method="post" action="/api/login"', r.data)
         self.assertEqual(r.headers['Cache-Control'], 'no-store')
         for name in ('login.js', 'style.css', 'favicon.svg'):
             self.assertEqual(self.client.get('/' + name).status_code, 200, name)
