@@ -165,12 +165,19 @@ def sign_in():
 
 def scan_everything(api):
     say('creating keys in the vault and installing them')
-    api.post('/api/keys', {'name': 'lab-scan'})
-    api.post('/api/keys', {'name': 'lab-admin'})
-    keys = {k['name']: k['public_key'] for k in api.get('/api/keys')['keys']}
+    existing = {k['name'] for k in api.get('/api/keys')['keys']}
+    for name in ('lab-scan', 'lab-admin'):
+        if name not in existing:
+            api.post('/api/keys', {'name': name})
+    inventory = api.get('/api/keys')
+    keys = {k['name']: k['public_key'] for k in inventory['keys']}
+    bindings = {b['pattern']: b for b in inventory['bindings'] if b['key'] == 'lab-scan' and b['user'] == 'scan'}
     for vm, ip in IPS.items():
         install_key(vm, 'scan', keys['lab-scan'])
-        cli('vault', 'bind', '--key', 'lab-scan', '--host', ip, '--user', 'scan', '--actions', 'scan,checksum')
+        if ip not in bindings:
+            cli('vault', 'bind', '--key', 'lab-scan', '--host', ip, '--user', 'scan', '--actions', 'scan,checksum')
+        elif not {'scan', 'checksum'}.issubset(bindings[ip]['actions'].split(',')) or bindings[ip]['port'] != 22:
+            fail(f'{vm}: the existing lab-scan binding has incompatible actions or port')
         if not roles.pool()[vm].can('controller'):
             install_key(vm, 'sfadmin', keys['lab-admin'])
     say('scanning every host')
@@ -226,7 +233,7 @@ def confirm_host_key(api, vm):
 
 def install_key(vm, user, public):
     home = shlex.quote(f'~{user}')[1:-1]       # the shell has to expand it
-    ssh(vm, f'sudo -n sh -c {shlex.quote(f"d={home}/.ssh; mkdir -p $d; echo {shlex.quote(public)} >>$d/authorized_keys; chown -R {user}: $d; chmod 700 $d; chmod 600 $d/authorized_keys")}')
+    ssh(vm, f'sudo -n sh -c {shlex.quote(f"d={home}/.ssh; mkdir -p $d; grep -qxF -- {shlex.quote(public)} $d/authorized_keys 2>/dev/null || echo {shlex.quote(public)} >>$d/authorized_keys; chown -R {user}: $d; chmod 700 $d; chmod 600 $d/authorized_keys")}')
 
 
 def filled(node):

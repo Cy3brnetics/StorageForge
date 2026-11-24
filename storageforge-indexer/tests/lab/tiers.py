@@ -138,6 +138,12 @@ def tier1(r):
     jobs = {}
 
     def scan_all():
+        # A reused snapshot can already have the capability-enabled readers.
+        # Exercise the unprivileged scan first. access_then_rescan reinstalls both.
+        for vm in IPS:
+            if not BUILD[vm].can('nosystemd'):
+                ssh(vm, "sudo -n sh -c 'for f in /usr/local/lib/storageforge/find /usr/local/lib/storageforge/sha256sum; do "
+                        "if [ -f \"$f\" ]; then chmod 0700 \"$f\" || exit 1; fi; done'")
         demo.scan_everything(api)
     r.check('scan', '-', scan_all)
     for j in api.get('/api/jobs')['jobs']:
@@ -145,7 +151,17 @@ def tier1(r):
     ids = host_ids()
     for vm, ip in IPS.items():
         job = jobs.get(ip) or jobs.get(vm)
-        r.add('scan-status', vm, bool(job) and job['status'] == 'ok', (job or {}).get('status', 'no job'), json.dumps((job or {}).get('result')))
+        status = (job or {}).get('status', 'no job')
+        result = (job or {}).get('result') or {}
+        good = status == 'ok'
+        note = status
+        if status == 'partial' and vm in ids:
+            mounts = sql(f"SELECT mount_point FROM mounts WHERE host_id = {ids[vm]} AND scan_state = 'indexed'")
+            paths = ' '.join(shlex.quote(m['mount_point']) for m in mounts)
+            unreadable = ssh(vm, f'for p in {paths}; do sudo -n -u scan ls -A "$p" >/dev/null 2>&1 || echo "$p"; done').splitlines()
+            good = bool(unreadable) and len(unreadable) == result.get('failed') and result.get('entries', 0) > 0
+            note = f'partial; scan user cannot list {", ".join(unreadable)}'
+        r.add('scan-status', vm, good, note, json.dumps(result))
     for vm in VMS:
         r.add('host-name', vm, vm in ids, 'indexed under its own name' if vm in ids else f'indexed as {sorted(ids)}')
 
@@ -169,7 +185,7 @@ def tier1(r):
 
     for vm, root, profile, _ in manifests():
         if profile == 'full':
-            denied = sql(f"SELECT path FROM scan_denied d JOIN scans s USING (scan_id) WHERE s.host_id = {ids.get(vm, -1)} AND d.path LIKE '{root}/lab-seed/restricted%'")
+            denied = sql(f"SELECT path FROM scan_denied d JOIN scans s USING (scan_id) WHERE s.scan_id = (SELECT max(scan_id) FROM scans WHERE host_id = {ids.get(vm, -1)}) AND d.path LIKE '{root}/lab-seed/restricted%'")
             r.add('reports-unreadable', vm, bool(denied), f'{root}/lab-seed/restricted is listed' if denied else 'the unreadable folder is not listed')
 
     inventory = {x['hostname']: json.loads(x['inventory_json'] or '{}') for x in sql('SELECT hostname, inventory_json FROM hosts')}
