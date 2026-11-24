@@ -86,16 +86,22 @@ def apply_monitoring(conn: Conn, host: str, sections: dict, at: int):
     host_id, address = rows[0]
     inv = inventory_of(sections, address or host)
     data = json.loads(inv.to_json()) | {'source': 'agent', 'label': LABEL, 'agent_at': at}
+    dialect = _Dialect(conn.dialect)
     cast = ':inv' if conn.dialect == 'sqlite' else 'CAST(:inv AS jsonb)'
-    conn.execute(f'UPDATE hosts SET inventory_json = {cast}, os_info = :os WHERE host_id = :h', {'inv': json.dumps(data), 'os': inv.os_info, 'h': host_id})
+    conn.execute(f'UPDATE hosts SET inventory_json = {cast}, os_info = :os, last_scanned_at = {dialect.ts(":at")} WHERE host_id = :h',
+                 {'inv': json.dumps(data), 'os': inv.os_info, 'at': at, 'h': host_id})
     planned = plan_mounts(inv.mounts, ScanOptions())
-    Database.sync_mounts(_Dialect(conn.dialect), conn, host_id, planned)
-    for pm in planned:
-        if getattr(pm.mount, 'size_bytes', 0) and pm.mount.size_bytes > 0:
-            mid = conn.scalar('SELECT mount_id FROM mounts WHERE host_id = :h AND mount_point = :p', {'h': host_id, 'p': pm.mount.target})
-            if mid:
-                conn.execute('INSERT INTO mount_usage (mount_id, total_bytes, used_bytes) VALUES (:m, :t, :u)',
-                             {'m': mid, 't': int(pm.mount.size_bytes), 'u': int(getattr(pm.mount, 'used_bytes', 0) or 0)})
+    Database.sync_mounts(dialect, conn, host_id, planned)
+    conn.execute("""INSERT INTO mount_usage (host_id, mount_point, at, used_bytes, total_bytes)
+                    SELECT host_id, mount_point, :now, used_bytes, total_bytes FROM mounts
+                    WHERE host_id = :h AND total_bytes > 0 AND used_bytes IS NOT NULL
+                    AND scan_state NOT IN ('gone', 'bind-alias')""", {'now': at, 'h': host_id})
+    try:
+        from .graph import rebuild_host
+        rebuild_host(None, conn, host)
+    except Exception:
+        from . import errlog
+        errlog.trace()
 
 
 def _mounted(mounts) -> set:

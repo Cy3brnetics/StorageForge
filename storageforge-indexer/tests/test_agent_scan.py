@@ -69,7 +69,7 @@ def run_plugin(program: Path, host: Path) -> list[dict]:
         raise AssertionError(f'no whole inventory from the plugin: {out}')
     finally:
         p.kill()
-        p.wait()
+        p.communicate()
 
 
 @unittest.skipUnless(shutil.which('cargo'), 'needs cargo to build the plugin')
@@ -89,6 +89,7 @@ class Scan(test_agent_plugins.Base):
             self.record('scan', 'inventory', part)
         self.assertEqual(agentplugins.take(self.db), {'scan': len(self.parts)})
         inv = loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE hostname = 'nas'"))
+        self.assertIsNotNone(self.conn.scalar("SELECT last_scanned_at FROM hosts WHERE hostname = 'nas'"))
         self.assertEqual((inv['source'], inv['label']), ('agent', 'reported by agent'))
         self.assertEqual(sorted(m['target'] for m in inv['mounts']), ['/', '/proc', '/srv/data'])
         self.assertIn('/srv/data 10.0.0.0/24', inv['nfs'])
