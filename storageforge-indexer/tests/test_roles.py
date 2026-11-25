@@ -260,6 +260,37 @@ class ResetLinks(Base):
 
 
 class Migration(unittest.TestCase):
+    def test_blueprint_upgrade_preserves_original_and_backup(self):
+        import json
+        import sqlite3
+        from pathlib import Path
+        from storageforge_index import backup, graph
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(f'sqlite:///{tmp}/old.db')
+            conn = db.connect()
+            self.addCleanup(conn.close)
+            for script in sorted((MIGRATIONS / 'sqlite').glob('*.sql')):
+                if int(script.name.split('_')[0]) < 74:
+                    conn.raw.executescript(script.read_text())
+            original = '{"metadata":{"host":"planned"},"devices":[]}'
+            conn.execute("INSERT INTO blueprints VALUES ('planned', :bp, 123)", {'bp': original})
+            old_backup = backup.create(db, 'essentials', Path(tmp))['path']
+            db.migrate(conn)
+            edited = {'metadata': {'host': 'planned'}, 'links': [{'path': '/new'}]}
+            graph.store_blueprint(conn, edited)
+            self.assertEqual(graph.stored_blueprint(conn, 'planned'), edited)
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute('DELETE FROM blueprints')
+            new_backup = backup.create(db, 'essentials', Path(tmp))['path']
+            for path, expected in ((old_backup, json.loads(original)), (new_backup, edited)):
+                saved = Database(path).connect()
+                try:
+                    self.assertEqual(saved.scalar('SELECT body_json FROM blueprints'), original)
+                    self.assertEqual(graph.stored_blueprint(saved, 'planned'), expected)
+                finally:
+                    saved.close()
+
     def test_upgrade_keeps_accounts_and_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(f'sqlite:///{tmp}/idx.db')
@@ -271,7 +302,7 @@ class Migration(unittest.TestCase):
             conn.execute("INSERT INTO users (username, password_hash, created_at, role) VALUES ('old', 'h', :t, 'operator')", {'t': now})
             uid = conn.scalar("SELECT user_id FROM users WHERE username = 'old'")
             conn.execute("INSERT INTO web_sessions (sid_hash, user_id, created_at) VALUES ('s', :u, :t)", {'u': uid, 't': now})
-            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '027_key_origin.sql', '028_remote_nodes.sql', '029_schedule_pending_token.sql', '030_clamav.sql', '031_ransomware_defense.sql', '032_security_measured.sql', '033_host_network.sql', '034_map.sql', '035_map_more.sql', '036_security_more.sql', '037_device_credentials.sql', '038_network_devices.sql', '039_sentinel_permission.sql', '040_host_log_lines.sql', '041_scan_signing.sql', '042_design_versions.sql', '043_host_log_ingest.sql', '044_notifications.sql', '045_log_rules.sql', '046_enclave_layers.sql', '048_ssh_ca.sql', '053_agents.sql', '055_agent_tunnel.sql', '056_agent_receiver.sql', '057_agent_guard.sql', '058_log_push.sql', '059_agent_plugins.sql', '061_log_anomalies.sql', '062_netconsole_pstore.sql', '063_secret_store.sql', '067_api_connections.sql', '068_api_token_expiry.sql', '069_workload_captures.sql', '071_toolbox.sql', '072_toolbox_bundles.sql', '073_host_design_inputs.sql'])
+            self.assertEqual(db.migrate(conn), ['024_roles_invites.sql', '025_invite_grants.sql', '026_job_state.sql', '027_key_origin.sql', '028_remote_nodes.sql', '029_schedule_pending_token.sql', '030_clamav.sql', '031_ransomware_defense.sql', '032_security_measured.sql', '033_host_network.sql', '034_map.sql', '035_map_more.sql', '036_security_more.sql', '037_device_credentials.sql', '038_network_devices.sql', '039_sentinel_permission.sql', '040_host_log_lines.sql', '041_scan_signing.sql', '042_design_versions.sql', '043_host_log_ingest.sql', '044_notifications.sql', '045_log_rules.sql', '046_enclave_layers.sql', '048_ssh_ca.sql', '053_agents.sql', '055_agent_tunnel.sql', '056_agent_receiver.sql', '057_agent_guard.sql', '058_log_push.sql', '059_agent_plugins.sql', '061_log_anomalies.sql', '062_netconsole_pstore.sql', '063_secret_store.sql', '067_api_connections.sql', '068_api_token_expiry.sql', '069_workload_captures.sql', '071_toolbox.sql', '072_toolbox_bundles.sql', '073_host_design_inputs.sql', '074_host_design_sections.sql'])
             self.assertEqual(db.migrate(conn), [], 'a migration that does not record itself runs again at every start')
             self.assertEqual(conn.scalar("SELECT role FROM users WHERE username = 'old'"), 'operator')
             self.assertEqual(conn.scalar('SELECT count(*) FROM web_sessions'), 1)

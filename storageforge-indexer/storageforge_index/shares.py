@@ -698,7 +698,7 @@ def designed_hosts(conn: Conn) -> list[str]:
     """The scanned hosts with NFS or SMB shares in their saved design: what can be deployed, whichever view is open."""
     scanned = hosts(conn)
     out = []
-    for host, body in conn.all('SELECT hostname, body_json FROM blueprints'):
+    for host, body in conn.all('SELECT hostname, body_json FROM host_storage_designs'):
         exports = (json.loads(body) or {}).get('exports') or []
         if find_host(scanned, host) and any(is_designed(e) and proto(e) in ('NFS', 'SMB') for e in exports):
             out.append(host)

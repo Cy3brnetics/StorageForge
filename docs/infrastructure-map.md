@@ -282,3 +282,8 @@ The roadmap goes further than this.
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |
 
 **Not tested:** Terraform and Puppet have not applied the exports: those are checked for structure and for values held as data. Incus, LXC, Proxmox guests, Tailscale, proxy routes and identity providers have parsers and unit tests, and have not met a real host in the lab. libvirt has been read in the lab, with a guest defined and not booted. No generated VM has been booted. Whether a quarantine reaches a bridged VM has not been measured, and the page says a bridged VM is outside host rules: the lab shows it does reach a published container port.
+
+
+### Saved storage designs after upgrade
+
+Schema 74 copies each saved blueprint into its host’s storage section. The planner, CLI imports, shares and graph read that section. The original blueprint and its import time remain available through the read-only `blueprints` view. Essentials backups include the original and current data. Restoring a backup created before this migration upgrades its saved blueprints on startup.

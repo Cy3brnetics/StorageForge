@@ -2955,7 +2955,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_planner_hosts():
         hosts = {r[0]: {'host': r[0], 'scanned': True, 'last_scanned_at': epoch(r[1]), 'saved': False, 'saved_at': None}
                  for r in conn().all('SELECT hostname, last_scanned_at FROM hosts ORDER BY hostname')}
-        for name, at in conn().all('SELECT hostname, imported_at FROM blueprints ORDER BY hostname'):
+        for name, at in conn().all('SELECT hostname, imported_at FROM host_storage_designs ORDER BY hostname'):
             hosts.setdefault(name, {'host': name, 'scanned': False, 'last_scanned_at': None})
             hosts[name].update(saved=True, saved_at=at)
         for (name,) in conn().all('SELECT hostname FROM host_design_inputs WHERE position = 1 AND body_json IS NULL'):
@@ -3019,7 +3019,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not host:
             raise ValueError('give host')
         saved = graph.stored_blueprint(conn(), host)
-        saved_at = conn().scalar('SELECT imported_at FROM blueprints WHERE hostname = :h', {'h': host})
+        saved_at = conn().scalar('SELECT imported_at FROM host_storage_designs WHERE hostname = :h', {'h': host})
         offsite = moves.host_slug(host) in protection.offsite_hosts(conn())
         if source == 'saved' and saved:
             saved['links'] = quiet_links(host, saved.get('links'))

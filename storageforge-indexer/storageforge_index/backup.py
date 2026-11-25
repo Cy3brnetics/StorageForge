@@ -30,7 +30,7 @@ from .vault import derive_kek
 
 _names = threading.Lock()
 
-ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'users', 'hosts', 'blueprints', 'move_plans', 'audit_log',
+ESSENTIAL = ('vault_meta', 'ssh_keys', 'device_credentials', 'key_bindings', 'users', 'hosts', 'blueprint_archive_v1', 'host_design_sections', 'move_plans', 'audit_log',
              'change_plans', 'storage_tasks', 'settings', 'deploy_access', 'deployed', 'jobs',
              'host_key_confirmations', 'host_configs', 'network_devices', 'network_changes', 'schedules', 'roles', 'invites', 'remote_nodes', 'clamav_detections',
              'security_timelock_queue', 'security_canaries', 'security_quarantine', 'security_retention_holds', 'security_events', 'map_views', 'map_manual', 'map_annotations', 'map_designs',
@@ -108,7 +108,15 @@ def create(db: Database, kind: str = 'essentials', dest: Path | None = None, kee
         try:
             d.execute('ATTACH DATABASE ? AS src', (f'file:{src}?mode=ro',))
             d.execute('BEGIN')
+            source_tables = {r[0] for r in d.execute("SELECT name FROM src.sqlite_master WHERE type='table'")}
+            legacy_storage = 'blueprints' in source_tables and 'host_design_sections' not in source_tables
             for t in ESSENTIAL:
+                if legacy_storage and t in ('blueprint_archive_v1', 'host_design_sections'):
+                    if t == 'blueprint_archive_v1':
+                        d.execute('INSERT INTO main.blueprint_archive_v1 SELECT hostname, body_json, imported_at FROM src.blueprints')
+                    else:
+                        d.execute("INSERT INTO main.host_design_sections SELECT hostname, 'storage', body_json, imported_at FROM src.blueprints")
+                    continue
                 cols = [r[1] for r in d.execute(f'PRAGMA main.table_info({t})')]
                 have = {r[1] for r in d.execute(f'PRAGMA src.table_info({t})')}
                 shared = ', '.join(c for c in cols if c in have)

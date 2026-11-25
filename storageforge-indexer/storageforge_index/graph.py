@@ -323,7 +323,7 @@ def load(conn, host: str | None = None, layers=('storage',)) -> dict:
 
 
 def stored_blueprint(conn, hostname: str):
-    rows = conn.all('SELECT body_json FROM blueprints WHERE hostname = :h OR :h LIKE hostname || :dot',
+    rows = conn.all('SELECT body_json FROM host_storage_designs WHERE hostname = :h OR :h LIKE hostname || :dot',
                     {'h': hostname, 'dot': '.%'})
     return json.loads(rows[0][0]) if rows else None
 
@@ -332,8 +332,8 @@ def store_blueprint(conn, bp: dict) -> str:
     host = (bp.get('metadata') or {}).get('host')
     if not host:
         raise ValueError('blueprint has no metadata.host')
-    conn.execute("""INSERT INTO blueprints (hostname, body_json, imported_at) VALUES (:h, :b, :t)
-                    ON CONFLICT (hostname) DO UPDATE SET body_json = excluded.body_json, imported_at = excluded.imported_at""",
+    conn.execute("""INSERT INTO host_design_sections (hostname, section, body_json, updated_at) VALUES (:h, 'storage', :b, :t)
+                    ON CONFLICT (hostname, section) DO UPDATE SET body_json = excluded.body_json, updated_at = excluded.updated_at""",
                  {'h': host, 'b': json.dumps(bp), 't': int(time.time())})
     return host
 

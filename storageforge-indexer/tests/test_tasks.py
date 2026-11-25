@@ -358,10 +358,10 @@ class Retire(Fleet):
         before = hit() if self.db.dialect == 'sqlite' else 0
         self.conn.execute("INSERT INTO scan_jobs (host, requested_by, queued_at, status) VALUES ('nas', 't', 1, 'ok')")
         self.conn.execute("INSERT INTO graph_nodes (node_id, kind, label, host, updated_at) VALUES ('host:nas', 'Host', 'nas', 'nas', 1)")
-        self.conn.execute("INSERT INTO blueprints (hostname, body_json, imported_at) VALUES ('nas', '{}', 1)")
+        self.conn.execute("INSERT INTO host_design_sections (hostname, section, body_json, updated_at) VALUES ('nas', 'storage', '{}', 1)")
         retire.retire(self.conn, 'nas')
         for sql in ("SELECT count(*) FROM hosts WHERE hostname = 'nas'", "SELECT count(*) FROM scan_jobs",
-                    "SELECT count(*) FROM graph_nodes WHERE host = 'nas'", "SELECT count(*) FROM blueprints"):
+                    "SELECT count(*) FROM graph_nodes WHERE host = 'nas'", "SELECT count(*) FROM host_design_sections"):
             self.assertEqual(self.conn.scalar(sql), 0, sql)
         self.assertEqual(self.conn.scalar("SELECT count(*) FROM mounts m LEFT JOIN hosts h ON h.host_id = m.host_id WHERE h.host_id IS NULL"), 0)
         if self.db.dialect == 'sqlite':

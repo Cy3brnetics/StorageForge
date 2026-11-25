@@ -80,7 +80,7 @@ def designed_mounts(conn: Conn) -> list[dict]:
 
     from .shares import proto
     out = []
-    for server, body in conn.all('SELECT hostname, body_json FROM blueprints'):
+    for server, body in conn.all('SELECT hostname, body_json FROM host_storage_designs'):
         for i, e in enumerate((json.loads(body) or {}).get('exports') or []):
             for m in e.get('mounts') or []:
                 if m.get('host') and m.get('path'):
