@@ -1122,6 +1122,7 @@ function docState(msg,cls){
   const el=$('#docstate');el.className=cls||(DOC.dirty?'dirty':'muted');
   el.textContent=msg||(!DOC.host?'Example design. Edits stay in this browser.'
     :DOC.dirty?'Unsaved changes (kept in this browser).'
+    :DOC.source==='planned'?'Planned in a map design. Save to keep a storage blueprint for this host.'
     :DOC.source==='scan'?'Built from the latest scan. Save it to keep your design.'
     :'Saved design · '+fmtTime(DOC.savedAt));
   $('#savedesign').hidden=!DOC.host||!DOC.signedIn;$('#versions').hidden=!DOC.host||!DOC.signedIn;$('#fromscan').hidden=!DOC.host||!DOC.scanned||!DOC.signedIn;
@@ -1135,7 +1136,7 @@ async function loadHosts(){
   try{
     const {hosts,example}=await apiJSON('/api/planner/hosts');DOC.signedIn=true;DOC.hosts=scrub(hosts);DOC.example=example!==false;$('#signin').hidden=true;
     const sel=$('#hostpick');
-    sel.replaceChildren(...(exampleShown()?[new Option('Example host “atlas”','')]:[]),...hosts.map(h=>new Option(`${h.host}${h.saved?' · saved':''}${h.scanned?' · scanned':''}`,h.host)));
+    sel.replaceChildren(...(exampleShown()?[new Option('Example host “atlas”','')]:[]),...hosts.map(h=>new Option(`${h.host}${h.saved?' · saved':h.planned?' · planned':''}${h.scanned?' · scanned':''}`,h.host)));
     sel.value=DOC.host;docState();
   }catch(e){ /* signed out: the example still works */ }
 }

@@ -11,6 +11,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The sign-in form waits for its submit handler and uses POST for native submissions so credentials stay out of URLs.
 
 ### Added
+- Hosts saved only in a map design now appear in the planner. Open one to review its design or start its storage blueprint before its first scan.
 - The planner’s Versions dialog previews the unified host design and its older map alternatives using saved data.
 - Host operations forms expose the installed CLI in its corresponding workspaces and display command output there.
 - Cleanup and `copies sync --file` can schedule a one-way mirror between two individual files, including copies with different names.

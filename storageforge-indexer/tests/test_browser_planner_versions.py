@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from storageforge_index import graph, server, users
+from storageforge_index import graph, mapdesign, server, users
 from storageforge_index.db import Database
 
 try:
@@ -32,6 +32,7 @@ class PlannerVersions(unittest.TestCase):
         bp = json.loads(ATLAS.read_text())
         bp['metadata']['host'] = HOST                         # a planned host: saved, never scanned
         graph.store_blueprint(conn, bp)
+        mapdesign.save_design(conn, {'name': 'future fleet', 'doc': {'hosts': [{'name': 'future-nas', 'planned': True}]}}, 'admin')
         conn.close()
         cls.http = make_server('127.0.0.1', 0, server.create_app(server.App(cls.db), 's' * 48), threaded=True)
         threading.Thread(target=cls.http.serve_forever, daemon=True).start()
@@ -75,6 +76,18 @@ class PlannerVersions(unittest.TestCase):
 
     def other_mode(self):
         return 'LABEL' if self.page.evaluate('S.idMode') == 'UUID' else 'UUID'
+
+    def test_open_host_with_only_a_map_design(self):
+        self.page.select_option('#hostpick', 'future-nas')
+        self.page.wait_for_function("() => DOC.host === 'future-nas' && DOC.source === 'planned'")
+        self.assertEqual(self.page.evaluate('S.disks.length'), 0)
+        self.open_panel()
+        self.page.get_by_role('button', name='Preview unified design').click()
+        self.page.get_by_text('Current design · future fleet', exact=True).click()
+        doc = json.loads(self.page.locator('#pv-result pre').first.inner_text())
+        self.assertEqual(doc['metadata'], {'host': 'future-nas', 'planned': True})
+        self.assertIsNone(doc['sections']['storage'])
+        self.assertEqual(self.errors, [])
 
     def test_preview_saved_unified_design(self):
         self.open_panel()

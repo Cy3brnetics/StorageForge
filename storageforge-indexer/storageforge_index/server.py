@@ -2958,6 +2958,9 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         for name, at in conn().all('SELECT hostname, imported_at FROM blueprints ORDER BY hostname'):
             hosts.setdefault(name, {'host': name, 'scanned': False, 'last_scanned_at': None})
             hosts[name].update(saved=True, saved_at=at)
+        for (name,) in conn().all('SELECT hostname FROM host_design_inputs WHERE position = 1 AND body_json IS NULL'):
+            h = hosts.setdefault(name, {'host': name, 'scanned': False, 'last_scanned_at': None})
+            h.update(planned=True, saved=False, saved_at=None)
         return jsonify(hosts=sorted(hosts.values(), key=lambda h: h['host']),
                        example=not alerts.get_setting(conn(), 'planner.hide_example'))
 
@@ -3023,6 +3026,12 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             saved['protection'] = protection.overlay(conn(), host, saved.get('protection') or [])
             return jsonify(host=host, source='saved', saved_at=saved_at, scanned=scanned(host), offsite=offsite, blueprint=saved, shares_deployed=shares.in_sync(conn(), host))
         if not scanned(host):
+            if source == 'saved' and conn().scalar('SELECT 1 FROM host_design_inputs WHERE hostname = :h AND position = 1', {'h': host}):
+                bp = {'apiVersion': 'storageforge/v1', 'kind': 'StorageBlueprint',
+                      'metadata': {'host': host, 'identifiers': 'UUID'},
+                      'devices': [], 'pools': [], 'remotes': [], 'links': [], 'exports': [], 'protection': []}
+                return jsonify(host=host, source='planned', saved_at=None, scanned=False, offsite=offsite,
+                               blueprint=bp, shares_deployed=False)
             return jsonify(error=f'{host} has no saved design and has not been scanned'), 404
         bp = scan_design(host) if source == 'inventory' else blueprint.merge_intent(scan_design(host), saved)
         bp['links'] = quiet_links(host, bp.get('links'))
