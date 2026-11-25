@@ -122,7 +122,7 @@ function dropUnowned(){ try{ for(const k of Object.keys(localStorage)){
   let v=null;try{ v=JSON.parse(localStorage.getItem(k)) }catch(e){}
   if(!stamped(v)) localStorage.removeItem(k) } }catch(e){} }
 dropUnowned();
-async function whoAmI(){ try{ USER=(await sfMe()).username||'' }catch(e){ USER='' } }
+async function whoAmI(){ try{ const me=await sfMe(); USER=me.username||''; DOC.canEdit=(me.permissions||[]).includes('plans.edit') }catch(e){ USER=''; DOC.canEdit=false } }
 function load(h){ const d=USER===null?null:sfRecall(draftKey(h||''),null,USER); return d?tidy(scrub(d)):null }
 function save(){ if(USER!==null) sfStash(draftKey(DOC.host),S,USER); if(DOC.host){DOC.dirty=true;docState()} }
 function dropDraft(h){ if(USER!==null&&sfRecall(draftKey(h),null,USER)) sfStash(draftKey(h),null,USER) }      // only its own: another account's draft is not this one's to remove
@@ -1226,6 +1226,21 @@ async function openVersions(){
   close.addEventListener('click',()=>dlg.close());
   const say=msg=>{err.textContent=msg||'';err.hidden=!msg};
   const attempt=async work=>{ say(''); try{ return await work() }catch(e){ say(e.message); return null } };
+
+  if(DOC.canEdit){
+    const preview=sfNode('button',{type:'button',class:'sf-btn ghost'},'Preview unified design');
+    close.before(preview);
+    sfOnClick(preview,async()=>{
+      const data=await attempt(()=>withBusy(preview,()=>apiJSON('/api/map/designs/migration-preview?host='+encodeURIComponent(host))));
+      if(!data) return;
+      const entries=[data.current,...data.versions].map(({document,source},i)=>{
+        const label=(i?'Saved alternative':'Current design')+' · '+(source?.name||'Storage blueprint');
+        return sfNode('details',{},sfNode('summary',{},label),sfNode('pre',{class:'code'},JSON.stringify(document,null,2)));
+      });
+      result.replaceChildren(sfNode('h3',{},'Unified design preview'),...entries);
+      result.focus();
+    });
+  }
 
   function showCompare(c){
     const kids=[sfNode('h3',{},`“${c.version.name}” against the current design`),sfNode('p',{class:c.same?'':'muted'},c.summary)];

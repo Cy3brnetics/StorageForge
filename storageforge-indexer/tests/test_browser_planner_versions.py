@@ -76,6 +76,15 @@ class PlannerVersions(unittest.TestCase):
     def other_mode(self):
         return 'LABEL' if self.page.evaluate('S.idMode') == 'UUID' else 'UUID'
 
+    def test_preview_saved_unified_design(self):
+        self.open_panel()
+        self.page.get_by_role('button', name='Preview unified design').click()
+        self.page.locator('#pv-result summary').first.click()
+        doc = json.loads(self.page.locator('#pv-result pre').first.inner_text())
+        self.assertEqual(doc['apiVersion'], 'storageforge/v2')
+        self.assertEqual(doc['sections']['storage']['metadata']['host'], HOST)
+        self.assertEqual(self.errors, [])
+
     def test_adopt_one_scanned_link_into_current_draft(self):
         scan = {'metadata': {'host': HOST}, 'links': [{'path': '/adopt', 'kind': 'symlink', 'target': '/srv/data'}]}
         self.page.route('**/api/planner/design?source=inventory&host=*',
