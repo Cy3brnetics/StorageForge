@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 
+from . import netfacts
 from .firewall import _ports, _rule
 
 TABLES = {'address': '/ip/address', 'interface': '/interface', 'route': '/ip/route', 'filter': '/ip/firewall/filter', 'nat': '/ip/firewall/nat', 'neighbor': '/ip/neighbor',
@@ -148,7 +149,7 @@ def network(t: dict) -> dict:
     unreadable = [{'address': 'addresses', 'interface': 'interfaces', 'route': 'routes', 'arp': 'neighbours', 'service': 'listeners'}[k] for k in ('address', 'interface', 'route', 'arp', 'service') if t.get(k) is None]
     dns = t.get('dns') or {}
     servers = dns.get('servers')
-    return {'interfaces': interfaces, 'routes': routes, 'gateways': sorted({r['via'] for r in routes if r['dst'] == 'default' and r['via']}),
+    return {'interfaces': interfaces, 'routes': routes, 'gateways': netfacts.gateways_of(routes),
             'neighbours': [{'ip': n.get('address'), 'mac': str(n['mac-address']).lower(), 'dev': n.get('interface')} for n in t.get('arp') or [] if n.get('address') and n.get('mac-address')][:500],
             'listeners': sorted(listeners, key=lambda x: x['port']), 'dns': {'nameservers': [x for x in (servers if isinstance(servers, list) else str(servers or '').split(',')) if x], 'search': []},
             'unreadable': unreadable, 'complete': True}

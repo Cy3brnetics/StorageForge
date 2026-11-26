@@ -72,6 +72,19 @@ def _json(text: str):
     return v if isinstance(v, list) and all(isinstance(x, dict) for x in v) else None
 
 
+def gateways_of(routes: list[dict]) -> list:
+    """The default gateways of a list of route records, each once, sorted: for a host and every device adapter."""
+    return sorted({r['via'] for r in routes if r['dst'] == 'default' and r['via']})
+
+
+def prefix_of_mask(mask) -> int | None:
+    """The prefix length of a dotted IPv4 netmask (or of a prefix length written as text), or None when it is not one."""
+    try:
+        return ipaddress.ip_network(f'0.0.0.0/{mask}').prefixlen
+    except ValueError:
+        return None
+
+
 def _split_addr(local: str) -> tuple[str, int] | None:
     """ss's local column: 0.0.0.0:22, [::]:22, *:22, 127.0.0.53%lo:53, [fe80::1]%eth0:546."""
     m = re.fullmatch(r'\[?([^\]]*?)\]?(?:%[^:]+)?:(\d+)', local)
@@ -190,7 +203,7 @@ def parse(text: str) -> dict:
     all_routes = [route(r, 4) for r in routes or []] + [route(r, 6) for r in routes6 or []]
     resolv = (s.get('resolv') or '').splitlines()
     return {
-        'interfaces': interfaces, 'routes': all_routes, 'gateways': sorted({r['via'] for r in all_routes if r['dst'] == 'default' and r['via']}),
+        'interfaces': interfaces, 'routes': all_routes, 'gateways': gateways_of(all_routes),
         'neighbours': [{'ip': n.get('dst'), 'mac': n.get('lladdr'), 'dev': n.get('dev')} for n in neigh or []
                        if n.get('dst') and n.get('lladdr') and 'FAILED' not in (n.get('state') or [])][:MAX_NEIGHBOURS],
         'listeners': parse_listeners(s.get('listen', '')),

@@ -281,7 +281,7 @@ def network(root, ifaces: dict, s: dict) -> dict:
             if _has(g, 'defaultgw'):
                 routes.append({'dst': 'default', 'via': _t(g, 'gateway'), 'dev': (ifaces.get(_t(g, 'interface') or '') or {}).get('if'), 'metric': None, 'family': 4})
     listeners = parse_sockstat(s.get('sockstat') or '')
-    return {'interfaces': rows, 'routes': routes, 'gateways': sorted({r['via'] for r in routes if r['dst'] == 'default' and r['via']}), 'neighbours': parse_arp(s.get('arp') or ''), 'listeners': listeners,
+    return {'interfaces': rows, 'routes': routes, 'gateways': netfacts.gateways_of(routes), 'neighbours': parse_arp(s.get('arp') or ''), 'listeners': listeners,
             'dns': {'nameservers': [x.text.strip() for x in root.findall('system/dnsserver') if x.text], 'search': [_t(root, 'system/domain')] if _t(root, 'system/domain') else []},
             # sockstat shows an account that is not root its own sockets only: few listeners there is not few listeners
             'unreadable': [] if s.get('sockstat') and (s.get('uid') or '0').strip() == '0' else ['listeners'], 'complete': True}

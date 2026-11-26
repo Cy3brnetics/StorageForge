@@ -6,11 +6,11 @@ Community strings or v3 credentials are kept only in memory for the single invoc
 """
 from __future__ import annotations
 
-import ipaddress
 import re
 import shutil
 import subprocess
 
+from . import netfacts
 from .firewall import _rule
 
 COMMANDS = {
@@ -107,12 +107,7 @@ def parse(sections: dict[str, str]) -> dict:
         entry[col] = val
     for ip, info in ip_rows.items():
         idx = info.get('2')
-        prefix = None
-        if info.get('3'):
-            try:
-                prefix = ipaddress.ip_network(f'0.0.0.0/{info["3"]}').prefixlen
-            except ValueError:
-                prefix = None
+        prefix = netfacts.prefix_of_mask(info['3']) if info.get('3') else None
         if idx and str(idx) in ifaces:
             scope = 'loopback' if ip.startswith('127.') else 'global'
             ifaces[str(idx)]['addresses'].append({'ip': ip, 'prefix': prefix, 'scope': scope})

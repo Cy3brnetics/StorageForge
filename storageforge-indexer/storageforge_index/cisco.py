@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
+from . import netfacts
 from .firewall import _rule
 
 COMMANDS = {'version': 'show version', 'brief': 'show ip interface brief', 'running': 'show running-config', 'route': 'show ip route', 'arp': 'show ip arp', 'acl': 'show ip access-lists', 'vlan': 'show vlan brief',
@@ -209,10 +210,8 @@ def parse_running(text: str) -> dict:
         elif (m := re.match(r'^description (.*)', s)):
             cur['descr'] = m[1]
         elif (m := re.match(r'^ip address (\S+) (\S+)', s)):
-            try:
-                cur['addresses'].append({'ip': m[1], 'prefix': ipaddress.ip_network(f'0.0.0.0/{m[2]}').prefixlen, 'scope': 'global'})
-            except ValueError:
-                pass
+            if (prefix := netfacts.prefix_of_mask(m[2])) is not None:
+                cur['addresses'].append({'ip': m[1], 'prefix': prefix, 'scope': 'global'})
     return out
 
 
@@ -351,7 +350,7 @@ def model(t: dict) -> dict:
         interfaces.append({'name': name, 'kind': _kind(name), 'state': (brief.get(name) or {}).get('state') or ('down' if cfg.get('shutdown') else 'unknown'), 'mtu': None, 'mac': None, 'master': cfg.get('channel'), 'parent': None,
                            'vlan_id': int(vlan[1]) if vlan else cfg.get('access_vlan'), 'bridge_vlans': cfg.get('trunk_vlans') or [], 'switchport': cfg.get('mode'), 'descr': cfg.get('descr'), 'nat_side': cfg.get('nat'), 'vrf': cfg.get('vrf'), 'zone': cfg.get('zone'), 'addresses': addrs})
     routes = parse_routes(t['route'])
-    net = {'interfaces': interfaces, 'routes': routes, 'gateways': sorted({r['via'] for r in routes if r['dst'] == 'default' and r['via']}), 'neighbours': parse_arp(t.get('arp')), 'listeners': [],
+    net = {'interfaces': interfaces, 'routes': routes, 'gateways': netfacts.gateways_of(routes), 'neighbours': parse_arp(t.get('arp')), 'listeners': [],
            'dns': {'nameservers': run['name_servers'], 'search': []}, 'unreadable': ['listeners'], 'complete': True}
     acls = parse_acls(t['acl'])
     zones_list = [{'name': z['name'], 'interfaces': [i for i in z['interfaces'] if i]} for z in run['zones'].values()]

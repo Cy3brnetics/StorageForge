@@ -127,7 +127,7 @@ def _from_ubus(net: dict, ubus: dict) -> None:
                     continue
                 net['routes'].append({'dst': dst, 'via': None, 'dev': dev, 'metric': 0, 'family': 4})
         net['unreadable'] = [u for u in net['unreadable'] if u != 'routes']
-        net['gateways'] = sorted({r['via'] for r in net['routes'] if r['dst'] == 'default' and r['via']})
+        net['gateways'] = netfacts.gateways_of(net['routes'])
 
 
 def parse_arp(text: str) -> list[dict]:
