@@ -19,7 +19,7 @@ import json
 import re
 import time
 
-from . import changes, inframeasure, netfacts, workloads
+from . import changes, inframeasure, netfacts, steps_workloads, workloads
 from .db import Conn, loads
 
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}')
@@ -187,15 +187,8 @@ def _slug(text: str) -> str:
 
 
 def _ports_tf(publish: str) -> list[tuple[str, int, int, str]]:
-    out = []
-    for part in filter(None, (publish or '').split(',')):
-        spec, _, proto = part.partition('/')
-        f = spec.rsplit(':', 2)
-        if len(f) == 3:
-            out.append((f[0].strip('[]'), int(f[1]), int(f[2]), proto or 'tcp'))
-        elif len(f) == 2:
-            out.append(('0.0.0.0', int(f[0]), int(f[1]), proto or 'tcp'))
-    return out
+    """(ip, external, internal, protocol) for each port published on a known host port; see steps_workloads.parse_publish."""
+    return [(r['bind'], int(r['published']), int(r['target']), r['proto']) for r in steps_workloads.parse_publish(publish)[0] if r['published']]
 
 
 def terraform(doc: dict) -> str:

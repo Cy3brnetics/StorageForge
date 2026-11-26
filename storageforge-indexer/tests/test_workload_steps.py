@@ -90,6 +90,19 @@ class Model(unittest.TestCase):
         self.assertEqual(wl.fenced_ports(ports), '8080/tcp')
         self.assertEqual(wl.labels_of('team=web,bad label,x=')[0], {'team': 'web', 'x': ''})
 
+    def test_the_ports_to_publish_are_read_once_for_the_what_if_the_exports_and_the_check(self):
+        ports, bad = wl.parse_publish('8080:80/tcp,,127.0.0.1:5353:53/udp,[::1]:8443:443,::1:9000:90,80,127.0.0.1::81,ab:cd,0:1,70000:1,8080:80/ud,a.b:1:2,1.2.3.4:5:6:7,80:')
+        self.assertEqual([(p['bind'], p['published'], p['target'], p['proto']) for p in ports],
+                         [('0.0.0.0', '8080', '80', 'tcp'), ('127.0.0.1', '5353', '53', 'udp'), ('::1', '8443', '443', 'tcp'), ('::1', '9000', '90', 'tcp'),
+                          ('0.0.0.0', '', '80', 'tcp'), ('127.0.0.1', '', '81', 'tcp')])
+        self.assertEqual(bad, ['ab:cd', '0:1', '70000:1', '8080:80/ud', 'a.b:1:2', '1.2.3.4:5:6:7', '80:'])
+        self.assertEqual(wl.parse_publish(None), ([], []))
+        from storageforge_index import mapdesign, whatif, wlexport
+        text = '127.0.0.1:8080:80/udp,443:443,80,ab:cd'      # what used to raise 'invalid literal for int()' in the what-if and the design exports
+        self.assertEqual(whatif._publish_parts(text), [{'host_ip': '127.0.0.1', 'host_port': 8080, 'port': 80, 'proto': 'udp'}, {'host_ip': '0.0.0.0', 'host_port': 443, 'port': 443, 'proto': 'tcp'}])
+        self.assertEqual(mapdesign._ports_tf(text), [('127.0.0.1', 8080, 80, 'udp'), ('0.0.0.0', 443, 443, 'tcp')])
+        self.assertEqual(wlexport._publish(text), [{'ip': '127.0.0.1', 'external': 8080, 'internal': 80, 'protocol': 'udp'}, {'ip': '0.0.0.0', 'external': 443, 'internal': 443, 'protocol': 'tcp'}])
+
 
 class Db(unittest.TestCase):
     def setUp(self):
@@ -142,6 +155,14 @@ class Check(Db):
         ok = self.items('incus', name='c1', publish='8080:80', allow_from='10.0.0.0/8', labels='team=web')
         self.assertFalse([t for l, t in ok if l == 'crit'], ok)
         self.assertTrue(any('a fence on input' in t for _, t in ok))
+
+    def test_the_container_check_reads_the_ports_with_the_shared_parser(self):
+        got = self.items('container', runtime='docker', name='web', image='nginx:1.27', publish='127.0.0.1:8080:80,8443:443,9000,ab:cd')
+        warn = [t for l, t in got if l == 'warn']
+        self.assertTrue(any(t.startswith('publishes 8443 to every network on nas') for t in warn), got)
+        self.assertTrue(any(t.startswith('publishes container port 9000 on a host port the runtime picks to every network') for t in warn), got)
+        self.assertTrue(any('(ab:cd is not), so it is not checked' in t for t in warn), got)
+        self.assertFalse(any('8080' in t for t in warn), got)
 
     def test_managed_removal_needs_the_exact_name_and_destructive_permission(self):
         p = {'runtime': 'lxc', 'name': 'web', 'confirm': 'other'}

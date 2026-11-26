@@ -18,7 +18,7 @@ import json
 import re
 
 from . import changes
-from .steps_workloads import compose_model, incus_ports, labels_of
+from .steps_workloads import compose_model, incus_ports, labels_of, parse_publish
 
 KINDS = ('container', 'stack', 'incus', 'lxc', 'vm-create', 'vm-iso', 'vm')
 TARGETS = ('terraform', 'opentofu', 'puppet')
@@ -39,15 +39,7 @@ def _id(name: str) -> str:
 
 def _publish(text: str | None) -> list[dict]:
     """The container step's '127.0.0.1:8080:80/tcp,8443:443' as {ip, external, internal, protocol}."""
-    out = []
-    for part in filter(None, (text or '').split(',')):
-        spec, _, proto = part.partition('/')
-        f = spec.rsplit(':', 2)
-        if len(f) == 3:
-            out.append({'ip': f[0].strip('[]'), 'external': int(f[1]), 'internal': int(f[2]), 'protocol': proto or 'tcp'})
-        elif len(f) == 2 and f[0].isdigit() and f[1].isdigit():
-            out.append({'ip': '0.0.0.0', 'external': int(f[0]), 'internal': int(f[1]), 'protocol': proto or 'tcp'})
-    return out
+    return [{'ip': r['bind'], 'external': int(r['published']), 'internal': int(r['target']), 'protocol': r['proto']} for r in parse_publish(text)[0] if r['published']]
 
 
 def _binds(text: str | None) -> list[dict]:

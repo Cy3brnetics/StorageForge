@@ -1204,27 +1204,21 @@ def _check_workload_remove(conn, c, h, p, say):
             say('warn', f'it uses {", ".join(sorted(points))}, and {h["name"]} has retention holds: check they still cover what you keep')
 
 
-def _publish_parts(text: str) -> list[tuple[str, int]]:
-    """'127.0.0.1:8080:80/tcp' or '8080:80' → (bind address, host port)."""
-    out = []
-    for part in filter(None, (text or '').split(',')):
-        spec = part.split('/')[0]
-        fields = spec.rsplit(':', 2)
-        bind, host_port = ('0.0.0.0', fields[0]) if len(fields) == 2 else (fields[0].strip('[]'), fields[1]) if len(fields) == 3 else ('0.0.0.0', fields[0])
-        if host_port.isdigit():
-            out.append((bind, int(host_port)))
-    return out
-
-
 def _check_container(conn, c, h, p, say):
     from . import security
+    from .steps_workloads import parse_publish      # here, not at the top: steps_workloads loads after this module
     net = _net(conn, h)
     busy = {x['port'] for x in (net or {}).get('listeners') or []}
-    for bind, port in _publish_parts(p['publish']):
-        if port in busy:
+    ports, bad = parse_publish(p['publish'])
+    if bad:
+        say('warn', f'a published port is [address:][host-port:]container-port[/tcp|udp] ({", ".join(bad[:3])} is not), so it is not checked')
+    for q in ports:
+        port = int(q['published']) if q['published'] else None
+        if port is not None and port in busy:
             say('crit', f'something already listens on {port} on {h["name"]}')
-        if bind not in ('127.0.0.1', '::1'):
-            say('warn', f'publishes {port} to every network on {h["name"]}. ufw and firewalld do not stop this: add a firewall rule with hook "forward", or bind it to 127.0.0.1')
+        if q['bind'] not in ('127.0.0.1', '::1'):
+            what = port if port is not None else f'container port {q["target"]} on a host port the runtime picks'
+            say('warn', f'publishes {what} to every network on {h["name"]}. ufw and firewalld do not stop this: add a firewall rule with hook "forward", or bind it to 127.0.0.1')
     held = {(r.get('snapshot') or '').split('@')[0] for r in security.hold_rows(conn, h['name']) if r['status'] != 'released'}
     for bind in filter(None, (p['binds'] or '').split(',')):
         src = bind.split(':')[0]

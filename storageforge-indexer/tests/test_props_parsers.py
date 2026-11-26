@@ -12,7 +12,7 @@ from pathlib import Path
 
 from props import HAVE, given, settings, st, scaled
 from storageforge_index import (apidockhand, apikomodo, apipangolin, apipbs, apipdm, apiportainer, apipve, apireadback, apitruenas, apixo, authkeys, cisco, clamav, firewall, gitrepos, health, hostconfig, hostlogs, inframeasure, netconfig, netconsole, netfacts, netscan, openwrt, payloads, pvenode,
-                                pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, snmp, steps_services, updates)
+                                pfsense, pkglist, preflight, pstore, remote, routeros, secplus, security, snapfind, snmp, steps_services, steps_workloads, updates)
 
 FIX = Path(__file__).parent / 'fixtures'
 
@@ -76,7 +76,7 @@ READS = {
     'cisco.parse_arp': cisco.parse_arp, 'cisco.parse_cdp': cisco.parse_cdp, 'cisco.parse_lldp': cisco.parse_lldp, 'cisco.parse_vlans': cisco.parse_vlans,
     'cisco.parse_vrf': cisco.parse_vrf, 'cisco.parse_ospf': cisco.parse_ospf, 'cisco.parse_bgp': cisco.parse_bgp,
     'cisco.parse_counters': cisco.parse_counters, 'routeros.parse_terse': routeros.parse_terse, 'routeros.parse_table': routeros.parse_table,
-    'openwrt.parse_stations': openwrt.parse_stations,
+    'openwrt.parse_stations': openwrt.parse_stations, 'steps_workloads.parse_publish': steps_workloads.parse_publish,     # what an operator typed, but read, never refused
     'pvenode.parse_node': lambda t: pvenode.parse_node(t.splitlines()),
     'snmp.parse': lambda t: snmp.parse({'system': t, 'if': t, 'ip': t, 'arp': t, 'lldp': t}),
     'firewall.parse_nft': firewall.parse_nft, 'firewall.parse_iptables': firewall.parse_iptables, 'firewall.parse_ufw': firewall.parse_ufw,

@@ -543,6 +543,36 @@ def relabel_findings(binds: list[dict], relabel: str) -> list[str]:
     return out
 
 
+def parse_publish(publish: str | None) -> tuple[list[dict], list[str]]:
+    """The container step's ports to publish, as `docker run -p` and `podman run -p` take them: '8080:80/tcp,127.0.0.1:5353:53/udp,[::1]:8443:443'
+    -> [{'bind', 'published', 'target', 'proto'}], problems. Ports are digit strings from 1 to 65535; published is '' where the runtime picks
+    the host port ('80', '127.0.0.1::80'). The bind is an IPv4 or IPv6 address, brackets taken off, and 0.0.0.0 where none is given.
+    A part that is not this is a problem and is left out; nothing raises. The what-if, the exports and the container step's check read it."""
+    out, bad = [], []
+    for part in filter(None, (publish or '').split(',')):
+        spec, slash, proto = part.partition('/')
+        fields = spec.rsplit(':', 2)
+        bind, published, target = [''] * (3 - len(fields)) + fields
+        bind = bind[1:-1] if bind.startswith('[') and bind.endswith(']') else bind
+        if not (_is_address(bind or '0.0.0.0') and (proto in ('tcp', 'udp') if slash else True) and _is_port(target) and (not published or _is_port(published))):
+            bad.append(part)
+            continue
+        out.append({'bind': bind or '0.0.0.0', 'published': published, 'target': target, 'proto': proto or 'tcp'})
+    return out, bad
+
+
+def _is_address(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_port(text: str) -> bool:
+    return bool(re.fullmatch(r'\d{1,5}', text)) and 0 < int(text) < 65536
+
+
 def incus_ports(publish: str | None) -> tuple[list[dict], list[str]]:
     """'8080:80/tcp,127.0.0.1:5353:53/udp' -> [{'bind', 'published', 'target', 'proto'}], problems."""
     out, bad = [], []

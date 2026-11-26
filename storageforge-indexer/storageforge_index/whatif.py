@@ -15,7 +15,7 @@ import copy
 import ipaddress
 import re
 
-from . import changes, exposure, firewall, inframeasure, netfacts, reach, security, workloads
+from . import changes, exposure, firewall, inframeasure, netfacts, reach, security, steps_workloads, workloads
 from .db import Conn
 from .moves import find_host, hosts
 
@@ -99,15 +99,10 @@ def _apply_fence(facts: dict, p: dict) -> str | None:
 
 
 def _publish_parts(text: str) -> list[dict]:
-    out = []
-    for part in filter(None, (text or '').split(',')):
-        spec, _, proto = part.partition('/')
-        f = spec.rsplit(':', 2)
-        if len(f) == 3:
-            out.append({'host_ip': f[0].strip('[]'), 'host_port': int(f[1]), 'port': int(f[2]), 'proto': proto or 'tcp'})
-        elif len(f) == 2:
-            out.append({'host_ip': '0.0.0.0', 'host_port': int(f[0]), 'port': int(f[1]), 'proto': proto or 'tcp'})
-    return out
+    """The ports a container step publishes on a known host port, in the shape the runtimes' readings have. What steps_workloads.parse_publish
+    can't read, and a port the runtime picks itself, publish no listener here."""
+    return [{'host_ip': r['bind'], 'host_port': int(r['published']), 'port': int(r['target']), 'proto': r['proto']}
+            for r in steps_workloads.parse_publish(text)[0] if r['published']]
 
 
 def _apply_task(t: dict, facts: dict, ghost: dict, conflicts: list, host: str, fleet_addrs: dict) -> str | None:
