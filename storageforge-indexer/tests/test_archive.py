@@ -70,6 +70,8 @@ class ArchiveStepsAndOffloadTests(unittest.TestCase):
         # Allow running --apply unprivileged in tests by stripping only the EUID==0 guard on temp paths
         patched = script_text.replace('if ((APPLY)) && [[ $EUID -ne 0 ]]; then', 'if false; then')
         patched = patched.replace('/run/lock/sf-changes-', str(self.tmp / 'lock-'))
+        # the script makes its log folder under /var/log, which a non-root user (CI's runner) cannot, and `set -e` ends the run silently
+        patched = patched.replace('/var/log/storageforge', str(self.tmp / 'log'))
         sfile = self.tmp / 'change.sh'
         sfile.write_text(patched)
         sfile.chmod(0o755)
