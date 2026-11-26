@@ -286,15 +286,9 @@ def api_status(conn: Conn, host: str, kind: str) -> dict:
 # ── the context an adapter reads, and the refresh after each reading ──
 def context(conn: Conn, host: str, reading: dict) -> dict:
     """The containers the scan and the reading saw on the host, and the health checks, for every adapter at once."""
-    from .runtimes import docker
-    cs = []
-    for v in docker.listing(conn, host):
-        for s in v['stacks']:
-            for c in s['containers']:
-                cs.append({'name': c.get('name'), 'image': c.get('image'), 'state': c.get('state'), 'labels': c.get('labels') or {}, 'how': v.get('engine')})
-    for u in reading.get('podman_rootless') or []:
-        for c in u.get('containers') or []:
-            cs.append({'name': c.get('name'), 'image': c.get('image'), 'state': c.get('state'), 'labels': c.get('labels') or {}, 'how': f'rootless podman ({u.get("user")})'})
+    from . import workloads   # here, not at the top: inframeasure imports this module
+    cs = [{'name': c.get('name'), 'image': c.get('image'), 'state': c.get('state'), 'labels': c.get('labels') or {}, 'how': how}
+          for c, how in workloads.containers_with_how(conn, host, reading=reading)]
     return {'host': host, 'containers': cs, 'health': (reading.get('toolbox') or {}).get('health') or {}, 'now': time.time()}
 
 

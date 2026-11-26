@@ -145,16 +145,22 @@ def listing(conn: Conn, host: str | None = None) -> dict:
     return {'workloads': out, 'hosts': hosts}
 
 
-def containers_of(conn: Conn, host: str) -> list[dict]:
-    """A host's containers as docker.py records them, for the exposure engine."""
-    out = []
+def containers_with_how(conn: Conn, host: str, reading: dict | None = None):
+    """Every container of a host with how it runs: the scan's stacks (the engine) and the rootless Podman of the reading
+    ('rootless podman (user)'). Yields (container, how). The last reading is read when none is given."""
     for view in docker.listing(conn, host):
         for s in view['stacks']:
-            out += s['containers']
-    m = inframeasure.reading(conn, host) or {}
+            for c in s['containers']:
+                yield c, view.get('engine')
+    m = (inframeasure.reading(conn, host) if reading is None else reading) or {}
     for u in m.get('podman_rootless') or []:
-        out += u.get('containers') or []
-    return out
+        for c in u.get('containers') or []:
+            yield c, f'rootless podman ({u.get("user")})'
+
+
+def containers_of(conn: Conn, host: str) -> list[dict]:
+    """A host's containers as docker.py records them, for the exposure engine."""
+    return [c for c, _ in containers_with_how(conn, host)]
 
 
 def libvirt_of(conn: Conn, host: str | None = None) -> list[dict]:
