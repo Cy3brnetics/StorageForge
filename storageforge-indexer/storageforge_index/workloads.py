@@ -8,6 +8,7 @@ import re
 
 from . import inframeasure, pvenode, wlmanaged, wlread
 from .db import Conn
+from .paths import deepest
 from .runtimes import docker
 
 SOCKETS = ('/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock')
@@ -24,10 +25,7 @@ def sits_on(mounts: list, path: str | None) -> dict | None:
     """The mount a path is on: the deepest one above it."""
     if not path or not path.startswith('/'):
         return None
-    best = None
-    for point, fs in mounts:
-        if (path == point or point == '/' or path.startswith(point.rstrip('/') + '/')) and (best is None or len(point) > len(best[0])):
-            best = (point, fs)
+    best = deepest(mounts, path, key=lambda m: m[0])
     return {'mount': best[0], 'filesystem': best[1]} if best else None
 
 

@@ -28,6 +28,7 @@ import re
 import time
 
 from .db import Conn, loads
+from .paths import deepest
 
 MOST_EVENTS_PER_HOST = 50_000
 KEEP_READS_SECS = 8 * 86400
@@ -91,12 +92,7 @@ def _deploying(conn: Conn, host: str, at: int) -> bool:
 def _mount_for(conn: Conn, host: str, path: str):
     rows = conn.all("""SELECT m.mount_id, m.mount_point FROM mounts m JOIN hosts h ON h.host_id = m.host_id
                        WHERE h.hostname = :h AND m.scan_state = 'indexed'""", {'h': host})
-    best = None
-    for mid, mp in rows:
-        if path == mp or path.startswith(mp.rstrip('/') + '/'):
-            if best is None or len(mp) > len(best[1]):
-                best = (mid, mp)
-    return best
+    return deepest(rows, path, key=lambda r: r[1])
 
 
 def _apply_index(conn: Conn, host: str, path: str, act: str, st: dict | None) -> str:

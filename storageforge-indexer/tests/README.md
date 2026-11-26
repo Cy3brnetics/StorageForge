@@ -40,6 +40,7 @@ The **random** tests are the `test_props_*.py` modules, using [Hypothesis](https
 | `test_props_search.py` | A pattern finds the same names by every road (extension, exact, prefix, trigram index, PostgreSQL regex) as a plain `fnmatch` does, through the scanner's own write path |
 | `test_props_parsers.py` | Every parser of host and device output reads any text, keeping what it can, or refuses it with a `ValueError` that says why. Real fixtures are damaged too. A new `parse*` function fails the suite until it has a contract |
 | `test_props_capacity.py` | Every byte of a pool's raw space is counted once, no pool survives losing all its disks, more disks never give less, and any route needs a known permission, with more permissions never allowing less |
+| `test_props_paths.py` | A path is under a folder exactly when the folder's names are the first of its own, so `/tank2` is not under `/tank` and no relative path is under `/`, and the mount of a path is the deepest folder that holds it |
 | `test_props_scripts.py` | A hostile value built from every piece of shell syntax is data in every send, task and plan script, or is refused. Checked as text by a scanner that follows Bash's quoting, with `bash -n`, and by running the send scripts |
 
 They run in two ways ([`props.py`](props.py)):

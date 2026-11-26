@@ -14,6 +14,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The `@@section` output of the network facts, OpenWrt, pfSense and infrastructure readings is split by one function, `netfacts.split_sections` (BE-11).
 - SSH wire strings and key fingerprints are written by one stdlib-only module, `sshwire`, in place of copies in eight modules. The agent receiver's signature check and the scan signature reader keep their own parsers (BE-12).
 - The keys pinned for a host in `known_hosts` are read by one function, `remote.known_host_entries`, in place of four `ssh-keygen -F` parsers in the fingerprint lookup, host certificates, sync jobs and scan signatures (BE-13).
+- *Is this path under that folder* and *which mount holds this path* are answered by one pair of functions, `paths.is_under` and `paths.deepest`, in place of three containment tests and three deepest-mount loops. The planners' copy took an empty or relative path to be under `/`; now no relative path is under any folder, as the SSH side already ruled. Every caller passes an absolute path, so nothing a user sees changes (BE-14).
 
 ## 0.6.2 — 2026-11-26
 

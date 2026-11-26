@@ -21,6 +21,7 @@ import threading
 import time
 
 from ..db import Conn
+from ..paths import is_under
 
 COMPOSE_NAMES = ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml')
 NOT_STACKS = ('/overlay2/', '/containerd/', '/node_modules/', '/.cache/', '/fuse-overlayfs/', '/vfs/dir/',
@@ -448,8 +449,7 @@ def listing(conn: Conn, host: str | None = None) -> list[dict]:
     return [host_view(r) for r in rows]
 
 
-def _under(p: str, root: str) -> bool:
-    return root == '/' or p == root or p.startswith(root.rstrip('/') + '/')
+_under = is_under
 
 
 def usage(conn: Conn, host: str | None = None) -> list[dict]:

@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 
 from . import snapfind
+from .paths import is_under  # noqa: F401  (re-exported: many modules import it from here)
 from .snapfind import SNAPFIND
 from .sshwire import fingerprint_of_blob
 from .stream import FIND_FORMAT
@@ -107,12 +108,6 @@ def read_capped(proc: subprocess.Popen, what: str, limit: int = MAX_REMOTE_OUTPU
 
 class RemoteError(RuntimeError):
     pass
-
-
-def is_under(path: str, root: str) -> bool:
-    if root == '/':
-        return path.startswith('/')
-    return path == root or path.startswith(root.rstrip('/') + '/')
 
 
 def glob_escape(path: str) -> str:

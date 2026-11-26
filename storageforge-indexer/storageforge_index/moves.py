@@ -27,6 +27,7 @@ import time
 
 from . import site
 from .db import Conn
+from .paths import deepest, is_under
 from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line, package_check
 
 METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git', 'archive')
@@ -280,13 +281,11 @@ def find_host(hs: dict, name: str):
                  or (h['ssh_host'] or '').lower() == n), None)
 
 
-def _under(path: str, root: str) -> bool:
-    return root == '/' or path == root or path.startswith(root.rstrip('/') + '/')
+_under = is_under
 
 
 def mount_of(host: dict, path: str):
-    ms = [m for m in host['mounts'] if m['state'] in ('indexed', 'skipped') and _under(path, m['target'])]
-    return max(ms, key=lambda m: len(m['target']), default=None)
+    return deepest((m for m in host['mounts'] if m['state'] in ('indexed', 'skipped')), path, key=lambda m: m['target'])
 
 
 def _subtree_sql(path: str, mount_target: str) -> tuple[str, dict]:
