@@ -433,6 +433,22 @@ class Vm(CtRun):
         self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
         self.assertFalse(any('create' in l for l in log.read_text().splitlines()))
 
+    def plan_style(self, tmp, call):
+        head = ('APPLY=1; PROBLEMS=0; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; info() { :; }; doing() { :; }; later() { conflict "$*"; }\n'
+                'conflict() { echo "conflict: $*" >&2; PROBLEMS=$((PROBLEMS + 1)); }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
+        script = head + steps_proxmox._vm_helpers() + steps_proxmox.BASH + f'\nt_pve_vm {call}\necho "problems: $PROBLEMS"\n'
+        return subprocess.run(['bash', '-c', script], env={**self.env(tmp), 'TMPDIR': str(tmp / 'tmpdir')}, capture_output=True, text=True, timeout=60)
+
+    def test_in_a_script_a_failed_start_counts_a_problem_and_the_step_is_not_done(self):
+        tmp, log = self.vm_stubs()
+        (tmp / 'qm').write_text((tmp / 'qm').read_text().replace('esac', '  start) exit 1 ;;\nesac'))
+        call = ' '.join(shlex.quote(w) for w in ('106', 'app-01', 'iso', 'local:iso/debian-13.iso', '', 'local-lvm', '32', '2', '2048', 'vmbr0', 'l26', 'admin', '', '', '1'))
+        r = self.plan_style(tmp, call)
+        self.assertIn('problems: 1', r.stdout)
+        self.assertIn('failed: qm start 106', r.stderr)
+        self.assertNotIn('started 106', r.stdout)
+        self.assertIn('qm create 106', log.read_text())
+
     def test_an_export_carries_the_catalog_and_the_fetch_function(self):
         cmd = self.vm_export_cmd(source='image', iso='', image='debian13')
         self.assertIn('sf_vm_image()', cmd)

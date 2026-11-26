@@ -163,7 +163,10 @@ t_pve_vm() { local vmid=$1 name=$2 source=$3 iso=$4 image=$5 store=$6 disk=${7:-
   # of the script around it is not touched. The subshell cannot count a problem for the script, so a failure is said once more here.
   ( trap 'rm -rf -- "$tmp"' EXIT; pve_vm_make ) || rc=$?
   rm -rf -- "$tmp"
-  ((!rc)) || conflict "VM $vmid ($name): the step stopped, see above"
+  ((!rc)) || { conflict "VM $vmid ($name): the step stopped, see above"; return 0; }
+  ok "created VM $vmid ($name)"
+  # in the parent, so a failed start counts as a problem of the script
+  [[ -z $start ]] || { try qm start "$vmid" >/dev/null && ok "started $vmid"; }
   return 0
 }
 
@@ -195,8 +198,6 @@ pve_vm_make() { local url sums cos base keyf help unused
       try qm set "$vmid" --sshkeys "$keyf" >/dev/null || return 1
     fi
   fi
-  ok "created VM $vmid ($name)"
-  [[ -n $start ]] && { try qm start "$vmid" >/dev/null && ok "started $vmid"; }
   return 0
 }
 """
