@@ -194,8 +194,9 @@ RUN tar -xzf /src/tailscale.tgz -C /src --strip-components=1 \
  && install -D -m 0755 /src/tailscale /out/usr/bin/tailscale
 
 FROM ${BASE_IMAGE} AS tailscale
-# iptables (nft) for the one chain the entrypoint keeps on tailscale0; busybox stays for the entrypoint's shell.
-RUN apk add --no-cache iptables \
+# nft for the one table the entrypoint keeps on tailscale0 (iptables from Wolfi defaults to the legacy backend, which a host on
+# nftables does not have); busybox stays for the entrypoint's shell.
+RUN apk add --no-cache nftables \
  && rm -rf /var/cache/apk /etc/apk/cache
 COPY --from=tailscale-bin /out/ /
 COPY docker/tailscale/entrypoint.sh /usr/local/bin/storageforge-tailscale

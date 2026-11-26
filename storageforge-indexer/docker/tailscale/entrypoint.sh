@@ -45,7 +45,7 @@ if [ ! -c /dev/net/tun ]; then
   say "no /dev/net/tun here: the web UI is served on the tailnet, but this server cannot reach tailnet hosts through it"
 fi
 
-tailscaled --statedir="$STATE" --socket="$SOCK" --tun="$tun" &
+TS_DEBUG_FIREWALL_MODE=nftables tailscaled --statedir="$STATE" --socket="$SOCK" --tun="$tun" &   # not legacy iptables, whatever the host runs
 daemon=$!
 trap 'kill "$daemon" 2>/dev/null' TERM INT
 i=0
@@ -58,26 +58,25 @@ done
 
 if [ "$tun" = tailscale0 ]; then
   # Before anything can arrive: from the tailnet, replies to what the server opened, and the web UI. Nothing else.
-  # If it cannot be put in place, the server is not put on the tailnet at all: its plain-HTTP port would be open there.
-  guard() {
-    "$1" -N SF-TAILNET 2>/dev/null || "$1" -F SF-TAILNET || return 1
-    "$1" -A SF-TAILNET -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || return 1
-    "$1" -A SF-TAILNET -p tcp --dport 443 -j ACCEPT || return 1
-    "$1" -A SF-TAILNET -j DROP || return 1
-    "$1" -C INPUT -i tailscale0 -j SF-TAILNET 2>/dev/null || "$1" -I INPUT -i tailscale0 -j SF-TAILNET || return 1
+  # One nftables table for IPv4 and IPv6, in this (the server's) network only. If it cannot be put in place, the server is
+  # not put on the tailnet at all: its plain-HTTP port would be open there.
+  if ! nft -f - <<'SF_NFT'
+add table inet storageforge_tailnet
+flush table inet storageforge_tailnet
+table inet storageforge_tailnet {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname "tailscale0" ct state established,related accept
+    iifname "tailscale0" tcp dport 443 accept
+    iifname "tailscale0" drop
   }
-  for ipt in iptables ip6tables; do
-    command -v "$ipt" >/dev/null 2>&1 || continue
-    if ! guard "$ipt"; then
-      if [ "$ipt" = ip6tables ] && ! "$ipt" -S INPUT >/dev/null 2>&1; then
-        say "no IPv6 filtering on this host: tailscale0 is guarded for IPv4 only"     # and tailnet IPv6 is not routed here
-        continue
-      fi
-      say "could not put the firewall chain on tailscale0 ($ipt failed, see above): not joining the tailnet, so the server's own ports stay off it"
-      kill "$daemon" 2>/dev/null || :
-      exit 1
-    fi
-  done
+}
+SF_NFT
+  then
+    say "could not put the firewall table on tailscale0 (nft failed, see above): not joining the tailnet, so the server's own ports stay off it"
+    kill "$daemon" 2>/dev/null || :
+    exit 1
+  fi
 fi
 
 set -- --hostname="$NAME" --accept-dns=false --accept-routes=false --netfilter-mode=off
