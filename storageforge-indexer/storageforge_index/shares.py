@@ -917,6 +917,14 @@ reexport() {
   [[ -z $o ]] || info "$o"
 }
 cidrs() { tr ' ' '\n' <<<"$1" | grep -E '^[0-9.:]+(/[0-9]+)?$' || true; }
+ufw_allow() { # LABEL PORTS PROTO CLIENTS -> each port open in ufw to each client (addresses and subnets; none: any). Used by open_fw and netshares.open_port.
+  local label=$1 ports=$2 proto=$3 from p c; from=$(cidrs "$4"); [[ -n $from ]] || from=any
+  for c in $from; do for p in $ports; do
+    if ufw status | grep -E "^$p/$proto +ALLOW +(IN +)?$([[ $c == any ]] && echo Anywhere || echo "${c//./\\.}")" >/dev/null; then ok "ufw allows $p/$proto from $c"
+    elif ((APPLY)); then doing "ufw allow from $c to any port $p proto $proto"; ufw allow from "$c" to any port "$p" proto "$proto" >/dev/null
+    else missing "ufw does not allow $p/$proto from $c ($label)"; fi
+  done; done
+}
 open_fw() { # label tcp-ports clients firewalld-services...
   local label=$1 ports=$2 clients=$3; shift 3
   if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
@@ -926,12 +934,7 @@ open_fw() { # label tcp-ports clients firewalld-services...
       else missing "firewalld does not allow $s"; fi
     done
   elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep '^Status: active' >/dev/null; then
-    local from p c; from=$(cidrs "$clients"); [[ -n $from ]] || from=any
-    for c in $from; do for p in $ports; do
-      if ufw status | grep -E "^$p/tcp +ALLOW +(IN +)?$([[ $c == any ]] && echo Anywhere || echo "${c//./\\.}")" >/dev/null; then ok "ufw allows $p/tcp from $c"
-      elif ((APPLY)); then doing "ufw allow from $c to any port $p proto tcp"; ufw allow from "$c" to any port "$p" proto tcp >/dev/null
-      else missing "ufw does not allow $p/tcp from $c ($label)"; fi
-    done; done
+    ufw_allow "$label" "$ports" tcp "$clients"
   else info "no active firewalld or ufw: nothing to open for $label"; fi
 }
 

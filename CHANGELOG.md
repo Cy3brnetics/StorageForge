@@ -25,6 +25,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - A secret in network-language output (a WireGuard private key) is hidden by one function, `rostranspiler.redact_text`, for a device change's report and the compile preview, and `rostranspiler.secrets_of` decides whether a change's source may be stored. The refused RouterOS line keeps its own `***` marker (BE-19).
 - *The interface that carries this address* is found by one function, `exposure.iface_of`, for a device change's SSH check, the plan what-if's SSH checks and the reach model, and the controller's addresses for a check that goes on without them come from one function, `security.controller_ips`, in place of two nested wrappers. The three SSH checks keep their own verdicts (BE-33).
 - The default gateways of a network reading are listed by one function, `netfacts.gateways_of`, for a host and the RouterOS, OpenWrt, pfSense and Cisco adapters, and a dotted netmask is turned into a prefix length by `netfacts.prefix_of_mask` for the Cisco and SNMP adapters (BE-34).
+- The shares script opens ufw for NFS, SMB and the other share kinds with one function, `ufw_allow`, which `open_fw` and the drivers' `open_port` both call. The firewalld branches stay apart, and every message is the same (BE-22).
 
 ## 0.6.2 — 2026-11-26
 

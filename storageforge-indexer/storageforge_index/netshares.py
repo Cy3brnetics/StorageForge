@@ -194,19 +194,14 @@ share_unit() { echo "storageforge-share-$SERVER.$(systemd-escape -p "$1")"; }   
 MANAGED_FILES=()
 act() { if ((APPLY)); then doing "$*"; return 0; fi; missing "would: $*"; return 1; }   # the rclone library (rclone.LIB) speaks this
 open_port() { # LABEL PORT/PROTO CLIENTS -> the port open to those clients (addresses and subnets; none: any) in firewalld or ufw
-  local label=$1 port=${2%/*} proto=${2#*/} c from
+  local label=$1 port=${2%/*} proto=${2#*/}
   [[ $proto == "$2" ]] && proto=tcp
   if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
     if firewall-cmd -q --query-port="$port/$proto" 2>/dev/null; then ok "firewalld allows $port/$proto ($label)"
     elif ((APPLY)); then doing "firewalld: allow $port/$proto ($label)"; firewall-cmd -q --permanent --add-port="$port/$proto" && firewall-cmd -q --reload
     else missing "firewalld does not allow $port/$proto ($label)"; fi
   elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep "^Status: active" >/dev/null; then
-    from=$(cidrs "$3"); [[ -n $from ]] || from=any
-    for c in $from; do
-      if ufw status | grep -E "^$port/$proto +ALLOW +(IN +)?$([[ $c == any ]] && echo Anywhere || echo "${c//./\\.}")" >/dev/null; then ok "ufw allows $port/$proto from $c"
-      elif ((APPLY)); then doing "ufw allow from $c to any port $port proto $proto"; ufw allow from "$c" to any port "$port" proto "$proto" >/dev/null
-      else missing "ufw does not allow $port/$proto from $c ($label)"; fi
-    done
+    ufw_allow "$label" "$port" "$proto" "$3"   # shares.py
   else info "no active firewalld or ufw: nothing to open for $label"; fi
 }
 indices_of() { local i; for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == "$1" ]] && echo "$i"; done; return 0; }
