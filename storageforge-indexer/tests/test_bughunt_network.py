@@ -1,11 +1,14 @@
 """Regression tests for the network-module bug hunt: each one failed before its fix."""
+import shutil
 import sqlite3
+import tempfile
 import time
 import unittest
 from unittest import mock
 from xml.etree import ElementTree
 
-from storageforge_index import exposure, mapdesign, netconsole, netdevice, pfsense, qrsvg, reach, rostranspiler
+import dbfactory
+from storageforge_index import exposure, mapdesign, netconsole, netdevice, netscan, pfsense, qrsvg, reach, rostranspiler
 
 NET = {'interfaces': [{'name': 'eth0', 'kind': 'ethernet', 'state': 'up', 'addresses': [{'ip': '192.168.1.10', 'prefix': 24}]}], 'listeners': []}
 
@@ -123,6 +126,35 @@ class CutsOff(unittest.TestCase):
                 mock.patch.object(netdevice, '_controller_ips', return_value=['10.0.0.9']):
             got = netdevice.cuts_off(None, d, stmts)
         self.assertTrue(got['cuts'])
+
+
+class ScanLeftRunning(unittest.TestCase):
+    """A restart in the middle of a network scan left its row 'running' for good: nothing but the scan's own thread closed it."""
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self.db = dbfactory.make(self, f'{tmp}/t.db')
+        self.conn = self.db.connect()
+        self.addCleanup(self.conn.close)
+        self.db.migrate(self.conn)
+        for status, finished in (('done', 20), ('running', None)):
+            self.conn.execute('INSERT INTO network_scans (target, started_at, finished_at, status, actor) VALUES (:t, 10, :f, :s, :a)',
+                              {'t': '10.9.0.0/24', 'f': finished, 's': status, 'a': 'test'})
+
+    def rows(self):
+        return [(r['status'], r['finished_at'], r['error']) for r in reversed(netscan.scans(self.conn))]
+
+    def test_a_scan_left_running_is_closed_as_interrupted(self):
+        netscan.close_interrupted(self.conn, now=99)
+        self.assertEqual(self.rows(), [('done', 20, None), ('failed', 99, 'interrupted by restart')])
+
+    def test_the_controller_closes_it_when_it_starts(self):
+        from storageforge_index import server
+        server.App(self.db)
+        (done, _, _), (status, finished, error) = self.rows()
+        self.assertEqual((done, status, error), ('done', 'failed', 'interrupted by restart'))
+        self.assertGreater(finished, 20)
 
 
 if __name__ == '__main__':

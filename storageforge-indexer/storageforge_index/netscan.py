@@ -201,6 +201,11 @@ def run(db, conn: Conn, target: str | None, actor: str, wait: bool = False, runn
     return {'ok': True, 'scan_id': sid, 'targets': targets}
 
 
+def close_interrupted(conn: Conn, now: int | None = None):
+    """After a restart no scan is running, whatever the table says: the thread that would have closed the row went with the process."""
+    conn.execute("UPDATE network_scans SET status = 'failed', finished_at = :t, error = 'interrupted by restart' WHERE status = 'running'", {'t': now or int(time.time())})
+
+
 def scans(conn: Conn, limit: int = 20) -> list[dict]:
     keys = ('id', 'target', 'started_at', 'finished_at', 'status', 'actor', 'error', 'hosts')
     return [dict(zip(keys, r)) for r in conn.all('SELECT scan_id, target, started_at, finished_at, status, actor, error, host_count FROM network_scans ORDER BY scan_id DESC LIMIT :l', {'l': limit})]

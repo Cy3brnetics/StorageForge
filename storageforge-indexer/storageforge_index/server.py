@@ -302,6 +302,7 @@ class App:
                          "WHERE status IN ('queued', 'running')",
                          {'t': int(time.time()), 'o': '\ninterrupted by restart: this run may or may not have finished on the host\n'})
             engine.close_interrupted(conn)
+            netscan.close_interrupted(conn)
             conn.execute("UPDATE scan_jobs SET status = 'failed', finished_at = :t, result_json = :r "
                          "WHERE status IN ('queued', 'running')",
                          {'t': int(time.time()), 'r': json.dumps({'error': 'interrupted by restart'})})
