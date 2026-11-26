@@ -117,6 +117,7 @@ const SF_PAGES = [
   ['planner', '/planner', 'Storage planner', 'hosts.view'],
   ['manage', '/manage', 'Network management', 'devices.view'],
   ['security', '/security', 'Security center', 'security.view'],
+  ['workloads', '/workloads', 'Workloads', 'workloads.view'],
   ['logs', '/logs', 'Host logs', 'hostlogs.view'],
   ['admin', '/admin', 'Admin & vault', 'hosts.view'],
 ];

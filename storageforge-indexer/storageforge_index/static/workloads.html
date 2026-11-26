@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Workloads · StorageForge</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/components.css">
+<link rel="stylesheet" href="/window.css">
+<link rel="stylesheet" href="/workloads.css">
+</head>
+<body>
+<div class="win">
+  <aside class="win-rail">
+    <div class="win-brand">
+      <svg width="24" height="24" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="3" width="24" height="6" rx="1.5" fill="var(--fast)"/><rect x="2" y="11" width="24" height="6" rx="1.5" fill="var(--mass)"/><rect x="2" y="19" width="24" height="6" rx="1.5" fill="var(--remote)"/></svg>
+      <div><b>StorageForge</b><small>Workloads</small></div>
+    </div>
+    <div class="win-rail-end">
+      <div data-sf-chrome data-here="workloads"></div>
+    </div>
+  </aside>
+  <main class="win-main wl-main">
+    <header class="win-head">
+      <div>
+        <h1>Workloads</h1>
+        <p class="muted">Every container and VM of the fleet, as the last scan of each host read it. Nothing here refreshes by itself.</p>
+      </div>
+    </header>
+    <div id="wl-root" class="wl-root">
+      <div class="wl-bar row" role="toolbar" aria-label="Tree controls">
+        <label class="field"><span>Filter</span><input id="wl-q" type="search" maxlength="100" autocomplete="off" placeholder="name, host, runtime or state"></label>
+        <button id="wl-fold" type="button" class="btn sm">Fold all</button>
+        <button id="wl-unfold" type="button" class="btn sm">Unfold all</button>
+        <span class="wl-zoom row">
+          <button id="wl-out" type="button" class="btn sm" aria-label="Zoom out">−</button>
+          <span id="wl-pct" class="muted small" aria-live="off">100%</span>
+          <button id="wl-in" type="button" class="btn sm" aria-label="Zoom in">+</button>
+          <button id="wl-fit" type="button" class="btn sm">Fit</button>
+        </span>
+        <span id="wl-count" class="muted small" role="status"></span>
+      </div>
+      <div class="wl-body">
+        <div id="wl-canvas" class="wl-canvas">
+          <div id="wl-world" class="wl-world">
+            <svg id="wl-edges" class="wl-edges" aria-hidden="true"></svg>
+            <div id="wl-nodes" class="wl-nodes" role="tree" aria-label="Fleet, hosts, runtimes and workloads"></div>
+          </div>
+        </div>
+        <aside id="wl-panel" class="wl-panel" aria-label="Selected item"></aside>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="/session.js"></script>
+<script src="/kernel.js"></script>
+<script src="/chrome.js"></script>
+<script src="/ui.js"></script>
+<script src="/canvas.js"></script>
+<script src="/workloads.js"></script>
+</body>
+</html>

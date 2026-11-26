@@ -864,6 +864,10 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def logs_page():
         return app_page('logs.html')
 
+    @web.get('/workloads')
+    def workloads_page():
+        return app_page('workloads.html')
+
     @web.get('/admin')
     def admin_page():
         return app_page('admin.html')
@@ -917,7 +921,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
-    @web.get('/<any("session.js", "kernel.js", "chrome.js", "ui.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "osinstallview.js", "desktopview.js", "dockerview.js", "infraview.js", "toolboxview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "secretsview.js", "apiconnview.js", "deployview.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "malwareview.js", "securitypage.js", "hostlogsview.js", "logspage.js", "adminview.js", "adminpage.js", "commandforms.js", "notifyview.js", "enclaveview.js", "agentview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js", "fsbrowse.js"):name>')
+    @web.get('/<any("session.js", "kernel.js", "chrome.js", "ui.js", "router.js", "canvas.js", "search.js", "app.js", "topology.js", "checks.js", "copiesview.js", "moves.js", "changes.js", "filemap.js", "gitview.js", "rebuildview.js", "osinstallview.js", "desktopview.js", "dockerview.js", "infraview.js", "toolboxview.js", "sfnetview.js", "mapview.js", "netscanview.js", "manage.js", "manage.css", "securitymore.js", "sshcaview.js", "secretsview.js", "apiconnview.js", "deployview.js", "sharewiz.js", "tasks.js", "scheduler.js", "planner.js", "planner.css", "securityview.js", "malwareview.js", "securitypage.js", "hostlogsview.js", "logspage.js", "adminview.js", "adminpage.js", "commandforms.js", "notifyview.js", "enclaveview.js", "agentview.js", "consoleview.js", "xterm.js", "xterm.css", "addon-fit.js", "fsbrowse.js", "workloads.js", "workloads.css"):name>')
     @login_required
     def static(name):
         resp = send_from_directory(STATIC, name, max_age=0)

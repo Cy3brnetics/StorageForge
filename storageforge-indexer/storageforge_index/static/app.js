@@ -1045,6 +1045,7 @@ function applyPermissions(me) {          // only hides what would answer 403: th
   $('#searchform').hidden = !can('search.files');
   if ($('#tomanage')) $('#tomanage').hidden = !can('devices.view');
   if ($('#tosecurity')) $('#tosecurity').hidden = !can('security.view');
+  if ($('#toworkloads')) $('#toworkloads').hidden = !can('workloads.view');
   if ($('#tologs')) $('#tologs').hidden = !can('hostlogs.view');
   if ($('#toadmin')) $('#toadmin').hidden = !(can('keys.view') || can('audit.view') || can('users.manage'));
   if ($('#scans-sub-access')) $('#scans-sub-access').hidden = !can('keys.view');
