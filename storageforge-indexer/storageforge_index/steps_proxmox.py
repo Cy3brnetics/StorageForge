@@ -144,7 +144,7 @@ t_pve_ct() { local vmid=$1 host=$2 tmpl=$3 store=$4 disk=${5:-8} cores=${6:-1} m
 # From an ISO already on the node, or from a catalog cloud image that is downloaded into a temporary folder, checked and imported. The folder is
 # removed on every way out. pve_vm_make reads this function locals, as every function it calls does in bash.
 t_pve_vm() { local vmid=$1 name=$2 source=$3 iso=$4 image=$5 store=$6 disk=${7:-32} cores=${8:-2} mem=${9:-2048} bridge=${10:-vmbr0} ostype=${11:-l26} user=${12:-admin} key=${13} onboot=${14} start=${15}
-  local tmp= prev
+  local tmp= rc=0
   command -v qm >/dev/null || { conflict "this host is not a Proxmox VE node: qm is not here"; return 0; }
   pve_free_vmid "$vmid" qm || return 0
   vmid=$PVE_VMID
@@ -159,12 +159,11 @@ t_pve_vm() { local vmid=$1 name=$2 source=$3 iso=$4 image=$5 store=$6 disk=${7:-
   fi
   act "create VM $vmid ($name) from ${iso:-$image} on $store: ${disk} GiB, $cores cores, ${mem} MiB, bridge $bridge" || return 0
   tmp=$(mktemp -d) || { conflict "could not make a temporary folder"; return 0; }
-  # an Ansible export exits on a conflict: the trap removes the folder then too, and hands over to the trap that was there
-  prev=$(trap -p EXIT)
-  trap 'rm -rf -- "$tmp"; eval "$prev"' EXIT
-  pve_vm_make || true
+  # The folder is the subshell own: its EXIT trap removes it, whether the step ends or a conflict exits (an Ansible export does), and the trap
+  # of the script around it is not touched. The subshell cannot count a problem for the script, so a failure is said once more here.
+  ( trap 'rm -rf -- "$tmp"' EXIT; pve_vm_make ) || rc=$?
   rm -rf -- "$tmp"
-  trap - EXIT; [[ -z $prev ]] || eval "$prev"
+  ((!rc)) || conflict "VM $vmid ($name): the step stopped, see above"
   return 0
 }
 

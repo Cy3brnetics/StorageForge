@@ -1,6 +1,7 @@
 """The Proxmox VE action and remove steps: checked against the reading, run as a report and as an Ansible export with stubbed qm and pct."""
 import hashlib
 import os
+import shlex
 import subprocess
 import tempfile
 import time
@@ -13,7 +14,7 @@ try:
     from test_tasks import Fleet
 except ImportError:      # run as tests.test_x from the project folder
     from tests.test_tasks import Fleet
-from storageforge_index import changes, security
+from storageforge_index import changes, security, steps_proxmox
 
 GUESTS = [{'kind': 'qemu', 'vmid': '101', 'name': 'web', 'state': 'running', 'cores': 2, 'memory_mib': 1024, 'disks': [], 'nics': []},
           {'kind': 'lxc', 'vmid': '102', 'name': 'dns', 'state': 'stopped', 'disks': [], 'nics': [], 'unprivileged': True}]
@@ -394,9 +395,43 @@ class Vm(CtRun):
         r = self.run_vm(tmp, source='image', iso='', image='debian13', ssh_key=KEY)
         self.assertIn('does not match its checksum', r.stderr)
         lines = log.read_text().splitlines()
-        self.assertTrue(lines[-1].startswith(str(tmp / 'curl')) or ' curl ' in lines[-1] or 'curl' in lines[-1], lines)
+        self.assertTrue(lines[-1].startswith(str(tmp / 'curl')) and ' -o ' in lines[-1], lines)     # the last thing run was the image download
         self.assertFalse(any('create' in l or 'importdisk' in l for l in lines))
         self.assertEqual(list((tmp / 'tmpdir').iterdir()), [], 'the temporary folder is removed on this way out too')
+
+    def with_trap(self, tmp, cmd):
+        return f"trap 'echo ran > {tmp}/marker' EXIT\n" + cmd
+
+    def test_a_trap_of_the_script_around_it_still_runs_after_a_checksum_mismatch(self):
+        tmp, log = self.vm_stubs(match=False)
+        env = {**self.env(tmp), 'TMPDIR': str(tmp / 'tmpdir')}
+        r = subprocess.run(['bash', '-c', self.with_trap(tmp, self.vm_export_cmd(source='image', iso='', image='debian13'))], env=env, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('does not match its checksum', r.stderr)
+        self.assertTrue((tmp / 'marker').exists(), 'the existing EXIT trap ran')
+        self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
+
+    def test_a_trap_of_the_script_around_it_runs_at_the_end_after_a_good_run(self):
+        tmp, log = self.vm_stubs()
+        env = {**self.env(tmp), 'TMPDIR': str(tmp / 'tmpdir')}
+        r = subprocess.run(['bash', '-c', self.with_trap(tmp, self.vm_export_cmd(source='image', iso='', image='debian13'))], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((tmp / 'marker').exists())
+        self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
+
+    def test_in_a_script_a_failed_download_counts_a_problem_and_keeps_the_trap(self):
+        tmp, log = self.vm_stubs(match=False)
+        head = ('APPLY=1; PROBLEMS=0; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; info() { :; }; doing() { :; }; later() { conflict "$*"; }\n'
+                'conflict() { echo "conflict: $*" >&2; PROBLEMS=$((PROBLEMS + 1)); }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
+        call = ' '.join(shlex.quote(w) for w in ('106', 'app-01', 'image', '', 'debian13', 'local-lvm', '32', '2', '2048', 'vmbr0', 'l26', 'admin', '', '', ''))
+        script = self.with_trap(tmp, head + steps_proxmox._vm_helpers() + steps_proxmox.BASH + f'\nt_pve_vm {call}\necho "problems: $PROBLEMS"\n')
+        env = {**self.env(tmp), 'TMPDIR': str(tmp / 'tmpdir')}
+        r = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True, timeout=60)
+        self.assertIn('problems: 1', r.stdout)      # counted in the script, not lost with the subshell
+        self.assertIn('does not match its checksum', r.stderr)
+        self.assertTrue((tmp / 'marker').exists())
+        self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
+        self.assertFalse(any('create' in l for l in log.read_text().splitlines()))
 
     def test_an_export_carries_the_catalog_and_the_fetch_function(self):
         cmd = self.vm_export_cmd(source='image', iso='', image='debian13')
