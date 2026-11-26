@@ -9,7 +9,7 @@ const WL_RUNTIMES = ['docker', 'podman', 'libvirt', 'incus', 'lxc', 'proxmox'];
 const WL_COL = 240, WL_ROW = 44, WL_W = 200, WL_H = 36, WL_MANY_HOSTS = 12;
 
 const WL = {
-  listing: null, root: null, index: new Map(), folded: new Set(), q: '', sel: '', focus: '', view: { x: 0, y: 0, k: 1 }, cv: null, fitted: false,
+  listing: null, root: null, index: new Map(), folded: new Set(), pinned: new Set(), q: '', sel: '', focus: '', view: { x: 0, y: 0, k: 1 }, cv: null, fitted: false,
   onAction: () => notify('Making a change from here comes with the review step of this page.', 'info'),      // Task 7 fills these two
   onNew: () => notify('Creating a workload from here comes with the wizard of this page.', 'info'),
 };
@@ -19,7 +19,9 @@ const WL = {
    stack:NAME:RUNTIME:PROJECT and wl:NAME:RUNTIME:NAME; "note" is the line of a host nobody has read yet, and the entries a connection reads
    without an indexed host hang under connections ("Seen through connections"), one node per connection, read-only. */
 function wlTree(listing) {
-  const hosts = [...(listing.hosts || [])].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const hosts = [...(listing.hosts || [])];
+  for (const w of listing.workloads || []) if (w.source !== 'api' && w.host && !hosts.some((h) => h.name === w.host)) hosts.push({ name: w.host, runtimes: [] });      // a host the index does not list still shows its own
+  hosts.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const known = new Set(hosts.map((h) => h.name));
   const seen = new Set();
   const mk = (id, kind, label, data = {}, children = []) => {
@@ -115,7 +117,7 @@ function wlOpenSet() {
   const lit = wlLit(WL.index, WL.q);
   if (!lit) return WL.folded;
   const open = new Set(WL.folded);
-  lit.forEach((id) => { if (WL.index.get(id).node.children.some((k) => lit.has(k.id))) open.delete(id); });
+  lit.forEach((id) => { if (!WL.pinned.has(id) && WL.index.get(id).node.children.some((k) => lit.has(k.id))) open.delete(id); });
   return open;
 }
 function wlVisible(folded) {
@@ -192,7 +194,7 @@ function wlFromHash() {
 function wlFold(id, fold) {
   const n = WL.index.get(id) && WL.index.get(id).node;
   if (!n || !n.children.length) return;
-  if (fold) WL.folded.add(id); else WL.folded.delete(id);
+  if (fold) { WL.folded.add(id); WL.pinned.add(id); } else { WL.folded.delete(id); WL.pinned.delete(id); }          // a fold the person makes beats the filter's opening
   wlDraw(); wlFocus(WL.focus); wlHashSync();
 }
 function wlFocus(id) {
@@ -226,9 +228,10 @@ function wlKey(ev) {
   } else if (ev.key === 'ArrowLeft') {
     ev.preventDefault();
     if (n.children.length && !folded.has(n.id)) wlFold(n.id, true); else if (info.parent) wlFocus(info.parent.id);
-  } else if (ev.key === 'Enter') { ev.preventDefault(); wlSelect(n.id); }
+  } else if (ev.key === 'Enter') { ev.preventDefault(); if (n.kind === 'note') location.href = wlScanHref(n.data.host); else wlSelect(n.id); }
   else if (ev.key === '+' && (n.kind === 'host' || n.kind === 'runtime')) { ev.preventDefault(); wlNew(n); }
 }
+const wlScanHref = (host) => `/#/topo?host=${encodeURIComponent(host)}`;
 function wlNew(n) { WL.onNew({ host: n.kind === 'host' ? n.data.host.name : n.data.host, runtime: n.kind === 'runtime' ? n.data.runtime : '' }); }
 
 /* ── the panel ────────────────────────────────────────────────────── */
@@ -281,19 +284,25 @@ function wlPanel() {
     out.push(wlDl([['Runtimes', (h.runtimes || []).join(', ') || 'none found'], ['Engine', h.engine], ...wlReading(h)]));
     if (h.measure_stale) out.push(text('p', 'The measurement of this host is old: scan it again for a current picture.', 'wl-warn'));
     if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button('+ New', () => WL.onNew({ host: h.name, runtime: '' }), 'btn sm pri'), ...(h.runtimes || []).map((r) => button(`+ New ${r}`, () => WL.onNew({ host: h.name, runtime: r }), 'btn sm'))));
-    out.push(wlLink(`/#/topo?host=${encodeURIComponent(h.name)}`, 'Open host'));
+    out.push(wlLink(wlScanHref(h.name), 'Open host'));
   } else if (n.kind === 'runtime') {
     out.push(wlDl([['Host', d.host], ['Workloads', d.count], ...wlReading(wlHostOf(d.host))]));
     if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button(`+ New ${d.runtime}`, () => WL.onNew({ host: d.host, runtime: d.runtime }), 'btn sm pri')));
   } else if (n.kind === 'stack') {
     out.push(wlDl([['Compose project', n.label], ['Host', d.host], ['Containers', d.items.map((w) => `${w.name}: ${w.state || '?'}`)]]));
+    const warn = d.runtime !== 'proxmox' && wlManagedWarn(d.items);
+    if (warn) out.push(warn);
     out.push(wlButtons([{ label: 'Update images', step: wlStep('image-update', d.host, { runtime: d.runtime, stack: n.label }) }]));
   } else if (n.kind === 'note') {
-    out.push(text('p', 'Nothing has read this host yet, so there is nothing to draw.', 'muted'), wlLink(`/#/topo?host=${encodeURIComponent(d.host)}`, 'Scan it'));
+    out.push(text('p', 'Nothing has read this host yet, so there is nothing to draw.', 'muted'), wlLink(wlScanHref(d.host), 'Scan it'));
   } else if (n.kind === 'connections') {
     out.push(text('p', 'These come from a connection (an API), not from a host this controller scans. They are shown here and cannot be changed from this page.', 'muted'));
   } else wlWorkloadPanel(n, out);
   p.replaceChildren(...out);
+}
+function wlManagedWarn(ws) {
+  const m = ws.map((w) => w.managed).find((x) => x && x.level !== 'ok');
+  return m ? text('p', `Managed by ${m.by} (${m.how}): a change made here can be undone by it, or fight it. Change it there, or adopt it first.`, 'wl-warn') : null;
 }
 function wlWorkloadPanel(n, out) {
   const w = n.data.w, h = wlHostOf(w.host), m = w.managed;
@@ -304,10 +313,15 @@ function wlWorkloadPanel(n, out) {
   if ((w.findings || []).length) out.push(text('h3', 'Findings'), el('ul', {}, ...w.findings.map((f) => text('li', f))));
   if (n.data.readOnly) {
     out.push(text('p', 'Seen only through a connection: this page reads it but cannot change it, because the steps need SSH to the host. Change it where the connection manages it.', 'muted'));
-    if (h) out.push(button(`Go to ${h.name}`, () => { wlFocus(`host:${h.name}`); wlSelect(`host:${h.name}`); }, 'btn sm'));
+    if (h) {
+      const own = [...WL.index.values()].find(({ node }) => node.kind === 'workload' && !node.data.readOnly && node.data.w.host === h.name && node.data.w.runtime === 'proxmox' && String(node.data.w.vmid) === String(w.vmid));
+      const to = own ? own.node.id : `host:${h.name}`;
+      out.push(button(own ? `Go to ${own.node.label} on ${h.name}` : `Go to ${h.name}`, () => { wlFocus(to); wlSelect(to); }, 'btn sm'));
+    }
     return;
   }
-  if (m && m.level !== 'ok' && w.runtime !== 'proxmox') out.push(text('p', `Managed by ${m.by} (${m.how}): a change made here can be undone by it, or fight it. Change it there, or adopt it first.`, 'wl-warn'));
+  const warn = w.runtime !== 'proxmox' && wlManagedWarn([w]);
+  if (warn) out.push(warn);
   out.push(wlButtons(wlActions(w)));
 }
 
@@ -331,10 +345,11 @@ function wlWire() {
     const card = ev.target.closest('[role=treeitem]');
     if (!card) return;
     const f = ev.target.closest('[data-fold]');
+    if (card.dataset.id.startsWith('note:') && WL.index.get(card.dataset.id)) { location.href = wlScanHref(WL.index.get(card.dataset.id).node.data.host); return; }
     wlFocus(card.dataset.id);
     if (f) wlFold(f.dataset.fold, !wlOpenSet().has(f.dataset.fold)); else wlSelect(card.dataset.id);
   });
-  $('#wl-q').addEventListener('input', (ev) => { WL.q = ev.target.value; wlDraw(); wlHashSync(); });
+  $('#wl-q').addEventListener('input', (ev) => { WL.q = ev.target.value; WL.pinned.clear(); wlDraw(); wlHashSync(); });
   $('#wl-fold').addEventListener('click', () => { WL.folded = new Set([...WL.index.values()].filter(({ node, parent }) => parent && node.children.length).map(({ node }) => node.id)); wlDraw(); wlFit(); wlHashSync(); });
   $('#wl-unfold').addEventListener('click', () => { WL.folded = new Set(); wlDraw(); wlFit(); wlHashSync(); });
   $('#wl-in').addEventListener('click', () => WL.cv.zoomBy(1.25));
