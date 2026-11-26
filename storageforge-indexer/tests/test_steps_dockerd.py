@@ -52,6 +52,13 @@ class Index(Fleet):
         return [(i['level'], i['text']) for i in changes.check(self.conn, p)['tasks'][0]['items']]
 
 
+class Imports(unittest.TestCase):
+    def test_either_module_can_be_imported_first(self):
+        for first in ('steps_proxmox', 'steps_dockerd'):
+            r = subprocess.run([sys.executable, '-c', f'import storageforge_index.{first}'], capture_output=True, text=True, env={**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parent.parent)})
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+
 class Normalize(unittest.TestCase):
     def test_every_setting_empty_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'at least one'):
@@ -142,6 +149,14 @@ class Check(Index):
         self.assertTrue(any(lv == 'warn' and 'storage driver' in t for lv, t in self.items(storage_driver='btrfs')))
         self.assertFalse(any('storage driver' in t for lv, t in self.items(storage_driver='overlay2')))
 
+    def test_a_move_on_zfs_or_btrfs_is_a_crit(self):
+        for drv in ('zfs', 'btrfs'):
+            self.scan(settings={'storage_driver': drv})
+            self.assertTrue(any(lv == 'crit' and drv in t for lv, t in self.items(data_root='/mnt/backup/docker')), drv)
+            self.assertFalse(any(lv == 'crit' and drv in t for lv, t in self.items(data_root='/mnt/backup/docker', move_data=False)), drv)
+        self.scan(settings={'storage_driver': 'overlay2'})
+        self.assertFalse(any(lv == 'crit' for lv, t in self.items(data_root='/mnt/backup/docker')))
+
     def test_the_number_of_log_files_is_one_to_a_hundred(self):
         self.scan()
         for bad in ('0', '101'):
@@ -185,13 +200,18 @@ except Exception:
     cfg = {{}}
 fmt = a[a.index("--format") + 1] if "--format" in a else ""
 running = [l.split() for l in open("{work}/running.txt")]
+drv = cfg.get("storage-driver", "overlay2")
+if os.path.exists("{work}/driver"):
+    drv = open("{work}/driver").read().strip()
+if os.path.exists("{work}/driver-after") and os.path.exists("{work}/restarted"):
+    drv = open("{work}/driver-after").read().strip()
 if os.path.exists("{work}/restarted"):
     running = [r for r in running if r[1] != "no"]
 if a[:1] == ["--version"]:
     print(open("{work}/version.txt").read().strip() if os.path.exists("{work}/version.txt") else "Docker version 27.0.1, build x")
 elif a[:1] == ["info"]:
     print({{"{{{{.DockerRootDir}}}}": cfg.get("data-root", "{self.old}"), "{{{{.LoggingDriver}}}}": cfg.get("log-driver", "json-file"),
-           "{{{{.Driver}}}}": cfg.get("storage-driver", "overlay2"), "{{{{.LiveRestoreEnabled}}}}": str(cfg.get("live-restore", False)).lower(),
+           "{{{{.Driver}}}}": drv, "{{{{.LiveRestoreEnabled}}}}": str(cfg.get("live-restore", False)).lower(),
            "{{{{.OperatingSystem}}}}": "Ubuntu 26.04"}}.get(fmt, ""))
 elif a[:1] == ["ps"]:
     print("\\n".join(r[0] for r in running))
@@ -246,7 +266,7 @@ exit 0
     def backups(self):
         return sorted(self.etc.glob('daemon.json.storageforge-*'))
 
-    def tools_only(self, *names):
+    def tools_only(self, *names, without=()):
         """A PATH of the basic tools the script needs and the named ones, with no python3 or jq unless named."""
         d = Path(tempfile.mkdtemp(dir=self.work))
         for t in ('bash', 'dirname', 'mktemp', 'rm', 'cp', 'cat', 'diff', 'mkdir', 'date', 'id', 'readlink', 'grep', 'find', 'du', 'cut', 'df', 'tail', 'tr', 'sleep',
@@ -255,7 +275,8 @@ exit 0
             if src:
                 (d / t).symlink_to(src)
         for t in ('docker', 'dockerd', 'systemctl', 'rsync', 'uname'):
-            (d / t).symlink_to(self.stubs / t)
+            if t not in without:
+                (d / t).symlink_to(self.stubs / t)
         return str(d)
 
     # ── report ──
@@ -265,7 +286,7 @@ exit 0
     def test_the_report_shows_the_merged_file_and_changes_nothing(self):
         before = (self.etc / 'daemon.json').read_text()
         out = self.report(log_max_size='10m', log_max_file='3')
-        self.assertRegex(out, r'\+\s+"max-size": "10m"')
+        self.assertRegex(out, r'log-opts: \(not set\) \u2192 \{"max-size": "10m", "max-file": "3"\}')
         self.assertRegex(out, r'missing.*would')
         self.assertEqual((self.etc / 'daemon.json').read_text(), before)
         self.assertEqual(self.backups(), [])
@@ -555,6 +576,108 @@ exit 0
         self.assertFalse((self.work / 'pwned').exists())
         body = steps_dockerd.BASH.split('<<"PY"')[1].split('\nPY\n')[0]
         self.assertNotIn('$', body)
+
+    # ── a data directory that is not safe is refused whatever the plan came through ──
+    def assert_refused_untouched(self, r, text):
+        before = json.dumps(self.OLD_DAEMON, indent=2) + '\n'
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn(text, r.stderr)
+        self.assertEqual((self.etc / 'daemon.json').read_text(), before)
+        self.assertEqual((self.backups(), self.calls('systemctl'), self.calls('rsync')), ([], [], []))
+
+    def test_the_root_directory_is_refused_with_the_move_and_without(self):
+        for move in ('1', ''):
+            with self.subTest(move=move):
+                self.assert_refused_untouched(self.export(data_root='/', move_data=move, log_max_size=''), 'cannot be /')
+
+    def test_a_data_directory_that_is_not_a_normal_absolute_path_is_refused(self):
+        for bad in ('srv/docker', '/srv/../x', '/srv//x', '/srv/./x'):
+            with self.subTest(bad=bad):
+                self.assert_refused_untouched(self.export_raw(bad), 'absolute')
+
+    def test_a_folder_inside_the_current_one_or_around_it_is_refused_without_the_move(self):
+        (self.old / 'sub').mkdir()
+        self.assert_refused_untouched(self.export(data_root=str(self.old / 'sub'), move_data=''), 'inside')
+        self.assert_refused_untouched(self.export(data_root=str(self.work), move_data=''), 'inside')
+
+    def test_a_target_with_content_that_is_not_a_docker_root_is_refused_without_the_move(self):
+        self.new.mkdir()
+        (self.new / 'photos').write_text('x')
+        self.assert_refused_untouched(self.export(data_root=str(self.new), move_data='', log_max_size=''), 'not empty')
+        self.assert_refused_untouched(self.export(data_root=str(self.work), move_data='', log_max_size=''), 'inside')
+
+    def test_a_target_that_is_already_a_docker_root_is_taken_without_the_move(self):
+        self.new.mkdir()
+        (self.new / 'image').mkdir()
+        r = self.export(data_root=str(self.new), move_data='', log_max_size='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.daemon()['data-root'], str(self.new))
+
+    def test_the_report_refuses_them_too(self):
+        out = self.report(data_root='/', log_max_size='')
+        self.assertIn('cannot be /', out)
+        self.assertEqual(self.calls('systemctl'), [])
+
+    def export_raw(self, data_root):
+        """The script as a plan that skipped normalising would hold it."""
+        doc = yaml.load(changes.ansible(self.conn, changes.normalize(plan(data_root='/srv/zz', move_data=''))), Loader)
+        cmd = next(t['ansible.builtin.shell']['cmd'] for play in doc for t in play['tasks'] if 'ansible.builtin.shell' in t and 't_docker_daemon' in t['ansible.builtin.shell']['cmd'])
+        import shlex
+        cmd = cmd.replace(shlex.quote('/srv/zz'), shlex.quote(data_root))
+        self.assertIn(shlex.quote(data_root), cmd)
+        return subprocess.run(['bash', '-c', cmd], env=self.env(), capture_output=True, text=True, timeout=60)
+
+    # ── the report names what changes and never a secret ──
+    def test_the_report_shows_only_the_keys_it_sets_and_masks_what_it_shows(self):
+        (self.etc / 'daemon.json').write_text(json.dumps({'hosts': ['fd://'], 'splunk-token': 'TOPSECRET1', 'log-opts': {'splunk-token': 'TOPSECRET2', 'max-size': '1m'},
+                                                         'registry-mirrors': ['https://bob:PWHERE@m.example'], 'log-driver': 'gelf', 'gelf-address': 'udp://user:GELFPW@h:12201'}, indent=4))
+        out = self.report(log_max_file='3', registry_mirrors='https://n.example')
+        for secret in ('TOPSECRET1', 'TOPSECRET2', 'PWHERE', 'GELFPW', 'gelf-address'):
+            self.assertNotIn(secret, out)
+        self.assertIn('log-opts:', out)
+        self.assertIn('"splunk-token": "***"', out)
+        self.assertIn('registry-mirrors: ["https://***@m.example"] \u2192 ["https://n.example"]', out)
+        self.assertNotIn('---', out)
+
+    def test_the_jq_report_names_the_keys_and_shows_no_value(self):
+        if not shutil.which('jq'):
+            self.skipTest('jq is not installed here')
+        (self.etc / 'daemon.json').write_text(json.dumps({'log-opts': {'splunk-token': 'TOPSECRET2'}}))
+        r = subprocess.run(['bash', '-s', '--', '--report'], input=changes.script(self.conn, changes.normalize(plan(log_max_file='3'))), env=self.env(self.tools_only('jq')),
+                           capture_output=True, text=True, timeout=60)
+        self.assertNotIn('TOPSECRET2', r.stdout + r.stderr)
+        self.assertIn('log-opts', r.stdout)
+
+    # ── systemd ──
+    def test_a_host_without_systemctl_is_a_conflict_before_anything(self):
+        r = self.export(path=self.tools_only('python3', without=('systemctl',)))
+        self.assert_refused_untouched(r, 'does not use systemd')
+        self.assertEqual(self.calls('dockerd --validate'), [])
+
+    # ── the storage driver ──
+    def test_a_move_on_zfs_or_btrfs_is_refused_before_docker_stops(self):
+        for drv in ('zfs', 'btrfs'):
+            with self.subTest(drv=drv):
+                (self.work / 'driver').write_text(drv)
+                r = self.export(data_root=str(self.new), log_max_size='')
+                self.assert_refused_untouched(r, drv)
+                self.assertEqual(self.calls('docker stop'), [])
+
+    def test_a_move_after_which_the_storage_driver_differs_is_a_conflict(self):
+        (self.work / 'driver-after').write_text('vfs')
+        r = self.export(data_root=str(self.new), log_max_size='')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertRegex(r.stderr, r'conflict: docker reports storage driver vfs, not overlay2')
+
+    def test_a_stop_that_fails_halfway_names_the_containers_already_stopped(self):
+        (self.etc / 'daemon.json').write_text(json.dumps({'live-restore': True}))
+        self.stub('docker', (self.stubs / 'docker').read_text().replace('if a[:1] == ["--version"]:', 'if a[:1] == ["stop"] and a[-1] == "tmp":\n    sys.exit(1)\nif a[:1] == ["--version"]:', 1))
+        r = self.export(data_root=str(self.new))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('could not stop the container tmp', r.stderr)
+        self.assertNotIn('nothing was changed', r.stderr)
+        self.assertRegex(r.stderr, r'already stopped:.*web')
+        self.assertEqual((self.calls('systemctl'), self.calls('rsync')), ([], []))
 
 
 if __name__ == '__main__':

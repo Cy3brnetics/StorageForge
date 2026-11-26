@@ -12,7 +12,6 @@ import re
 
 from . import changes
 from .changes import F
-from .steps_proxmox import ANSIBLE_HEAD
 
 LOG_DRIVERS = ['', 'json-file', 'local', 'journald', 'syslog', 'none']
 STORAGE_DRIVERS = ['', 'overlay2', 'btrfs', 'zfs', 'fuse-overlayfs']
@@ -27,12 +26,14 @@ changes.CHECKS['httpsurls'] = re.compile(r'https://[A-Za-z0-9._~:/?#%+=&,-]{1,20
 # No apostrophes: the script text is checked for values that could end a quoted word. The functions read the locals of t_docker_daemon, as bash allows.
 # The values reach python3 as environment words and jq as --arg words, never inside the program text.
 BASH = r"""
-# dd_merge BASE NEW: the wanted keys merged into the JSON object in BASE, written to NEW. Exit 3: BASE is not a JSON object (the reason is printed).
-dd_merge() { local base=$1 new=$2 flt
+# dd_merge BASE NEW SUMMARY: the wanted keys merged into the JSON object in BASE, written to NEW. SUMMARY gets a line for each key this changes, before and after
+# with the secrets masked (with jq, the key only). Exit 3: BASE is not a JSON object (the reason is printed).
+dd_merge() { local base=$1 new=$2 summary=$3 flt
   if [[ $DD_TOOL == python3 ]]; then
-    DD_ROOT=$eff_root DD_LOGDRV=$logdrv DD_LOGSIZE=$logsize DD_LOGFILE=$logfile DD_LIVE=$live DD_MIRRORS=$mirrors DD_STOR=$stor python3 - "$base" "$new" <<"PY"
-import json, os, sys
-base, new = sys.argv[1], sys.argv[2]
+    DD_ROOT=$eff_root DD_LOGDRV=$logdrv DD_LOGSIZE=$logsize DD_LOGFILE=$logfile DD_LIVE=$live DD_MIRRORS=$mirrors DD_STOR=$stor python3 - "$base" "$new" "$summary" <<"PY"
+import json, os, re, sys
+@MASKRULE@
+base, new, summary = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(base) as fh:
         doc = json.load(fh)
@@ -69,6 +70,13 @@ with open(new, "w") as fh:
     else:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
+lines = []
+for key in ("data-root", "log-driver", "log-opts", "live-restore", "registry-mirrors", "storage-driver"):
+    if doc.get(key) != orig.get(key):
+        was = json.dumps(_mask_known(key, orig[key])) if key in orig else "(not set)"
+        lines.append("  %s: %s \u2192 %s" % (key, was, json.dumps(_mask_known(key, doc[key]))))
+with open(summary, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(lines) + "\n" if lines else "")
 PY
   else
     jq -e "type == \"object\"" "$base" >/dev/null 2>&1 || { echo "not a JSON object"; return 3; }
@@ -82,7 +90,11 @@ PY
     jq --arg root "$eff_root" --arg ldrv "$logdrv" --arg lsize "$logsize" --arg lfile "$logfile" --arg live "$live" --arg mirrors "$mirrors" --arg stor "$stor" \
       "$flt" "$base" >"$new" || return 3
     # the same content in another layout is no change: the file is then kept as it is, and nothing restarts
-    [[ $(jq -cS . "$base") == "$(jq -cS . "$new")" ]] && cp -- "$base" "$new"
+    if [[ $(jq -cS . "$base") == "$(jq -cS . "$new")" ]]; then cp -- "$base" "$new"
+    else
+      jq -rn --slurpfile a "$base" --slurpfile b "$new" "[\"data-root\", \"log-driver\", \"log-opts\", \"live-restore\", \"registry-mirrors\", \"storage-driver\"] | .[]
+        | select(\$a[0][.] != \$b[0][.]) | \"  \" + . + \": changes (the value is not shown: python3 is not here)\"" >"$summary" || true
+    fi
     return 0
   fi
 }
@@ -157,7 +169,7 @@ dd_move() {
 }
 
 # dd_work: the whole step, reading and setting the locals of t_docker_daemon. tmp is its own temporary folder.
-dd_work() { local base new cur eff_root want d out vout help used avail par l hid
+dd_work() { local base new cur eff_root want d out vout help used avail par l hid drv_before= want_drv stopped=
   local dd_bak= moving=0 drift=0 changed=0
   want=${data_root%/}
   cur=$(docker info --format "{{.DockerRootDir}}" 2>/dev/null </dev/null) || cur=
@@ -170,6 +182,23 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
   eff_root=$data_root
   [[ -n $want && $want == "$cur" ]] && eff_root=
   if [[ -n $want && $want != "$cur" ]]; then drift=1; [[ -n $move ]] && moving=1; fi
+  # a plan from the Changes page or the API is not stopped by a crit of the check, so the script itself refuses a folder docker must not be pointed at
+  if [[ -n $data_root ]]; then
+    if [[ -z $want ]]; then dd_conflict "the data directory cannot be /"; return 0; fi
+    if [[ $data_root != /* || "$want/" == *//* || "$want/" == */../* || "$want/" == */./* ]]; then
+      dd_conflict "the data directory $data_root is not an absolute path without .., . or double slashes"; return 0
+    fi
+    if ((drift)); then
+      case "$want/" in "$cur/"*) dd_conflict "$want is inside the current data directory $cur"; return 0 ;; esac
+      case "$cur/" in "$want/"*) dd_conflict "the current data directory $cur is inside $want"; return 0 ;; esac
+    fi
+    if ((drift && !moving)) && [[ -e $want ]]; then
+      [[ -d $want ]] || { dd_conflict "$want is not a folder"; return 0; }
+      if [[ -n $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) && ! -d $want/image && ! -d $want/containers ]]; then
+        dd_conflict "$want is not empty and does not look like a Docker data directory (no image or containers folder in it): pick an empty folder"; return 0
+      fi
+    fi
+  fi
   if [[ -s $f ]]; then
     [[ -r $f ]] || { if ((APPLY)); then dd_conflict "$f is not readable"; else missing "$f was not readable as $(id -un): --apply, as root, reads it"; fi; return 0; }
     base=$f
@@ -179,14 +208,14 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
     base=$tmp/empty.json; echo "{}" >"$base"
   fi
   new=$tmp/new.json
-  out=$(dd_merge "$base" "$new") && d=0 || d=$?
+  out=$(dd_merge "$base" "$new" "$tmp/summary") && d=0 || d=$?
   if ((d)); then dd_conflict "$f is not valid JSON ($out): it is left as it is, fix it by hand"; return 0; fi
-  if command -v diff >/dev/null; then
-    d=$(diff -u -- "$base" "$new" 2>/dev/null) || true
-    [[ -z $d ]] || changed=1
-    while IFS= read -r l; do [[ -n $l ]] && info "  $l"; done <<<"$d"
-  else
-    cmp -s -- "$base" "$new" || changed=1
+  if command -v cmp >/dev/null; then cmp -s -- "$base" "$new" || changed=1
+  elif command -v diff >/dev/null; then diff -q -- "$base" "$new" >/dev/null 2>&1 || changed=1
+  else changed=1; fi
+  # only the keys this step sets, masked by the one rule that also masks the scan: the whole file may hold a token or a login
+  if [[ -s $tmp/summary ]]; then
+    while IFS= read -r l; do [[ -n $l ]] && info "$l"; done <"$tmp/summary"
   fi
   if ((!changed && !drift)); then ok "$f already holds these values"; return 0; fi
   if [[ -n $want && $want == "$cur" ]]; then info "$want is where docker keeps its data now: no move needed"; fi
@@ -214,8 +243,8 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
   if ((moving)); then
     command -v rsync >/dev/null || { dd_conflict "rsync is not installed: it copies the data directory"; return 0; }
     [[ -d $cur ]] || { dd_conflict "the current data directory $cur is not a folder here"; return 0; }
-    case "$want/" in "$cur/"*) dd_conflict "$want is inside the current data directory $cur"; return 0 ;; esac
-    case "$cur/" in "$want/"*) dd_conflict "the current data directory $cur is inside $want"; return 0 ;; esac
+    drv_before=$(docker info --format "{{.Driver}}" 2>/dev/null </dev/null) || drv_before=
+    case $drv_before in zfs|btrfs) dd_conflict "docker uses the $drv_before storage driver: its data lives in datasets or subvolumes that rsync does not copy as they are, so this step does not move it"; return 0 ;; esac
     if [[ -e $want ]]; then
       [[ -d $want ]] || { dd_conflict "$want is not a folder"; return 0; }
       [[ -z $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) ]] || { dd_conflict "$want is not empty: move its content away first, or pick an empty folder"; return 0; }
@@ -242,7 +271,12 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
       info "live-restore is on: stopping the $nrun running containers first ($(tr "\n" " " <<<"$running")), so that the copy is whole"
       while IFS= read -r l; do
         [[ -n $l ]] || continue
-        docker stop "$l" >/dev/null </dev/null || { dd_conflict "could not stop the container $l: nothing was changed"; return 0; }
+        if ! docker stop "$l" >/dev/null </dev/null; then
+          if [[ -z $stopped ]]; then dd_conflict "could not stop the container $l: nothing was changed"
+          else dd_conflict "could not stop the container $l: already stopped:$stopped, which stay stopped (start them with docker start); docker and daemon.json were not touched"; fi
+          return 0
+        fi
+        stopped+=" $l"
       done <<<"$running"
     fi
     # the part with docker stopped runs in a subshell whose exit starts docker again, whatever ends it
@@ -258,7 +292,9 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
   dd_back || return 0
   dd_expect "data directory" "{{.DockerRootDir}}" "$eff_root" || return 0
   dd_expect "log driver" "{{.LoggingDriver}}" "$logdrv" || return 0
-  dd_expect "storage driver" "{{.Driver}}" "$stor" || return 0
+  # a move that changed the driver would leave every image unseen, so the driver from before the move is expected too
+  want_drv=$stor; ((moving)) && want_drv=${stor:-$drv_before}
+  dd_expect "storage driver" "{{.Driver}}" "$want_drv" || return 0
   [[ -z $live ]] || dd_expect "live-restore" "{{.LiveRestoreEnabled}}" "$([[ $live == on ]] && echo true || echo false)" || return 0
   if ((moving)); then ok "moved to $want. The old folder $cur is kept: once the containers are checked, remove it as root with rm -rf $cur"; fi
   return 0
@@ -275,6 +311,7 @@ t_docker_daemon() { local data_root=$1 move=$2 logdrv=$3 logsize=$4 logfile=$5 l
   ver=$(docker --version 2>&1 </dev/null) || ver=
   if [[ ${ver,,} == *podman* ]]; then conflict "docker here is Podman: its settings are not in daemon.json, and this step does not change them"; return 0; fi
   if [[ $(docker info --format "{{.OperatingSystem}}" 2>/dev/null </dev/null) == *"Docker Desktop"* ]]; then conflict "this is Docker Desktop, which keeps its settings in its own app"; return 0; fi
+  command -v systemctl >/dev/null || { conflict "this host does not use systemd; change daemon.json by hand"; return 0; }
   if command -v python3 >/dev/null; then DD_TOOL=python3
   elif command -v jq >/dev/null; then DD_TOOL=jq
   else conflict "neither python3 nor jq is here, and daemon.json is not edited by hand: install one of them"; return 0; fi
@@ -284,6 +321,18 @@ t_docker_daemon() { local data_root=$1 move=$2 logdrv=$3 logsize=$4 logfile=$5 l
   return 0
 }
 """
+
+
+def _mask_rule() -> str:
+    """The scan's masking functions as the text of the python helper, so that one rule decides what a secret is. The script holds no apostrophe."""
+    import inspect
+    from .runtimes import docker
+    src = (f'SECRET_KEY = re.compile(r"{docker.SECRET_KEY.pattern}", re.I)\nURL_AUTH = re.compile(r"{docker.URL_AUTH.pattern}")\n\n\n'
+           + inspect.getsource(docker._mask_mirror) + '\n\n' + inspect.getsource(docker._mask_known))
+    return src.replace("'", '"').rstrip()
+
+
+BASH = BASH.replace('@MASKRULE@', _mask_rule())
 
 
 def _title(p):
@@ -328,6 +377,8 @@ def _check(conn, c, h, p, say):
             say('warn', f'{want} is on the system disk (/): a full Docker folder fills the disk the system runs from')
         elif fs and fs.lower() in NETWORK_FS:
             say('warn', f'{want} is on a network filesystem ({fs}): Docker\'s overlay2 does not work on one, and every container waits on the network')
+        if p.get('move_data') and st.get('storage_driver') in ('zfs', 'btrfs'):
+            say('crit', f'Docker on {h["name"]} uses the {st["storage_driver"]} storage driver: its data is in datasets or subvolumes that rsync does not copy as they are, so this step does not move it')
         if p.get('move_data'):
             say('note', f'docker is stopped, {cur} is copied to {want} with rsync (it must be empty or absent, with room), daemon.json is written, docker starts; {cur} is kept')
         else:
@@ -352,6 +403,7 @@ def _check(conn, c, h, p, say):
 
 def _ansible(t):
     import shlex
+    from .steps_proxmox import ANSIBLE_HEAD     # here, not at the top: changes.py imports both modules, and either may be the first
     p = t['params']
     words = [('1' if p.get(a) else '') if isinstance(p.get(a), bool) else str(p.get(a) or '') for a in ARGS]
     return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': ANSIBLE_HEAD + BASH + '\nt_docker_daemon ' + ' '.join(shlex.quote(w) for w in words) + '\n', 'executable': '/bin/bash'},
