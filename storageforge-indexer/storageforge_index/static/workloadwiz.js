@@ -111,12 +111,21 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
     } catch (err) { S.error = err.message; }
     S.busy = false; draw();
   }
+  // the inputs are mounted once and never replaced, so typing keeps its focus; draw() only fills the results region and the Save button
+  const results = el('div', { class: 'stack' });
+  const saveBtn = el('button', { type: 'button', class: 'btn pri sm wlsave', disabled: true, onclick: save }, 'Save as a plan');
+  const mounted = [
+    el('div', { class: 'row' }, el('b', {}, spec.label || step.type), text('span', `${spec.group || ''} · ${step.host}`, 'muted small')),
+    spec.help ? text('p', spec.help, 'muted small') : null,
+    ...formNodes,
+    spec.destructive ? text('p', 'This step is destructive. Its script only does this with --apply --destructive.', 'st-failed small') : null,
+    confirmInput ? el('label', { class: 'field col' }, el('span', {}, confirmField.label + (want ? ` (${want})` : '')), confirmInput) : null,
+    results,
+    el('label', { class: 'field col' }, el('span', {}, 'Plan name'), nameInput),
+    text('p', 'Checked against the last scan of each host. Saving makes a change plan; nothing is changed until you apply it from Changes.', 'muted small'),
+    el('div', { class: 'row end' }, back ? button('Back', back, 'btn ghost sm') : null, button('Cancel', () => done(null), 'btn ghost sm'), saveBtn)];
+  const canSave = () => !!S.check && !S.check.crit && !S.error && !S.busy && !!nameInput.value.trim();
   function draw() {
-    const items = S.check && S.check.tasks[0] ? S.check.tasks[0].items : [];
-    const order = { crit: 0, warn: 1, ok: 2, note: 3 };
-    const sorted = [...items].sort((a, b) => order[a.level] - order[b.level]);
-    const crit = S.check ? S.check.crit : 0, warn = S.check ? S.check.warn : 0;
-    const waiting = !S.check && !S.error && confirmed();
     if (S.saved) {
       box.replaceChildren(text('p', `Saved as plan ${S.saved}.`, 'st-ok'),
         text('p', 'Nothing has changed on the host yet. Open the plan in Changes to read its report and apply it.', 'muted small'),
@@ -124,31 +133,29 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
       box.querySelector('.wlopen').focus();
       return;
     }
-    const had = document.activeElement === confirmInput ? confirmInput : document.activeElement === nameInput ? nameInput : null;
-    box.replaceChildren(
-      el('div', { class: 'row' }, el('b', {}, spec.label || step.type), text('span', `${spec.group || ''} · ${step.host}`, 'muted small')),
-      spec.help ? text('p', spec.help, 'muted small') : null,
-      ...formNodes,
-      spec.destructive ? text('p', 'This step is destructive. Its script only does this with --apply --destructive.', 'st-failed small') : null,
-      confirmInput ? el('label', { class: 'field col' }, el('span', {}, confirmField.label + (want ? ` (${want})` : '')), confirmInput) : null,
+    const items = S.check && S.check.tasks[0] ? S.check.tasks[0].items : [];
+    const order = { crit: 0, warn: 1, ok: 2, note: 3 };
+    const sorted = [...items].sort((a, b) => order[a.level] - order[b.level]);
+    const crit = S.check ? S.check.crit : 0, warn = S.check ? S.check.warn : 0;
+    const waiting = !S.check && !S.error && confirmed();
+    results.replaceChildren(
       el('div', { class: 'row' }, text('h3', 'Checks'),
         text('span', waiting ? 'checking…' : !confirmed() ? 'waiting for the confirmation' : S.error ? 'error' : crit ? `${crit} to fix` : warn ? `${warn} warning${warn === 1 ? '' : 's'}` : 'all good',
           waiting || !confirmed() ? 'muted small' : crit || S.error ? 'st-failed small' : warn ? 'st-running small' : 'st-ok small')),
       S.error ? text('p', S.error, 'st-failed') : null,
-      sorted.length ? el('ul', { class: 'mvcheck wl-check' }, ...sorted.map((x) => text('li', x.text, `lv-${x.level}`))) : null,
-      el('label', { class: 'field col' }, el('span', {}, 'Plan name'), nameInput),
-      text('p', 'Checked against the last scan of each host. Saving makes a change plan; nothing is changed until you apply it from Changes.', 'muted small'),
-      el('div', { class: 'row end' }, back ? button('Back', back, 'btn ghost sm') : null, button('Cancel', () => done(null), 'btn ghost sm'),
-        el('button', { type: 'button', class: 'btn pri sm wlsave', disabled: !S.check || !!crit || !!S.error || S.busy || !nameInput.value.trim(), onclick: save }, 'Save as a plan')));
-    if (had) had.focus();
-    else if (S.focusNext) { S.focusNext = false; (box.querySelector('input, select') || box.querySelector('button')).focus(); }
+      sorted.length ? el('ul', { class: 'mvcheck wl-check' }, ...sorted.map((x) => text('li', x.text, `lv-${x.level}`))) : null);
+    saveBtn.disabled = !canSave();
+    if (!box.firstChild) {
+      box.replaceChildren(...mounted.filter(Boolean));
+      if (S.focusNext) { S.focusNext = false; (box.querySelector('input, select') || box.querySelector('button')).focus(); }
+    }
   }
   if (form) {
     const again = () => { clearTimeout(S.timer); S.timer = setTimeout(run, 300); };
     formNodes.forEach((n) => { n.addEventListener('input', again); n.addEventListener('change', again); });
   }
   if (confirmInput) confirmInput.addEventListener('input', () => { clearTimeout(S.timer); S.timer = setTimeout(run, 250); });
-  nameInput.addEventListener('input', () => { const b = box.querySelector('.wlsave'); if (b) b.disabled = !S.check || !!S.check.crit || !!S.error || S.busy || !nameInput.value.trim(); });
+  nameInput.addEventListener('input', () => { saveBtn.disabled = !canSave(); });
   run();
 }
 
