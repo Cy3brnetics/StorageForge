@@ -2,6 +2,17 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## 0.6.1 — 2026-11-26
+
+### Security
+- **The agent's setup refuses a managing user in a root group again.** The check that stops the setup when the manager or agent account is in `docker`, `wheel`, `sudo` or another group that is root on the host piped `id -nG` into `grep -q` under `pipefail`: on a match, `grep` stopped early, the writer was killed by SIGPIPE, and the failed pipe skipped the refusal. It now loops over the groups with no pipe, the same with GNU and the Rust coreutils.
+
+### Fixed
+- The test suite passes on Ubuntu 26.04 with the Rust coreutils, as GitHub CI runs it: tests that reached the real `systemctl` or `systemd-run` on the machine running them use stand-ins (one asked polkit to start `sf-fw-rollback`), the archive tests write their log under their own folder, the agent receiver tests wait for the receiver to have the agent's key instead of a fixed time, and two tests that only passed where a tool was installed or a label was older are corrected.
+
+### Docs
+- The README and docs describe 0.6.0 as built: the docs index lists every page, the web UI page names the Workloads page, and statements that called built features "not built" are corrected, each checked against the code.
+
 ## 0.6.0 — 2026-11-26
 
 The work the roadmap planned for 0.5.5 to 0.5.16, released together. Much of it is built and unit-tested but **not lab-tested**: each such item says so below and in `roadmap.md`. The PostgreSQL migrations of this release have not been run against PostgreSQL in this release's checks.
