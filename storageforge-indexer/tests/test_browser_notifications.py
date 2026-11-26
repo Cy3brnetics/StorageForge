@@ -101,14 +101,14 @@ class BrowserNotifications(unittest.TestCase):
         self.assertEqual(self.page.locator('#nt-groups .nt-group:has(h3:has-text("scan-failed")) button:has-text("Prepare a fix")').count(), 0, 'no way back, no fix')
         self.page.click(f'{mine} button:has-text("Prepare a fix: Restart smbd.service on nas")')
         self.page.wait_for_selector('.tabs button[data-tab="changes"][aria-selected="true"]')
-        self.page.wait_for_selector('#tab-changes :text("unit-state")')      # the plan's step, not only its name in the list
+        self.page.wait_for_selector('#tab-changes :text("Set service smbd.service → restarted")')      # the plan's step, not only its name in the list
         self.assertEqual(self.page.evaluate('CH.plan.tasks[0].params'), {'unit': 'smbd.service', 'state': 'restarted'})
         self.page.click('#tabbtn-notifications')
         self.page.wait_for_selector(f'{mine} button:has-text("Open the prepared fix")')
         self.page.click(f'{mine} button:has-text("Prepare the way back")')
         self.page.wait_for_selector('.tabs button[data-tab="changes"][aria-selected="true"]')
         self.page.wait_for_selector('#tab-changes option:text-matches("Undo: stop smbd.service on nas")', state='attached')
-        self.page.wait_for_selector('#tab-changes :text("unit-state")')
+        self.page.wait_for_selector('#tab-changes :text("Set service smbd.service → stopped")')
         self.assertEqual(self.page.evaluate('CH.plan.tasks[0].params'), {'unit': 'smbd.service', 'state': 'stopped'})
         self.assertEqual(self.errors, [])
 
