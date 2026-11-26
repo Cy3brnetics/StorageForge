@@ -25,7 +25,7 @@ import re
 import shlex
 import time
 
-from . import site
+from . import hostid, site
 from .db import Conn
 from .paths import deepest, is_under
 from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line, package_check
@@ -52,9 +52,7 @@ def slug(text: str) -> str:
     return re.sub(r'[^a-z0-9_-]+', '-', text.lower()).strip('-') or 'plan'
 
 
-def host_slug(name: str) -> str:            # same rule as storage-setup.sh: short hostname, lowercase
-    s = re.sub(r'[^a-z0-9_-]', '', (name or '').split('.')[0].lower())
-    return s or 'unknown'
+host_slug = hostid.short           # same rule as storage-setup.sh: short hostname, lowercase
 
 
 def _path(p, what) -> str:

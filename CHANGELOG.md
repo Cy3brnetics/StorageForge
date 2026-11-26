@@ -27,6 +27,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The default gateways of a network reading are listed by one function, `netfacts.gateways_of`, for a host and the RouterOS, OpenWrt, pfSense and Cisco adapters, and a dotted netmask is turned into a prefix length by `netfacts.prefix_of_mask` for the Cisco and SNMP adapters (BE-34).
 - The shares script opens ufw for NFS, SMB and the other share kinds with one function, `ufw_allow`, which `open_fw` and the drivers' `open_port` both call. The firewalld branches stay apart, and every message is the same (BE-22).
 - The SQLite-or-PostgreSQL spellings `ts`, `distinct` and `jsonp` live on one class, `db.Dialect`, that both the connection and the database have, so code holding only a connection no longer writes `to_timestamp` or the `jsonb` cast by hand (the agent's monitoring-only inventory, its file index updates and the monitoring-only host setup). `Database.sync_mounts` needs only the connection, and the agent's monitoring path calls it without the stand-in it passed as `self`. The SQL is the same text (BE-23).
+- A host's short name is worked out by one function, `hostid.short`, which `moves.host_slug` and `db.short_name` now name, and the host-name pattern of plans and of key installs is one, `hostid.HOST_RE`, which `scriptkit.HOST_RE` and `keyinstall.HOST` name. The known-host checks, the host lookup by address and the other host patterns are left as they were (BE-24).
 
 ## 0.6.2 — 2026-11-26
 

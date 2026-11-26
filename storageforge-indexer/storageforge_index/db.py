@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import hostid
 from .stream import ROW_COLUMNS, split_path
 
 MIGRATIONS = Path(__file__).with_name('migrations')
@@ -34,8 +35,7 @@ class HostIdentityError(RuntimeError):
     """A scan reached a machine that claims the name of another indexed host. Nothing about that host was changed."""
 
 
-def short_name(name: str) -> str:   # moves.host_slug's rule: what host matching and storageforge-run compare
-    return re.sub(r'[^a-z0-9_-]', '', (name or '').split('.')[0].lower()) or 'unknown'
+short_name = hostid.short   # moves.host_slug's rule: what host matching and storageforge-run compare
 
 
 class MassDeleteRefused(RuntimeError):

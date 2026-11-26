@@ -4,10 +4,10 @@ with sudo, forwarding your SSH agent."""
 import datetime as dt
 import re
 
+from . import hostid
 from .db import Conn, loads
 
-# A host as plans name it: hostname, IPv4, [IPv6] or IPv6%zone. Never a line break, space or leading '-'.
-HOST_RE = re.compile(r'[A-Za-z0-9_.:\[\]%-]{1,253}')
+HOST_RE = hostid.HOST_RE   # a host as plans name it; host_name below also refuses a leading '-'
 # Bash ends a comment at a line break, and terminals act on escape sequences when a script is read with cat or less.
 _BREAKS = re.compile('[\x00-\x08\x0a-\x1f\x7f\x85\u2028\u2029]+')
 

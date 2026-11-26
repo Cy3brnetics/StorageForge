@@ -13,12 +13,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import hostid
 from .remote import RemoteError, Transport
 from .runner import ephemeral_agent, known_hosts_path, runtime_dir
 from .vault import Vault, VaultError
 
 TIMEOUT = 60
-HOST = re.compile(r'[A-Za-z0-9_.:\[\]%-]{1,253}')
+HOST = hostid.HOST_RE
 USER = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}')
 
 
