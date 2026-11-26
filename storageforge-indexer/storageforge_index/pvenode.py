@@ -6,13 +6,16 @@ from __future__ import annotations
 def is_proxmox(reading: dict | None) -> bool:
     r = reading or {}
     tools = set(r.get('tools') or [])
-    return ('pve' in ((r.get('wl_units') or {}).get('markers') or []) or 'qm' in tools or 'pct' in tools
-            or str(r.get('platform') or '').startswith('proxmox'))
+    return 'pve' in ((r.get('wl_units') or {}).get('markers') or []) or 'qm' in tools or 'pct' in tools
 
 
-def is_proxmox_host(conn, host: str) -> bool:
-    from . import inframeasure
-    return is_proxmox(inframeasure.reading(conn, host))
+def is_proxmox_host(conn, host: str, reading: dict | None = None) -> bool:
+    """The scan's platform line (from pveversion) or the infra reading, so a node that was scanned but not yet measured is still seen.
+    A caller that already holds the host's reading passes it."""
+    from . import inframeasure, preflight
+    if (preflight.facts_from_scan(conn, host).get('platform') or '').startswith('proxmox'):
+        return True
+    return is_proxmox(reading if reading is not None else inframeasure.reading(conn, host))
 
 
 def _int(v: str) -> int | None:

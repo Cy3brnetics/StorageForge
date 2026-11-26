@@ -1,4 +1,5 @@
 """Proxmox detection and the node read: storages, ISOs and templates, and which runtimes a host can run."""
+import json
 import time
 import unittest
 
@@ -37,7 +38,6 @@ class Node(unittest.TestCase):
         self.assertTrue(pvenode.is_proxmox({'wl_units': {'markers': ['pve']}}))
         self.assertTrue(pvenode.is_proxmox({'tools': ['qm']}))
         self.assertTrue(pvenode.is_proxmox({'tools': ['pct']}))
-        self.assertTrue(pvenode.is_proxmox({'platform': 'proxmox 8.2'}))
         self.assertFalse(pvenode.is_proxmox({'tools': ['docker'], 'wl_units': {'markers': ['puppet']}}))
         self.assertFalse(pvenode.is_proxmox(None))
 
@@ -51,6 +51,15 @@ class Listing(Fleet):
         self.assertIn('lxc', by['nas']['runtimes'])
         self.assertIs(by['pc']['proxmox'], False)
         self.assertEqual(by['pc']['runtimes'], [])
+
+    def test_a_scanned_node_with_no_infra_reading_is_still_proxmox(self):
+        inv = json.dumps({'packages': 'pm apt\nplatform proxmox 9.1\nhave bash'})
+        self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE hostname = 'pc'", {'i': inv})
+        self.assertTrue(pvenode.is_proxmox_host(self.conn, 'pc'))
+        self.assertFalse(pvenode.is_proxmox_host(self.conn, 'nas'))
+        by = {h['host']: h for h in workloads.listing(self.conn)['hosts']}
+        self.assertIs(by['pc']['proxmox'], True)
+        self.assertIs(by['nas']['proxmox'], False)
 
 
 if __name__ == '__main__':

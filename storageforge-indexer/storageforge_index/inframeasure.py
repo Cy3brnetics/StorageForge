@@ -422,7 +422,8 @@ def parse(text: str) -> dict | None:
     return {'tools': tools, 'firewall': fw, 'listeners': parse_listeners(s.get('listeners', [])), 'storage_clients': parse_storage_clients(s.get('storage_clients', [])),
             'libvirt': guests.with_snapshots(guests.parse_libvirt(s.get('libvirt', [])), guests.parse_libvirt_snapshots(s.get('libvirt_snap', []))), 'libvirt_networks': guests.parse_libvirt_networks(s.get('libvirt_net', [])),
             'libvirt_pools': guests.parse_libvirt_pools(s.get('libvirt_pool', [])), 'incus': guests.parse_incus(s.get('incus', [])), 'lxc': guests.parse_lxc(s.get('lxc', [])),
-            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'proxmox_node': pvenode.parse_node(s.get('proxmox_node', [])) if 'pvesm' in tools else None, 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s),
+            'proxmox': guests.parse_proxmox(s.get('proxmox', [])),
+            'proxmox_node': pvenode.parse_node(s.get('proxmox_node', [])) if 'pvesm' in tools else None, 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s),
             'toolbox': tbadapters.sections_of(s)}
 
 
