@@ -73,7 +73,7 @@ t_cloudflare_tunnel() { local secret=$1 state=${2:-present} f tok bin unit=stora
   if [[ $state == absent ]]; then
     if [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit && ! -e $tok ]]; then ok "no Cloudflare Tunnel started by StorageForge is here"; return 0; fi
     act "stop $unit and remove it and its token file (cloudflared stays installed, and the tunnel stays defined at Cloudflare)" || return 0
-    tun_unit_stop "$unit"; rm -f "$tok"
+    rm -f "$tok"; tun_unit_stop "$unit"      # the token first: where conflict exits (Ansible), a reload refused in tun_unit_stop would leave it
     ok "the tunnel no longer runs from here: what it published is no longer public through this host"
     return 0
   fi
@@ -118,7 +118,7 @@ t_pangolin_site() { local secret=$1 id=$2 endpoint=$3 state=${4:-present} f conf
   if [[ $state == absent ]]; then
     if [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit && ! -e $conf ]]; then ok "no Pangolin site started by StorageForge is here"; return 0; fi
     act "stop $unit and remove it and its configuration (Newt stays installed, and the site stays defined at the Pangolin server)" || return 0
-    tun_unit_stop "$unit"; rm -f "$conf"
+    rm -f "$conf"; tun_unit_stop "$unit"      # the secret first, as with the tunnel token
     ok "Newt no longer runs from here: what the site published is no longer reached through this host"
     return 0
   fi

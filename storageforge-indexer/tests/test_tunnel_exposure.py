@@ -333,6 +333,22 @@ esac''')
         self.assertEqual(list((self.d / 'cf').iterdir()) + list((self.d / 'units').iterdir()), [])
         self.assertEqual(self.read('calls').count('systemctl daemon-reload'), before)
 
+    def test_leaving_removes_the_credential_even_where_a_refused_reload_ends_the_task(self):
+        """In the Ansible task conflict() exits: a reload refused past a dead mount must not leave the token or the site secret behind."""
+        for fn, args, unit, cred in (('t_cloudflare_tunnel', ('cf-token', 'absent'), 'storageforge-cloudflared.service', self.d / 'cf' / 'storageforge-token'),
+                                     ('t_pangolin_site', ('pg-site', '', '', 'absent'), 'storageforge-newt.service', self.d / 'newt' / 'storageforge.json')):
+            (self.d / 'units' / unit).write_text('[Unit]\n')
+            cred.write_text(TOKEN)
+            call = fn + ' ' + ' '.join(f"'{a}'" for a in args)
+            env = {**os.environ, 'DEAD_MOUNT': '1', 'PATH': f'{self.d}/bin:{os.environ["PATH"]}', 'SF_SECRET_DIR': str(self.d / 'secrets'), 'SF_UNIT_DIR': str(self.d / 'units'),
+                   'SF_CLOUDFLARED_DIR': str(self.d / 'cf'), 'SF_NEWT_DIR': str(self.d / 'newt'), 'SF_SYSTEMD_RUN': str(self.d / 'run'), 'SF_TUNNEL_WAIT': '0'}
+            got = subprocess.run(['bash', '-c', HARNESS + 'conflict() { echo "conflict: $*" >&2; exit 1; }\nAPPLY=1\n' + steps_tunnels.BASH + '\n' + call + '\n'],
+                                 capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+            self.assertIn('/mnt/dead is not answering', got.stderr)
+            self.assertFalse(cred.exists(), fn + ': the credential is removed before the reload that can end the task')
+            self.assertFalse((self.d / 'units' / unit).exists())
+
     def test_a_reload_that_fails_for_another_reason_does_not_pass_for_a_running_tunnel(self):
         (self.d / 'fake' / 'accepts').write_text(TOKEN)
         (self.d / 'secrets' / 'cf-token').write_text(TOKEN)
