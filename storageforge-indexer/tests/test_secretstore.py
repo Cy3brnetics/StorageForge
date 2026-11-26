@@ -568,7 +568,10 @@ class BrowserSecrets(Db):
         page.wait_for_url(base + '/**')
         page.wait_for_selector('html[data-route-ready]', state='attached')
         page.goto(base + '/admin#/secrets')
-        page.wait_for_selector('html[data-route-ready]', state='attached')
+        try:
+            page.wait_for_selector('html[data-route-ready]', state='attached')
+        except Exception as exc:        # seen once on GitHub CI: say what the page raised, if anything, rather than only that it timed out
+            self.fail(f'the admin page never said it was ready ({type(exc).__name__}); script errors: {errors}')
         page.wait_for_selector('#secretbox li:has-text("No secrets yet.")')
         page.click('#secretbox summary')
         page.fill('#secname', 'grafana-admin')
