@@ -58,13 +58,25 @@ done
 
 if [ "$tun" = tailscale0 ]; then
   # Before anything can arrive: from the tailnet, replies to what the server opened, and the web UI. Nothing else.
+  # If it cannot be put in place, the server is not put on the tailnet at all: its plain-HTTP port would be open there.
+  guard() {
+    "$1" -N SF-TAILNET 2>/dev/null || "$1" -F SF-TAILNET || return 1
+    "$1" -A SF-TAILNET -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || return 1
+    "$1" -A SF-TAILNET -p tcp --dport 443 -j ACCEPT || return 1
+    "$1" -A SF-TAILNET -j DROP || return 1
+    "$1" -C INPUT -i tailscale0 -j SF-TAILNET 2>/dev/null || "$1" -I INPUT -i tailscale0 -j SF-TAILNET || return 1
+  }
   for ipt in iptables ip6tables; do
     command -v "$ipt" >/dev/null 2>&1 || continue
-    "$ipt" -N SF-TAILNET 2>/dev/null || "$ipt" -F SF-TAILNET
-    "$ipt" -A SF-TAILNET -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    "$ipt" -A SF-TAILNET -p tcp --dport 443 -j ACCEPT
-    "$ipt" -A SF-TAILNET -j DROP
-    "$ipt" -C INPUT -i tailscale0 -j SF-TAILNET 2>/dev/null || "$ipt" -I INPUT -i tailscale0 -j SF-TAILNET
+    if ! guard "$ipt"; then
+      if [ "$ipt" = ip6tables ] && ! "$ipt" -S INPUT >/dev/null 2>&1; then
+        say "no IPv6 filtering on this host: tailscale0 is guarded for IPv4 only"     # and tailnet IPv6 is not routed here
+        continue
+      fi
+      say "could not put the firewall chain on tailscale0 ($ipt failed, see above): not joining the tailnet, so the server's own ports stay off it"
+      kill "$daemon" 2>/dev/null || :
+      exit 1
+    fi
   done
 fi
 

@@ -84,6 +84,15 @@ class Entrypoint(unittest.TestCase):
         last_rule = max(i for i, line in enumerate(log.splitlines()) if line.startswith(('iptables', 'ip6tables')))
         self.assertLess(last_rule, first_up, 'the chain is in place before the node is on the tailnet')
 
+    def test_without_its_firewall_chain_it_does_not_join(self):
+        if not Path('/dev/net/tun').is_char_device():
+            self.skipTest('no /dev/net/tun here: the userspace mode has no kernel interface to guard')
+        (self.bin / 'iptables').write_text('#!/bin/sh\necho "Fatal: can\'t open lock file /run/xtables.lock: Read-only file system" >&2\nexit 4\n')
+        r, log = self.run_it(key='tskey-auth-x')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('could not put the firewall chain on tailscale0', r.stdout)
+        self.assertNotIn(' up ', f' {log} ', 'never on the tailnet without the guard')
+
     def test_a_refused_key_stops_with_a_reason(self):
         r, _log = self.run_it(key='tskey-auth-old', FAIL_UP='1')
         self.assertNotEqual(r.returncode, 0)
@@ -103,6 +112,7 @@ class Compose(unittest.TestCase):
         self.assertEqual(set(ts['cap_add']), {'NET_ADMIN', 'NET_RAW', 'MKNOD'})
         self.assertNotIn('cap_add', d['services']['storageforge'], 'the server stays without capabilities')
         self.assertIn('sf-tailscale', d['volumes'])
+        self.assertTrue(any(t.startswith('/run:') for t in ts['tmpfs']), 'iptables needs /run/xtables.lock on a read-only image')
         self.assertEqual(ts['image'].split(':')[1], d['services']['storageforge']['image'].split(':')[1])
 
 

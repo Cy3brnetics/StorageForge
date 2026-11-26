@@ -187,6 +187,7 @@ services:
       - ${STORAGEFORGE_TS_AUTHKEY_FILE:-/dev/null}:/run/ts-authkey:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=8m
+      - /run:rw,noexec,nosuid,nodev,size=1m        # iptables takes its lock at /run/xtables.lock
     deploy:
       resources:
         limits: { cpus: "0.5", memory: 128m, pids: 64 }
