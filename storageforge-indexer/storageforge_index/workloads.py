@@ -138,8 +138,10 @@ def listing(conn: Conn, host: str | None = None) -> dict:
             out += from_infra(name, m, mounts)
         wlread.with_quadlets(out, name, (m or {}).get('quadlets') or [])
         wlmanaged.annotate(out, name, m, managers.get(name.lower()))
+        proxmox = pvenode.is_proxmox_host(conn, name, m or {})
         hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale'),
-                      'proxmox': pvenode.is_proxmox_host(conn, name, m or {}), 'runtimes': runtimes_of(m, view)})
+                      'proxmox': proxmox, 'runtimes': runtimes_of(m, view),
+                      'proxmox_node': (m or {}).get('proxmox_node') if proxmox else None})
     from . import wlcapture
     wlcapture.annotate(conn, out)          # adopted workloads, with their drift against the capture
     return {'workloads': out, 'hosts': hosts}

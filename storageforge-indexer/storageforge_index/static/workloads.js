@@ -211,6 +211,12 @@ function wlFocus(id) {
 }
 function wlSelect(id) {
   WL.sel = WL.index.has(id) ? id : '';
+  let open = false;           // a card inside folded parents would not exist to see or focus: unfold the way to it
+  for (let p = WL.sel && WL.index.get(WL.sel).parent; p; p = WL.index.get(p.id).parent) {
+    if (WL.folded.delete(p.id)) open = true;
+    WL.pinned.delete(p.id);
+  }
+  if (open) { wlDraw(); wlFocus(WL.sel); }
   $('#wl-nodes').querySelectorAll('[role=treeitem]').forEach((c) => c.setAttribute('aria-selected', String(c.dataset.id === WL.sel)));
   wlPanel();
   wlHashSync();
@@ -327,6 +333,7 @@ function wlWorkloadPanel(n, out) {
 
 /* ── boot ─────────────────────────────────────────────────────────── */
 function wlLoad(listing) {
+  listing.hosts = (listing.hosts || []).map((h) => ({ ...h, name: h.name ?? h.host }));      // the API names a host's entry "host"; the tree and panel read "name"
   WL.listing = listing;
   WL.root = wlTree(listing);
   WL.index = wlIndex(WL.root);
@@ -350,12 +357,12 @@ function wlWire() {
     if (f) wlFold(f.dataset.fold, !wlOpenSet().has(f.dataset.fold)); else wlSelect(card.dataset.id);
   });
   $('#wl-q').addEventListener('input', (ev) => { WL.q = ev.target.value; WL.pinned.clear(); wlDraw(); wlHashSync(); });
-  $('#wl-fold').addEventListener('click', () => { WL.folded = new Set([...WL.index.values()].filter(({ node, parent }) => parent && node.children.length).map(({ node }) => node.id)); wlDraw(); wlFit(); wlHashSync(); });
-  $('#wl-unfold').addEventListener('click', () => { WL.folded = new Set(); wlDraw(); wlFit(); wlHashSync(); });
+  $('#wl-fold').addEventListener('click', () => { WL.folded = new Set([...WL.index.values()].filter(({ node, parent }) => parent && node.children.length).map(({ node }) => node.id)); WL.pinned.clear(); wlDraw(); wlFit(); wlHashSync(); });
+  $('#wl-unfold').addEventListener('click', () => { WL.folded = new Set(); WL.pinned.clear(); wlDraw(); wlFit(); wlHashSync(); });
   $('#wl-in').addEventListener('click', () => WL.cv.zoomBy(1.25));
   $('#wl-out').addEventListener('click', () => WL.cv.zoomBy(1 / 1.25));
   $('#wl-fit').addEventListener('click', wlFit);
-  window.addEventListener('hashchange', () => { if (WL.listing) { wlFromHash(); wlDraw(); wlPanel(); } });
+  window.addEventListener('hashchange', () => { if (WL.listing) { WL.pinned.clear(); wlFromHash(); wlDraw(); wlPanel(); } });
 }
 
 (async function wlBoot() {

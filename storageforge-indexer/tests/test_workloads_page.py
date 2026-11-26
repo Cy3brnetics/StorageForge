@@ -35,9 +35,12 @@ class Page(unittest.TestCase):
         body = r.data.decode()
         self.assertIn('workloads.js', body)
         self.assertIn('role="tree"', body)
-        for f in re.findall(r'(?:src|href)="/(workloads\.(?:js|css)|canvas\.js|ui\.js)"', body):
+        for f in re.findall(r'(?:src|href)="/(workloads\.(?:js|css)|workloadwiz\.js|stepfields\.js|canvas\.js|ui\.js)"', body):
             self.assertEqual(c.get('/' + f).status_code, 200, f)
         self.assertEqual(c.get('/api/workloads').status_code, 200)
+        self.assertLess(body.index('stepfields.js'), body.index('workloadwiz.js'))
+        self.assertIn('workloadwiz.js', body)
+        self.assertEqual(c.get('/stepfields.js').status_code, 200)
 
     def test_the_page_needs_a_sign_in(self):
         self.assertEqual(self.web.test_client().get('/workloads').status_code, 302)
@@ -65,6 +68,12 @@ class ProxmoxStepsAreNotWarned(unittest.TestCase):
 
     def test_the_generic_workload_steps_are_still_wrapped(self):
         self.assertTrue(getattr(changes.EXTRA['workload-action']['check'], 'warns_managed', False))
+
+
+class Index(unittest.TestCase):
+    def test_the_main_page_loads_stepfields_before_changes(self):
+        html = (Path(server.__file__).parent / 'static' / 'index.html').read_text()
+        self.assertLess(html.index('/stepfields.js'), html.index('/changes.js'))
 
 
 if __name__ == '__main__':

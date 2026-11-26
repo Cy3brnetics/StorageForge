@@ -114,60 +114,7 @@ async function openTask(type, host, preset = {}, edit = null) {
   // a VM step's spec is picked from the saved ones: its empty fields are filled from it when the plan is saved
   const vmSpecs = type === 'vm-create' ? ((await getJSON('/api/vm/specs').catch(() => ({ specs: [] }))).specs || []) : null;
   showTab('details');
-  const inputs = {};
-  const controls = {};
-  const fields = spec.fields.map((f) => {
-    const v = (edit ? edit.params[f.name] : preset[f.name]) ?? f.default ?? '';
-    let input;
-    if (f.kind === 'bool') {
-      input = el('input', { type: 'checkbox' }); input.checked = !!v;
-      inputs[f.name] = () => input.checked;
-      return el('label', { class: 'check' }, input, f.label);
-    }
-    if (vmSpecs && f.name === 'spec') {
-      input = el('select', {}, new Option('(none)', ''), ...vmSpecs.map((x) => new Option(x.note ? `${x.name}: ${x.note}` : x.name, x.name))); input.value = v || '';
-    } else if (f.kind === 'choice') {
-      input = el('select', {}, ...f.options.map((o) => new Option(o || '(none)', o))); input.value = v || f.options[0];
-    } else {
-      const defPh = f.kind === 'confirm' ? (preset[spec.confirm_of || 'device'] || preset.device || preset.disk || preset.partition || preset.path || 'e.g. /dev/sdc') : '';
-      input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'zfs-snapshot', 'name', 'size', 'host', 'spec', 'options', 'confirm', 'vmname', 'url', 'sha', 'sizes', 'pubkey', 'names'].includes(f.kind) ? 'mono' : '',
-                            placeholder: f.placeholder || defPh, autocomplete: 'off', spellcheck: 'false' });
-      input.value = v;
-    }
-    controls[f.name] = input;
-    inputs[f.name] = () => input.value.trim();
-    if (type === 'archive' && f.kind === 'path') {
-      const destination = f.name === 'dest';
-      const browse = el('button', { type: 'button', class: 'btn sm', onclick: async () => {
-        const current = input.value.trim();
-        const slash = current.lastIndexOf('/');
-        const chosen = await pickPath(host, current.slice(0, Math.max(0, slash)) || '/', {
-          title: destination ? 'Choose the archive folder' : 'Choose a file or folder',
-          pick: destination ? 'folder' : 'any'
-        });
-        if (!chosen) return;
-        input.value = destination ? chosen.replace(/\/+$/, '') + '/' + current.slice(slash + 1) : chosen;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.focus();
-      } }, destination ? 'Choose folder…' : 'Browse…');
-      return el('div', { class: 'field col' }, el('label', {}, f.label, input), browse);
-    }
-    return el('label', { class: 'field col' }, el('span', {}, f.label + (f.required ? '' : ' (optional)')), input);
-  });
-  if (type === 'archive') {
-    const { path, dest, codec } = controls;
-    const suggested = () => path.value.trim() && path.value.trim().replace(/\/+$/, '') +
-      ({ 'xz-extreme': '.tar.xz', '7z-ultra': '.7z' }[codec.value] || '.tar.zst');
-    let previous = suggested();
-    const refresh = () => {
-      const next = suggested();
-      if (!dest.value || dest.value === previous) dest.value = next;
-      previous = next;
-    };
-    path.addEventListener('input', refresh);
-    codec.addEventListener('change', refresh);
-    refresh();
-  }
+  const { nodes: fields, read } = stepFields(spec, edit ? edit.params : preset, { type, host, preset, pickPath, vmSpecs });
   const msg = el('p', { class: 'st-failed', hidden: true });
   const form = el('form', { class: 'stack card stageform' },
     el('div', { class: 'row' }, el('b', {}, spec.label), text('span', `${spec.group} · ${host}`, 'muted')),
@@ -178,7 +125,7 @@ async function openTask(type, host, preset = {}, edit = null) {
       el('button', { type: 'submit', class: 'btn pri sm' }, edit ? 'Update task' : 'Stage it')));
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    const params = Object.fromEntries(Object.entries(inputs).map(([k, f]) => [k, f()]));
+    const params = read();
     const task = { type, host, params };
     try {   // validate on the server before staging: same rules the script and playbook are built with
       await postJSON('/api/changes/check', { name: 'check', tasks: [task] });

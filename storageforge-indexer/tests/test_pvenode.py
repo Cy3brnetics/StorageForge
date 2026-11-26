@@ -52,6 +52,20 @@ class Listing(Fleet):
         self.assertIs(by['pc']['proxmox'], False)
         self.assertEqual(by['pc']['runtimes'], [])
 
+    def test_listing_carries_the_node_read_of_a_proxmox_host_only(self):
+        node = pvenode.parse_node(LINES)
+        security._save_measurement(self.conn, 'nas', 'infra', int(time.time()), 'test', {'tools': ['qm', 'pct', 'pvesm'], 'proxmox_node': node})
+        security._save_measurement(self.conn, 'pc', 'infra', int(time.time()), 'test', {'tools': ['docker'], 'proxmox_node': node})
+        by = {h['host']: h for h in workloads.listing(self.conn)['hosts']}
+        self.assertEqual([s['name'] for s in by['nas']['proxmox_node']['storages']], ['local', 'local-lvm'])
+        self.assertEqual(by['nas']['proxmox_node']['isos'][0]['volid'], 'local:iso/debian-13.iso')
+        self.assertIsNone(by['pc']['proxmox_node'])
+
+    def test_a_proxmox_host_with_no_node_read_says_none(self):
+        security._save_measurement(self.conn, 'nas', 'infra', int(time.time()), 'test', {'tools': ['qm', 'pct']})
+        by = {h['host']: h for h in workloads.listing(self.conn)['hosts']}
+        self.assertIsNone(by['nas']['proxmox_node'])
+
     def test_a_scanned_node_with_no_infra_reading_is_still_proxmox(self):
         inv = json.dumps({'packages': 'pm apt\nplatform proxmox 9.1\nhave bash'})
         self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE hostname = 'pc'", {'i': inv})
