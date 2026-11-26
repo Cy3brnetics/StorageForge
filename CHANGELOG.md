@@ -2,11 +2,17 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.6.3.1 — 2026-11-26
+
+The fixes for GitHub CI's test jobs, which had failed since 0.6.0 on PostgreSQL and since 0.6.2 on SQLite: two product bugs found that way are fixed below, and the rest were tests written for SQLite only or for a fast machine. Checked here (GitHub has not run it yet) with every block on SQLite and light and medium on PostgreSQL 16. The image scan job still fails on vulnerabilities in the key enclave's kernel and the Wolfi base, which needs a decision of its own.
 
 ### Fixed
 - **Signing out no longer leaves a half-read answer to draw on the emptied page.** Signing out empties the page before `/login` loads. An answer whose headers had arrived but whose body was still being read could then run its handler on the empty page, which raised a script error (seen once on GitHub CI). Reading a body after sign-out now never finishes, as the request itself already didn't.
 - **A long answer from a network device no longer slows the session in the square of its length.** Reading from a router or switch over SSH or telnet cleaned all the output received so far every time more arrived, to find the prompt on the last line. A megabyte took about 15 s on a fast machine and over 30 s on a slow one, where a command could time out; the 64 MiB cap was out of reach. Only the last line is cleaned now, and the whole answer once, when the prompt arrives. Found when GitHub CI's test of the cap timed out.
+
+### Tests
+- The archive, storage manager, clone and two bug-hunt tests run on PostgreSQL: they put integer timestamps and fixed ids where PostgreSQL wants a timestamp and picks the id, or read a JSON column as text. Three that drive a SQLite file through `--db` or back one up are skipped there, as the CLI tests already are.
+- The key enclave's unlock limit test asks for a wait only when the time the attempts took has not earned them back: on a slow runner nine attempts take long enough to earn a ninth.
 
 ## 0.6.3 — 2026-11-26
 
