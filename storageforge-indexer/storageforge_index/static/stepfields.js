@@ -20,6 +20,15 @@ function stepFields(spec, values, { type = '', host = '', preset = {}, pickPath 
     } else if (choices[f.name] && f.kind !== 'choice') {
       input = el('select', {}, new Option(f.required ? '(choose)' : '(none)', ''), ...choices[f.name].map((o) => new Option(o.label || o.value, o.value)));
       input.value = v && choices[f.name].some((o) => o.value === v) ? v : '';
+      if (choices[f.name].free) {         // a list with .free also takes a name typed by hand
+        const other = '\u0000other', typed = el('input', { type: 'text', class: 'mono', hidden: true, autocomplete: 'off', spellcheck: 'false', 'aria-label': f.label });
+        input.append(new Option(choices[f.name].free, other));
+        if (v && !input.value) { input.value = other; typed.value = v; typed.hidden = false; }
+        input.addEventListener('change', () => { typed.hidden = input.value !== other; if (!typed.hidden) typed.focus(); });
+        controls[f.name] = input;
+        inputs[f.name] = () => (input.value === other ? typed.value.trim() : input.value);
+        return el('label', { class: 'field col' }, el('span', {}, f.label + (f.required ? '' : ' (optional)')), input, typed);
+      }
     } else if (f.kind === 'choice') {
       input = el('select', {}, ...f.options.map((o) => new Option(o || '(none)', o))); input.value = v || f.options[0];
     } else {

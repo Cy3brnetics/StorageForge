@@ -14,6 +14,12 @@ const WW_GROUPS = [
 ];
 const WW = { types: null, dlg: null };
 const wwTypes = async () => { if (!WW.types) WW.types = (await getJSON('/api/changes/types')).types; return WW.types; };
+/* a plan name that is not taken by the same step done earlier: the title, then the time, within the 80 characters plans allow */
+function wwName(title, n = 1) {
+  const d = new Date(), p = (x) => String(x).padStart(2, '0');
+  const tail = `, ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}${n > 1 ? ` (${n})` : ''}`;
+  return `workloads: ${title}`.slice(0, 80 - tail.length) + tail;
+}
 const wwPlanHref = (id) => `/${sfFormatHash(['topo', 'changes'], { plan: id })}`;
 
 /* The create steps a host can take. A Proxmox VE node gets only the Proxmox ones, and no other host gets them; a runtime is offered when the
@@ -42,6 +48,7 @@ function wwChoices(entry, host) {
     iso: (node.isos || []).map((i) => ({ value: i.volid, label: i.volid })),
     template: (node.templates || []).map((i) => ({ value: i.volid, label: i.volid })),
   };
+  if (out.template.length || entry.kind === 'pve-ct') out.template.free = 'Another template…';       // pveam downloads a named template that is not on the node yet
   for (const k of Object.keys(out)) if (!out[k].length) delete out[k];
   return out;
 }
@@ -51,7 +58,7 @@ function wwPages(spec, nodes) {
   const items = spec.fields.map((f, i) => ({ f, node: nodes[i] })).filter((x) => x.f.name !== 'runtime');
   const used = new Set();
   const take = (pred) => items.filter((x) => !used.has(x) && pred(x) && used.add(x));
-  const pages = [['Where', take((x) => WW_WHERE.includes(x.f.name) || x.f.kind === 'path')]];
+  const pages = [['Where', take((x) => (['name', 'hostname'].includes(x.f.name) && x.f.required) || WW_WHERE.includes(x.f.name) || x.f.kind === 'path')]];
   for (const [title, names] of WW_GROUPS) pages.push([title, take((x) => names.includes(x.f.name))]);
   pages.push(['Settings', take(() => true)]);
   return pages.filter(([, xs]) => xs.length).map(([title, xs]) => ({ title, items: xs }));
@@ -64,14 +71,18 @@ const wwSection = (xs) => {         // required first, optional under More
 
 /* ── the review: check, show, save ────────────────────────────────── */
 function wwReview(box, step, spec, { title = '', done = () => {}, back = null } = {}) {
-  const S = { seq: 0, check: null, error: '', saved: null, busy: false, touched: false };
+  const S = { seq: 0, check: null, error: '', saved: null, busy: false, touched: false, focusNext: true, tries: 1, title: title || spec.label || step.type };
+  // fields the panel did not fill (Edit…, Snapshots…, a snapshot name) are asked here, above the check
+  const extra = (spec.fields || []).filter((f) => !(f.name in step.params) && f.kind !== 'confirm');
+  const form = extra.length ? stepFields({ ...spec, fields: spec.fields }, step.params, { type: step.type, host: step.host }) : null;
+  const formNodes = form ? form.nodes.filter((_, i) => extra.includes(spec.fields[i])) : [];
   const confirmField = (spec.fields || []).find((f) => f.kind === 'confirm');
   const want = confirmField ? String(step.params[spec.confirm_of || ''] || '') : '';
   const confirmInput = confirmField ? el('input', { type: 'text', class: 'mono', autocomplete: 'off', spellcheck: false, 'aria-label': confirmField.label, placeholder: want }) : null;
-  const nameInput = el('input', { type: 'text', maxLength: 80, 'aria-label': 'Plan name', value: `workloads: ${title || spec.label || step.type}`.slice(0, 80) });
+  const nameInput = el('input', { type: 'text', maxLength: 80, 'aria-label': 'Plan name', value: wwName(title || spec.label || step.type) });
   nameInput.addEventListener('input', () => { S.touched = true; });
   const confirmed = () => !confirmInput || (want ? confirmInput.value.trim() === want : !!confirmInput.value.trim());
-  const body = () => ({ name: nameInput.value.trim(), tasks: [{ ...step, params: { ...step.params, ...(confirmInput ? { confirm: confirmInput.value.trim() } : {}) } }] });
+  const body = () => ({ name: nameInput.value.trim(), tasks: [{ ...step, params: { ...step.params, ...(form ? Object.fromEntries(extra.map((f) => [f.name, form.read()[f.name]])) : {}), ...(confirmInput ? { confirm: confirmInput.value.trim() } : {}) } }] });
   async function run() {
     const n = ++S.seq;
     S.check = null; S.error = '';
@@ -82,15 +93,21 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
       if (n !== S.seq) return;
       S.check = r;
       const t = r.tasks && r.tasks[0];
-      if (t && t.title && !S.touched) nameInput.value = `workloads: ${t.title}`.slice(0, 80);
+      if (t && t.title && !S.touched) { S.title = t.title; nameInput.value = wwName(t.title); }
     } catch (err) { if (n !== S.seq) return; S.error = err.message; }
     draw();
   }
   async function save() {
     S.busy = true; draw();
     try {
-      const plan = await (await postJSON('/api/changes', body())).json();
-      S.saved = plan.id;
+      let plan;
+      try { plan = await (await postJSON('/api/changes', body())).json(); }
+      catch (err) {          // the name is taken: once more with a number, since the person did not choose this name
+        if (S.touched || S.tries > 1 || !/already exists/.test(err.message)) throw err;
+        S.tries = 2; nameInput.value = wwName(S.title, 2);
+        plan = await (await postJSON('/api/changes', body())).json();
+      }
+      S.saved = plan.id; WW.last = plan.id;
     } catch (err) { S.error = err.message; }
     S.busy = false; draw();
   }
@@ -103,13 +120,15 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
     if (S.saved) {
       box.replaceChildren(text('p', `Saved as plan ${S.saved}.`, 'st-ok'),
         text('p', 'Nothing has changed on the host yet. Open the plan in Changes to read its report and apply it.', 'muted small'),
-        el('div', { class: 'row end' }, el('a', { class: 'btn pri sm', href: wwPlanHref(S.saved) }, `Open plan ${S.saved} in Changes`), button('Close', () => done(S.saved), 'btn sm')));
+        el('div', { class: 'row end' }, el('a', { class: 'btn pri sm wlopen', href: wwPlanHref(S.saved) }, `Open plan ${S.saved} in Changes`), button('Close', () => done(S.saved), 'btn sm')));
+      box.querySelector('.wlopen').focus();
       return;
     }
     const had = document.activeElement === confirmInput ? confirmInput : document.activeElement === nameInput ? nameInput : null;
     box.replaceChildren(
       el('div', { class: 'row' }, el('b', {}, spec.label || step.type), text('span', `${spec.group || ''} · ${step.host}`, 'muted small')),
       spec.help ? text('p', spec.help, 'muted small') : null,
+      ...formNodes,
       spec.destructive ? text('p', 'This step is destructive. Its script only does this with --apply --destructive.', 'st-failed small') : null,
       confirmInput ? el('label', { class: 'field col' }, el('span', {}, confirmField.label + (want ? ` (${want})` : '')), confirmInput) : null,
       el('div', { class: 'row' }, text('h3', 'Checks'),
@@ -122,6 +141,11 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
       el('div', { class: 'row end' }, back ? button('Back', back, 'btn ghost sm') : null, button('Cancel', () => done(null), 'btn ghost sm'),
         el('button', { type: 'button', class: 'btn pri sm wlsave', disabled: !S.check || !!crit || !!S.error || S.busy || !nameInput.value.trim(), onclick: save }, 'Save as a plan')));
     if (had) had.focus();
+    else if (S.focusNext) { S.focusNext = false; (box.querySelector('input, select') || box.querySelector('button')).focus(); }
+  }
+  if (form) {
+    const again = () => { clearTimeout(S.timer); S.timer = setTimeout(run, 300); };
+    formNodes.forEach((n) => { n.addEventListener('input', again); n.addEventListener('change', again); });
   }
   if (confirmInput) confirmInput.addEventListener('input', () => { clearTimeout(S.timer); S.timer = setTimeout(run, 250); });
   nameInput.addEventListener('input', () => { const b = box.querySelector('.wlsave'); if (b) b.disabled = !S.check || !!S.check.crit || !!S.error || S.busy || !nameInput.value.trim(); });
@@ -161,7 +185,7 @@ async function wizOpen({ host = '', runtime = '' } = {}) {
   const hostObj = (n) => hosts.find((h) => h.name === n);
   const W = { host, runtime, entry: null, page: 0, sf: null, pages: [], built: '', msg: '' };
   const { box, close } = wwDialog('Create a workload');
-  WW.dlg.addEventListener('cancel', () => { WW.last = null; });
+  WW.last = null;
   const finish = (id) => { WW.last = id; close(); };
 
   function build() {         // the fields of the chosen step on the chosen host; kept while neither changes
@@ -173,7 +197,7 @@ async function wizOpen({ host = '', runtime = '' } = {}) {
     W.pages = wwPages(W.entry.spec, W.sf.nodes);
     W.built = key;
   }
-  const missing = (xs) => xs.filter((x) => { const c = W.sf.controls[x.f.name]; return x.f.required && c && c.type !== 'checkbox' && !String(c.value).trim(); }).map((x) => x.f.label);
+  const missing = (xs) => { const v = W.sf.read(); return xs.filter((x) => x.f.required && typeof v[x.f.name] !== 'boolean' && !String(v[x.f.name] || '').trim()).map((x) => x.f.label); };
   const steps = () => ['What', ...(W.entry ? W.pages.map((p) => p.title) : []), 'Review'];
   const stepObj = () => ({ type: W.entry.kind, host: W.host, params: W.sf.read() });
 
