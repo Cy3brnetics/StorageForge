@@ -33,7 +33,7 @@ services:
     build:
       context: .
       target: runtime
-    image: storageforge:0.6.2
+    image: storageforge:0.6.3
     depends_on:
       init-secrets: { condition: service_completed_successfully }
       storageforge: { condition: service_started }

@@ -18,7 +18,7 @@ services:
     build:
       context: .
       target: runtime
-    image: storageforge:0.6.2
+    image: storageforge:0.6.3
     restart: unless-stopped
     depends_on:
       storageforge: { condition: service_healthy }

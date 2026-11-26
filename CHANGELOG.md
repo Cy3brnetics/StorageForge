@@ -2,7 +2,9 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.6.3 — 2026-11-26
+
+The second version of the [0.7.0 roadmap](roadmap-0.7.0.md): 24 small pieces of shared work (parsers, SSH key handling, path tests, database spellings, host names) written once instead of in several modules. Most change nothing a user sees; what they do change is listed under *Changed*. Built and unit-tested on SQLite (light, medium and heavy blocks); **not lab-tested**, and not run on PostgreSQL in this release's checks. One browser test of the key enclave page failed once in three heavy runs and passes alone: it is a known flaky test, not fixed here.
 
 ### Changed
 
