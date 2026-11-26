@@ -5,7 +5,7 @@ from __future__ import annotations
 from flask import jsonify, request
 from flask_login import current_user, login_required
 
-from . import changes, deploy, exposure, hostkeys, inframeasure, netdevice, netfacts, netscan, reach, rostranspiler, traffic, workloads
+from . import changes, deploy, exposure, hostkeys, inframeasure, netdevice, netfacts, netscan, reach, rostranspiler, secretstore, traffic, workloads
 from .vault import Vault
 
 
@@ -102,10 +102,16 @@ def register(web, ctx):
     @login_required
     @password_confirmed
     def api_device_credential_add():
-        """Sealed in the vault. Nothing returns it: not this, not the list."""
+        """Sealed in the vault. Nothing returns it: not this, not the list. Storing under a device credential's name replaces it,
+        which is how its password changes. A name that a plan step's secret or an API token holds is refused, and so is turning a
+        device credential into a step's secret by the user name that marks one."""
         body = json_body()
+        name, username = str(body.get('name') or ''), body.get('username') or None
+        secretstore.free_for(conn(), name, 'device')
+        if username == secretstore.USERNAME and secretstore.held_as(conn(), name):
+            raise secretstore.SecretError(f'{name} is a device credential, and the user name {username} would make it a secret for plan steps: remove it first, or use another name')
         with Vault(db, conn()).unlock() as v:
-            res = v.store_credential(str(body.get('name') or ''), body.get('username') or None, str(body.get('password') or ''), body.get('enable') or None)
+            res = v.store_credential(name, username, str(body.get('password') or ''), body.get('enable') or None)
         core.audit(conn(), actor(), 'device.credential', 'ok', None, {'name': res['name']})
         return jsonify(res)
 

@@ -196,6 +196,50 @@ class Store(Db):
         self.assertEqual(actions, ['vault.secret_generate', 'vault.secret_policy', 'vault.secret_add', 'vault.secret_remove'])
         self.assertEqual(self.everywhere(value), [])
 
+    def test_secret_add_replaces_a_secret_and_nothing_of_another_kind(self):
+        def run(*argv, stdin=''):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch('sys.stdin', io.StringIO(stdin)):
+                rc = cli.main(['--db', self.db.url, 'vault', *argv])
+            return rc, out.getvalue(), err.getvalue()
+        self.v.store_credential('sw', 'admin', 'device-password', 'enable-password')
+        self.v.store_credential('api-proxmox-pve', 'root@pam!sf', 'api-token-value', policy={'platforms': ['proxmox:pve']}, made={'origin': 'given'})
+        self.conn.execute("""INSERT INTO platform_connections (kind, name, base_url, token_id, secret_name, created_by, created_at)
+                             VALUES ('proxmox', 'pve', 'https://pve:8006', 'root@pam!sf', 'api-proxmox-pve', 'gabe', 1)""")
+        for name, what in (('sw', 'a device credential'), ('api-proxmox-pve', 'the token of an API connection')):
+            rc, out, err = run('secret-add', name, stdin='tskey-auth-given\n')
+            self.assertEqual(rc, 1, err)
+            self.assertIn(f'{name} is {what}', err)
+        self.assertEqual(self.v.credential('sw'), {'username': 'admin', 'password': 'device-password', 'enable': 'enable-password'})
+        self.assertEqual(self.v.credential('api-proxmox-pve', platform='proxmox:pve')['password'], 'api-token-value')
+        self.assertEqual(secretstore.held_as(self.conn, 'sw'), 'device')
+        self.assertEqual(secretstore.held_as(self.conn, 'api-proxmox-pve'), 'api')
+        self.assertEqual(secretstore.held_as(self.conn, 'api-proxmox-pve.next'), None)
+        outcomes = [r[0] for r in self.conn.all("SELECT outcome FROM audit_log WHERE action = 'vault.secret_add' ORDER BY audit_id")]
+        self.assertEqual(outcomes, ['failed', 'failed'])
+        # a secret is still replaced, under the policy this command names
+        self.assertEqual(run('secret-add', 'ts-key', '--step', 'tailscale', stdin='tskey-one\n')[0], 0)
+        made = secretstore.meta(self.conn, 'ts-key')['created_at']
+        self.assertEqual(run('secret-add', 'ts-key', '--step', 'netbird', stdin='tskey-two\n')[0], 0)
+        self.assertEqual(self.v.credential('ts-key', step='netbird')['password'], 'tskey-two')
+        row = secretstore.meta(self.conn, 'ts-key')
+        self.assertEqual((row['policy']['steps'], row['origin'], row['created_at']), (['netbird'], 'given', made))
+        self.assertEqual(secretstore.held_as(self.conn, 'ts-key'), 'secret')
+
+    def test_a_given_secret_sealed_again_keeps_its_policy_unless_one_is_named(self):
+        secretstore.put_given(self.v, self.conn, 'hs-key', 'first-value', {'steps': ['tailscale'], 'hosts': ['web']})
+        secretstore.put_given(self.v, self.conn, 'hs-key', 'second-value')
+        row = secretstore.meta(self.conn, 'hs-key')
+        self.assertEqual((row['policy']['steps'], row['policy']['hosts'], row['origin']), (['tailscale'], ['web'], 'given'))
+        self.assertIsNotNone(row['value_rotated_at'])
+        self.assertEqual(self.v.credential('hs-key', host='web', step='tailscale')['password'], 'second-value')
+        secretstore.put_given(self.v, self.conn, 'hs-key', 'third-value', None)
+        self.assertIsNone(secretstore.meta(self.conn, 'hs-key')['policy'])
+        _, value = secretstore.make(self.v, self.conn, 'made', 'hex', 32)
+        secretstore.put_given(self.v, self.conn, 'made', 'given-instead')
+        row = secretstore.meta(self.conn, 'made')
+        self.assertEqual((row['kind'], row['length'], row['origin']), (None, None, 'given'), 'the value is no longer one StorageForge made')
+
 
 TS_PLAN = {'name': 'join web', 'tasks': [{'host': 'web', 'type': 'tailscale', 'params': {'secret': 'ts-key', 'state': 'present'}}]}
 

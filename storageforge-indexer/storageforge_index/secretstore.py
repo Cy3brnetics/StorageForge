@@ -131,6 +131,43 @@ def make(v, conn, name: str, kind: str, length=None, policy: dict | None = None)
     return _row(conn, name), value
 
 
+KEEP = object()                         # put_given's policy when none is named: the one the secret has
+_HELD = {'secret': 'a secret for plan steps', 'api': 'the token of an API connection', 'device': 'a device credential'}
+
+
+def held_as(conn, name: str) -> str | None:
+    """What kind of credential holds a name in the vault: 'secret' (a plan step's), 'api' (the token of an API connection, or the
+    one staged while it rotates), 'device' (a login for a network device), or None when the name is free. The three share one
+    table and one name space, and Vault.store_credential replaces whatever row has the name: a writer asks here first. A device
+    login whose user really is called 'secret' reads as a step's secret, as it does everywhere else."""
+    rows = conn.all('SELECT username FROM device_credentials WHERE name = :n', {'n': name})
+    if not rows:
+        return None
+    if conn.scalar('SELECT COUNT(*) FROM platform_connections WHERE secret_name = :n OR secret_name || :x = :n', {'n': name, 'x': '.next'}):
+        return 'api'
+    return 'secret' if rows[0][0] == USERNAME else 'device'
+
+
+def free_for(conn, name: str, kind: str) -> None:
+    """Refuses a name that a credential of another kind holds: storing under it would replace that one without a word."""
+    held = held_as(conn, name)
+    if held not in (None, kind):
+        raise SecretError(f'{name} is {_HELD[held]}, which storing {_HELD[kind]} of that name would replace: remove it first, or use another name')
+
+
+def put_given(v, conn, name: str, value: str, policy=KEEP) -> dict:
+    """A value someone has (an auth key, a token) stored as the secret NAME. A secret of that name is replaced, under the policy
+    named here or, with none named, the one it had; a credential of another kind is not. The new row says the value was given and,
+    when it replaced one, when."""
+    if not NAME.fullmatch(name or ''):
+        raise SecretError('a secret name is letters, digits, dot, dash and underscore, up to 64, starting with a letter or digit')
+    free_for(conn, name, 'secret')
+    row = _row(conn, name)
+    made = {'origin': 'given', 'created_at': row['created_at'], 'rotated_at': int(time.time())} if row else {'origin': 'given'}
+    v.store_credential(name, USERNAME, value, policy=(row or {}).get('policy') if policy is KEEP else policy, made=made)
+    return _row(conn, name)
+
+
 def remove(conn, name: str) -> int:
     """The secret and the record of where it went. Copies already on hosts stay until they reboot (/run is memory) or a step removes them."""
     if not _row(conn, name):

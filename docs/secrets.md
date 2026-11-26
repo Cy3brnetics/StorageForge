@@ -30,7 +30,7 @@ Values come from the operating system's random source. A password leaves out eve
 
 The value is in the answer to that request, and only there. The page shows it with a Copy button until you hide it or the list is loaded again. The command prints it to standard output and everything else to standard error, so `> file` keeps only the value. Nothing lists it again: not the page, not `vault secret-list`, not the API.
 
-A secret you already have (a Tailscale auth key, a Cloudflare token) is stored with `vault secret-add NAME`, one line on standard input, as before. It is listed as *given by a person*.
+A secret you already have (a Tailscale auth key, a Cloudflare token) is stored with `vault secret-add NAME`, one line on standard input, as before. It is listed as *given by a person*. Storing under the name of a secret replaces it, under the policy the command names. Secrets, device credentials and the tokens of API connections share one set of names in the vault: `secret-add` and `headscale-key` refuse a name that one of the other two holds, and say which.
 
 The policy options are the ones `vault secret-policy` takes: `--step`, `--for-host`, `--platform` and `--sensitive` (with the key enclave, each release takes a [step-up](security.md#key-enclave)). Without any, the secret is released for any named step or host.
 

@@ -1376,9 +1376,15 @@ def cmd_vault(args) -> int:
                 print('give the secret on stdin, as one line', file=sys.stderr)
                 return 2
             policy = _secret_policy(args)
-            v.remove_credential(args.name)
-            v.store_credential(args.name, 'secret', text, policy=policy, made={'origin': 'given'})
-            del text
+            from . import secretstore
+            try:
+                secretstore.put_given(v, conn, args.name, text, policy)
+            except secretstore.SecretError as exc:      # the name is not a secret's, or a device credential or an API token holds it
+                _audit(db, conn, v, 'vault.secret_add', 'failed', name=args.name)
+                print(f'not stored: {exc}', file=sys.stderr)
+                return 1
+            finally:
+                del text
             _audit(db, conn, v, 'vault.secret_add', name=args.name, policy=policy)
             print(f'stored secret {args.name}: send it to a host with  storageforge-index vault send-secret {args.name} --host HOST')
             return 0

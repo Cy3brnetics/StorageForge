@@ -36,7 +36,7 @@ A real device of an untested kind may well behave differently. Start with one yo
 
 ### With a password
 
-Telnet has no keys, and some old gear has none either. Store the password as a credential: `POST /api/devices/credentials`. It's sealed in the vault like a key, and nothing returns it.
+Telnet has no keys, and some old gear has none either. Store the password as a credential: `POST /api/devices/credentials`. It's sealed in the vault like a key, and nothing returns it. Storing under the same name again replaces the credential, which is how a password changes. A name that a secret for plan steps or an API connection's token holds is refused with a 400.
 
 RouterOS refuses a password for an account that has an SSH key, so use an account with none, or a key and no credential.
 

@@ -1083,6 +1083,32 @@ class Api(Base):
         self.assertNotIn(b'hunter2', b''.join(bytes(x) for r in self.conn.all('SELECT ciphertext FROM device_credentials') for x in r))
         self.assertTrue(self.client.delete('/api/devices/credentials/sw').get_json()['ok'])
 
+    def test_a_device_credential_replaces_a_device_credential_and_nothing_of_another_kind(self):
+        from storageforge_index import secretstore
+        post = lambda **body: self.client.post('/api/devices/credentials', json=body)
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            secretstore.put_given(v, self.conn, 'ts-key', 'tskey-auth-123456', {'steps': ['tailscale']})
+            v.store_credential('api-proxmox-pve', 'root@pam!sf', 'api-token-value', policy={'platforms': ['proxmox:pve']}, made={'origin': 'given'})
+        self.conn.execute("""INSERT INTO platform_connections (kind, name, base_url, token_id, secret_name, created_by, created_at)
+                             VALUES ('proxmox', 'pve', 'https://pve:8006', 'root@pam!sf', 'api-proxmox-pve', 'gabe', 1)""")
+        for name, what in (('ts-key', 'a secret for plan steps'), ('api-proxmox-pve', 'the token of an API connection')):
+            got = post(name=name, username='admin', password='hunter2')
+            self.assertEqual(got.status_code, 400)
+            self.assertIn(f'{name} is {what}', got.get_json()['error'])
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.credential('ts-key', step='tailscale')['password'], 'tskey-auth-123456')
+            self.assertEqual(v.credential('api-proxmox-pve', platform='proxmox:pve')['password'], 'api-token-value')
+        # a device password still changes by storing it again, which is the only way there is
+        self.assertEqual(post(name='sw', username='admin', password='hunter2').status_code, 200)
+        self.assertEqual(post(name='sw', username='admin', password='hunter3').status_code, 200)
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.credential('sw')['password'], 'hunter3')
+        # and does not turn into a plan step's secret by being stored under the user name that marks one
+        got = post(name='sw', username='secret', password='hunter4')
+        self.assertEqual(got.status_code, 400)
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.credential('sw'), {'username': 'admin', 'password': 'hunter3', 'enable': None})
+
     def test_the_scanner_routes_start_off(self):
         self.assertFalse(self.client.get('/api/netscan').get_json()['settings']['enabled'])
         self.assertEqual(self.client.post('/api/netscan/run', json={}).status_code, 400)

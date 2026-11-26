@@ -224,14 +224,21 @@ def headscale_key(conn, v, args, run=None) -> dict:
     run = run or subprocess.run
     if not SECRET_NAME.fullmatch(args.name or ''):
         raise KeyError_('a secret name is letters, digits, . _ and -, up to 64')
+    from . import secretstore
+    try:
+        secretstore.free_for(conn, args.name, 'secret')          # before a key is made on the server that could not be stored
+    except secretstore.SecretError as exc:
+        raise KeyError_(str(exc)) from None
     command = headscale_command(args.hs_user, args.expiration, args.reusable, args.ephemeral, args.tags, args.container)
     p = run(_ssh(conn, args) + [command], input=b'', capture_output=True, timeout=60)
     if p.returncode != 0:
         raise KeyError_(f'{args.host}: headscale made no key: {_tail(p.stderr)}')
     key, said = headscale_answer(p.stdout.decode(errors='replace'))
     del p
-    v.remove_credential(args.name)
-    v.store_credential(args.name, 'secret', key)
+    try:
+        secretstore.put_given(v, conn, args.name, key)           # a secret of that name keeps its policy
+    except secretstore.SecretError as exc:
+        raise KeyError_(str(exc)) from None
     del key
     return said
 

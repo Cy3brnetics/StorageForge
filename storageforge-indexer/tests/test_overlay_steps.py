@@ -22,7 +22,7 @@ import unittest.mock
 from pathlib import Path
 
 import dbfactory
-from storageforge_index import changes, nebulaca, overlaykeys, overlays, secretstore, steps_overlay, steps_tailscale, steps_tunnels
+from storageforge_index import changes, nebulaca, overlaykeys, overlays, secretstore, steps_overlay, steps_tailscale, steps_tunnels, vault
 
 SETUP_KEY = 'A1B2C3D4-TEST-4NOT-AREAL-SETUPKEY0000'
 
@@ -895,6 +895,26 @@ esac""")
         self.assertEqual(self.ssh[-1][1], (HS_KEY + '\n').encode(), 'the key that was there is still the one stored')
         outcomes = [r[0] for r in self.conn.all("SELECT outcome FROM audit_log WHERE action = 'vault.secret_add' ORDER BY audit_id")]
         self.assertEqual(outcomes, ['ok'] + ['failed'] * 6)
+
+    def test_a_name_another_kind_of_credential_holds_is_refused_before_a_key_is_made(self):
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            v.store_credential('sw', 'admin', 'device-password')
+        before = len(self.ssh)
+        rc, out, err = self.vault('headscale-key', 'sw', '--host', 'nas', '--hs-user', '1')
+        self.assertEqual(rc, 1)
+        self.assertIn('sw is a device credential', err)
+        self.assertEqual(len(self.ssh), before, 'no key was made on the server for a name that cannot take it')
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.credential('sw')['password'], 'device-password')
+
+    def test_a_new_key_under_the_same_name_keeps_the_policy_of_the_secret(self):
+        self.assertEqual(self.vault('secret-add', 'hs-key', '--step', 'tailscale', '--for-host', 'nas', stdin='an-older-key-123456\n')[0], 0)
+        rc, out, err = self.vault('headscale-key', 'hs-key', '--host', 'nas', '--hs-user', '1')
+        self.assertEqual(rc, 0, err)
+        policy = self.conn.scalar("SELECT policy_json FROM device_credentials WHERE name = 'hs-key'")
+        self.assertEqual((json.loads(policy)['steps'], json.loads(policy)['hosts']), (['tailscale'], ['nas']))
+        with vault.Vault(self.db, self.conn).unlock() as v:
+            self.assertEqual(v.credential('hs-key', host='nas', step='tailscale')['password'], HS_KEY)
 
     def test_the_answer_of_the_next_release(self):
         key, said = overlaykeys.headscale_answer(json.dumps({'aclTags': ['tag:server'], 'createdAt': '2026-11-20T10:00:00Z', 'ephemeral': False, 'expiration': '2026-11-20T11:00:00Z', 'id': '12', 'key': HS_KEY, 'reusable': False, 'used': False}))
