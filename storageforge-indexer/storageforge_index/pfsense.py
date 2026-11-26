@@ -12,6 +12,7 @@ import ipaddress
 import re
 from xml.etree import ElementTree
 
+from . import netfacts
 from .firewall import _ports, _rule
 
 MAX_XML = 16 << 20
@@ -34,14 +35,7 @@ SECTIONS = ('config', 'version', 'hostname', 'uid', 'ifconfig', 'netstat', 'arp'
 
 
 def sections(text: str) -> dict:
-    out, cur = {}, None
-    for line in text.splitlines():
-        if line.startswith('@@') and line[2:] in SECTIONS:
-            cur = line[2:]
-            out[cur] = []
-        elif cur:
-            out[cur].append(line)
-    return {k: '\n'.join(v).strip() for k, v in out.items()}
+    return netfacts.split_sections(text, SECTIONS)
 
 
 def load_xml(text: str):

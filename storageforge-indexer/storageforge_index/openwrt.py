@@ -32,14 +32,7 @@ ALL_SECTIONS = (*netfacts.SECTIONS, *EXTRA)
 
 
 def sections(text: str) -> dict:
-    out, cur = {}, None
-    for line in text.splitlines():
-        if line.startswith('@@') and line[2:] in ALL_SECTIONS:
-            cur = line[2:]
-            out[cur] = []
-        elif cur:
-            out[cur].append(line)
-    return {k: '\n'.join(v).strip() for k, v in out.items()}
+    return netfacts.split_sections(text, ALL_SECTIONS)
 
 
 def parse_leases(text: str) -> list[dict]:

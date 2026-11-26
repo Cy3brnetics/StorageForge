@@ -2,6 +2,12 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Internal
+
+- The `@@section` output of the network facts, OpenWrt, pfSense and infrastructure readings is split by one function, `netfacts.split_sections` (BE-11).
+
 ## 0.6.2 — 2026-11-26
 
 The first version of the [0.7.0 roadmap](roadmap-0.7.0.md): the ten places where a backend consolidation survey found that one copy of shared work was wrong. Built and unit-tested on SQLite (light, medium and heavy blocks); **not lab-tested**, and not run on PostgreSQL in this release's checks.

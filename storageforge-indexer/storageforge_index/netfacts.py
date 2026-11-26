@@ -36,15 +36,28 @@ SECTIONS = ('link', 'addr', 'route', 'route6', 'neigh', 'bridge', 'listen', 'lis
 MAX_NEIGHBOURS = 500
 
 
-def _sections(text: str) -> dict:
+def split_sections(text: str, names, lines: bool = False) -> dict:
+    """Split a host or device script's output into its `@@name` sections.
+
+    A header is a line that is exactly `@@` and one of `names`; other lines go to the section open
+    above them, and lines before the first header are dropped. A section that appears twice keeps
+    only its last copy. Each section is its lines joined and stripped, or with `lines` the list of
+    lines as printed. Whether the reading was cut short (no `end`) is for the caller to decide.
+    """
     out, cur = {}, None
     for line in text.splitlines():
-        if line.startswith('@@') and line[2:] in SECTIONS:
+        if line.startswith('@@') and line[2:] in names:
             cur = line[2:]
             out[cur] = []
         elif cur:
             out[cur].append(line)
+    if lines:
+        return out
     return {k: '\n'.join(v).strip() for k, v in out.items()}
+
+
+def _sections(text: str) -> dict:
+    return split_sections(text, SECTIONS)
 
 
 def _json(text: str):

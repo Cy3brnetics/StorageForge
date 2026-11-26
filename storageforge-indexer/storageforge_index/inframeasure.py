@@ -222,14 +222,7 @@ SCRUB_VARS = f'SCRUB_RE={shlex.quote(confread.SECRET_LINE)}\nSCRUB_AWK={shlex.qu
 
 
 def _sections(text: str) -> dict:
-    out, cur = {}, None
-    for line in text.splitlines():
-        if line.startswith('@@') and line[2:] in SECTIONS:
-            cur = line[2:]
-            out[cur] = []
-        elif cur:
-            out[cur].append(line)
-    return out
+    return netfacts.split_sections(text, SECTIONS, lines=True)
 
 
 def parse_listeners(lines: list[str]) -> list[dict]:
