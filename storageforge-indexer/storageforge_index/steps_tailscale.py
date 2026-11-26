@@ -103,8 +103,7 @@ def _check(conn, c, h, p, say):
 def _ansible(t):
     q = shlex.quote
     p = t['params']
-    head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-            'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
+    head = changes.ansible_head('act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
     call = ' '.join(q(w) for w in changes.words_of(p, ARGS))
     return changes.shell_task(t, head + BASH + f'\nt_tailscale {call}\n')
 

@@ -98,8 +98,7 @@ def _check(conn, c, h, p, say):
 def _ansible(t):
     q = shlex.quote
     p = t['params']
-    head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-            'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
+    head = changes.ansible_head('act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
     return changes.shell_task(t, head + BASH + f'\nt_vm_mac {q(p["path"])} {q(p.get("system") or "")}\n')
 
 

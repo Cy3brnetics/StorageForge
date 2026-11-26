@@ -94,8 +94,7 @@ def _title(p) -> str:
 def _ansible(t, conn=None):
     q = shlex.quote
     p = t['params']
-    head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-            'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
+    head = changes.ansible_head('act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
     words = changes.words_of(p, ARGS)
     return changes.shell_task(t, head + BASH + '\nt_secret_file ' + ' '.join(q(w) for w in words) + '\n')
 

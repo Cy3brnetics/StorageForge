@@ -303,6 +303,16 @@ def shell_task(t: dict | str, cmd: str, changed: str = 'changed') -> dict:
             'register': 'sf_out', 'changed_when': f"'{changed}' in sf_out.stdout"}
 
 
+ANSIBLE_HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; '
+                'info() { :; }\n')
+
+
+def ansible_head(extra: str = '') -> str:
+    """The first lines of an exported step's Bash: APPLY=1 and the report helpers its function calls (ok, missing, a conflict
+    that stops the task, a silent info), then extra, the step's own helpers (act, try, durable...). The task carries them all."""
+    return ANSIBLE_HEAD + extra
+
+
 def words_of(p: dict, args) -> list[str]:
     """A step's parameters as the words its Bash function takes, in the order of args: a yes/no is 1 or empty, and a parameter the
     step does not have (a plan saved before the field was added) is empty, not the word None."""

@@ -12,6 +12,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ### Internal
 
 - The Ansible task that runs a step's Bash function is built by `changes.shell_task`, its parameters become words by `changes.words_of`, and helper functions are cut out of a Bash text by `changes.bash_fn`, in place of copies in 28 step modules. Each task still carries every helper it runs (BE-35).
+- The first line of an exported step's Bash (`APPLY=1` and the `ok`, `missing`, `conflict` and silent `info` helpers) comes from `changes.ansible_head` in the eight step modules that wrote it out identically: Tailscale, VM disk folder, secret file, desktop, OS install, rclone mount, netconsole and container runtime. The exported text is unchanged (BE-36).
 
 ## 0.6.3.1 — 2026-11-26
 

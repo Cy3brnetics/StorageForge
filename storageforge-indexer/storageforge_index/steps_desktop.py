@@ -145,8 +145,7 @@ def _ansible(fn: str, args: tuple, with_conn: bool = False):
         q = shlex.quote
         p = t['params']
         words = changes.words_of(p, args) + (_profile_args(conn, t) if with_conn else [])
-        head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-                'doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
+        head = changes.ansible_head('doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
         return changes.shell_task(t, head + bash() + f'\n{fn} {" ".join(q(w) for w in words)}\n')
     return render
 

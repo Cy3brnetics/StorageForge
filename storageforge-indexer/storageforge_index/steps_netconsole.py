@@ -156,8 +156,7 @@ def _title(p) -> str:
 def _ansible(t, conn=None):
     q = shlex.quote
     p = t['params']
-    head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-            'act() { echo "changed: $*"; }; durable() { sync; }\n')
+    head = changes.ansible_head('act() { echo "changed: $*"; }; durable() { sync; }\n')
     words = [p['target'], p['port'] or str(netconsole.DEFAULT_PORT), p['source_port'] or str(netconsole.DEFAULT_SOURCE_PORT), p['interface'] or '', p['state'] or 'present']
     return changes.shell_task(t, head + BASH + '\nt_netconsole ' + ' '.join(q(w) for w in words) + '\n')
 

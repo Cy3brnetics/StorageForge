@@ -376,8 +376,7 @@ def _title(p) -> str:
 def _ansible(t, conn=None):
     q = shlex.quote
     p = t['params']
-    head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-            'doing() { echo "changed: $*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
+    head = changes.ansible_head('doing() { echo "changed: $*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
     words = [p['runtime'], p.get('source') or 'distro', '1' if p.get('rootless') else '', p.get('user') or '']
     return changes.shell_task(t, head + BASH + '\nt_runtime_install ' + ' '.join(q(w) for w in words) + '\n')
 

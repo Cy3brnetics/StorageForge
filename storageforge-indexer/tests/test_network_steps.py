@@ -443,6 +443,25 @@ class AnsibleTask(unittest.TestCase):
                          {'name': 'n', 'ansible.builtin.shell': {'cmd': 'true', 'executable': '/bin/bash'}, 'register': 'sf_out',
                           'changed_when': "'installed' in sf_out.stdout"})
 
+    def test_steps_built_on_ansible_head_start_with_the_head_they_had(self):
+        # the text each of these modules wrote out by hand before changes.ansible_head; their exports must still begin with it
+        head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n')
+        act, try_ = 'act() { echo "changed: $*"; }; ', 'try() { "$@" || { conflict "failed: $*"; return 1; }; }; '
+        self.assertEqual(changes.ansible_head(), head)
+        for kind, second in (
+                ('tailscale', act + try_[:-2] + '\n'),
+                ('vm-mac', act + try_ + 'later() { conflict "$*"; }\n'),
+                ('secret-file', act + try_ + 'durable() { sync; }\n'),
+                ('dux-install', 'doing() { :; }; ' + act + try_ + 'later() { conflict "$*"; }\n'),
+                ('os-install', 'doing() { :; }; ' + act + try_ + 'later() { conflict "$*"; }\n'),
+                ('rclone-mount', act + 'durable() { sync; }; reload_systemd() { systemctl daemon-reload; }\n'),
+                ('netconsole', act + 'durable() { sync; }\n'),
+                ('runtime-install', 'doing() { echo "changed: $*"; }; ' + act + try_ + 'durable() { sync; }\n')):
+            params = {f['name']: '' for f in changes.TYPES[kind]['fields']}
+            params.update({'target': '10.0.0.9', 'runtime': 'docker', 'path': '/srv/x', 'name': 'x', 'remote': 'r:', 'os': 'debian-12'})
+            cmd = changes._ansible_task({'id': 't1', 'type': kind, 'host': 'nas', 'params': params}, None)['ansible.builtin.shell']['cmd']
+            self.assertTrue(cmd.startswith(head + second), kind)
+
     def test_an_exported_network_step_carries_its_helpers_once(self):
         # net-bridge is built from steps_infra, net-address from steps_network: both cut their helpers out of steps_infra.BASH
         for kind, params, fn, helpers in (
