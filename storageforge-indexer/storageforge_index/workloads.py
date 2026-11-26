@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from . import inframeasure, wlmanaged, wlread
+from . import inframeasure, pvenode, wlmanaged, wlread
 from .db import Conn
 from .runtimes import docker
 
@@ -104,6 +104,18 @@ def from_infra(host: str, m: dict, mounts: list) -> list[dict]:
     return out
 
 
+RUNTIME_TOOLS = (('docker', 'docker'), ('podman', 'podman'), ('virsh', 'libvirt'), ('incus', 'incus'), ('lxc-ls', 'lxc'), ('qm', 'proxmox'), ('pct', 'proxmox'))
+
+
+def runtimes_of(reading: dict | None, view: dict | None) -> list[str]:
+    """What a host can run, from the tools its infra reading found and the container engine the last container read used."""
+    tools = set((reading or {}).get('tools') or [])
+    out = [rt for tool, rt in RUNTIME_TOOLS if tool in tools]
+    if (view or {}).get('engine'):
+        out.append(view['engine'])
+    return list(dict.fromkeys(out))
+
+
 def listing(conn: Conn, host: str | None = None) -> dict:
     """{'workloads': [...], 'hosts': [{'host', 'read': ..}]}. `read` says what each host's list is based on, so an empty list can be told from an unread one."""
     from . import apiviews
@@ -126,7 +138,8 @@ def listing(conn: Conn, host: str | None = None) -> dict:
             out += from_infra(name, m, mounts)
         wlread.with_quadlets(out, name, (m or {}).get('quadlets') or [])
         wlmanaged.annotate(out, name, m, managers.get(name.lower()))
-        hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale')})
+        hosts.append({'host': name, 'engine': (view or {}).get('engine'), 'containers_read_at': (view or {}).get('updated_at'), 'measured_at': (m or {}).get('measured_at'), 'measure_stale': (m or {}).get('stale'),
+                      'proxmox': pvenode.is_proxmox(m), 'runtimes': runtimes_of(m, view)})
     from . import wlcapture
     wlcapture.annotate(conn, out)          # adopted workloads, with their drift against the capture
     return {'workloads': out, 'hosts': hosts}

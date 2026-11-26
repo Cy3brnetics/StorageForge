@@ -16,11 +16,12 @@ from . import alerts, deploy, firewall, netfacts, security
 from .db import Conn
 from . import accessproxies, confread, overlays, tbadapters, tunnels, wlread
 from .runtimes import docker, guests
+from . import pvenode
 
 MEASURE_EVERY = 6 * 3600
 OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
-            'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'ip_forward', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
+            'incus', 'lxc', 'proxmox', 'proxmox_node', 'podman', 'wireguard', 'ip_forward', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
             'openvpn_status', 'openvpn_pki', 'nebula_conf', 'nebula_cert', 'netmaker_json', 'swan_sas', 'swan_conns', 'ziti_status', 'tp_status', 'tp_nodes', 'tp_conf',
             'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'vm_mac', 'quadlet', 'wl_units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
@@ -30,7 +31,7 @@ try() { timeout 30 "$@" 2>/dev/null || :; }
 has() { command -v "$1" >/dev/null; }
 capped() { head -c "$1"; }                 # a section cut short fails to parse and reads as unreadable, not as smaller
 one() { base64 | tr -d '\n'; }
-sec tools; for c in nft iptables iptables-save ip6tables-save ufw firewall-cmd ss virsh incus lxc-ls qm pct podman wg tailscale netbird headscale zerotier-cli nebula netclient swanctl ziti-edge-tunnel tctl tsh boundary pomerium cloudflared frpc ngrok newt caddy nginx; do has "$c" && echo "$c"; done
+sec tools; for c in nft iptables iptables-save ip6tables-save ufw firewall-cmd ss virsh incus lxc-ls qm pct pvesm podman wg tailscale netbird headscale zerotier-cli nebula netclient swanctl ziti-edge-tunnel tctl tsh boundary pomerium cloudflared frpc ngrok newt caddy nginx; do has "$c" && echo "$c"; done
 sec fw_state; has firewall-cmd && try firewall-cmd --state
 sec nft
 # table by table, and without iptables-nft's tables when iptables-save reads them better: with Docker and ufw those run to hundreds of KB as JSON
@@ -91,6 +92,16 @@ fi
 if has pct; then
   try pct list | awk 'NR>1 {print $1, $2, $NF}' | head -n 200 | while read -r id st name; do
     printf 'g\tlxc\t%s\t%s\t%s\n' "$id" "$name" "$st"; try pct config "$id" | grep -E "$PVE_KEYS" | sed 's/^/c\t/'
+  done
+fi
+sec proxmox_node
+if has pvesm; then
+  try pvesm status | awk 'NR>1 {printf "s\t%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5}' | head -n 100
+  # the content types are in the storage configuration; asking pvesm for each is slow
+  try awk '/^[a-z]+: / {n=$2} /^[ \t]+content / {printf "t\t%s\t%s\n", n, $2}' /etc/pve/storage.cfg | head -n 100 | while IFS="$(printf '\t')" read -r _ n c; do
+    case ",$c," in *,iso,*) try pvesm list "$n" --content iso </dev/null | awk 'NR>1 {printf "i\t%s\t%s\n", $1, $4}' | head -n 200 ;; esac
+    case ",$c," in *,vztmpl,*) try pvesm list "$n" --content vztmpl </dev/null | awk 'NR>1 {printf "v\t%s\t%s\n", $1, $4}' | head -n 200 ;; esac
+    printf 't\t%s\t%s\n' "$n" "$c"
   done
 fi
 sec podman
@@ -411,7 +422,7 @@ def parse(text: str) -> dict | None:
     return {'tools': tools, 'firewall': fw, 'listeners': parse_listeners(s.get('listeners', [])), 'storage_clients': parse_storage_clients(s.get('storage_clients', [])),
             'libvirt': guests.with_snapshots(guests.parse_libvirt(s.get('libvirt', [])), guests.parse_libvirt_snapshots(s.get('libvirt_snap', []))), 'libvirt_networks': guests.parse_libvirt_networks(s.get('libvirt_net', [])),
             'libvirt_pools': guests.parse_libvirt_pools(s.get('libvirt_pool', [])), 'incus': guests.parse_incus(s.get('incus', [])), 'lxc': guests.parse_lxc(s.get('lxc', [])),
-            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s),
+            'proxmox': guests.parse_proxmox(s.get('proxmox', [])), 'proxmox_node': pvenode.parse_node(s.get('proxmox_node', [])) if 'pvesm' in tools else None, 'podman_rootless': _podman(s.get('podman', [])), 'access': parse_access(s, tools), **wlread.read(s),
             'toolbox': tbadapters.sections_of(s)}
 
 

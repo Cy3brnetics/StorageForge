@@ -16,6 +16,7 @@ Platforms read through their own APIs (the API connection kind) are not read her
 """
 from __future__ import annotations
 
+from . import pvenode
 from .runtimes.docker import _manager
 
 LABEL_MANAGERS = (('komodo.', 'Komodo'), ('io.portainer.', 'Portainer'), ('coolify.', 'Coolify'), ('dockhand.', 'Dockhand'), ('dev.dockge.', 'Dockge'))
@@ -75,7 +76,7 @@ def annotate(workloads: list[dict], host: str, reading: dict | None, api_managed
     units, markers, tools = set(wu.get('units') or []), set(wu.get('markers') or []), set(r.get('tools') or [])
     agents = sorted({CONFIG_AGENTS[u] for u in units if u in CONFIG_AGENTS} | ({'Puppet'} if 'puppet' in markers else set())
                     | ({'ansible-pull'} if any(u.startswith('ansible-pull') for u in units) else set()))
-    pve = 'pve' in markers or 'pct' in tools or 'qm' in tools
+    pve = pvenode.is_proxmox(r)
     panels = sorted({name for u in units for key, name in PANEL_UNITS if u.startswith(key)}
                     | {w['panel'] for w in workloads if w.get('host') == host and w.get('panel') and w.get('state') == 'running'
                        and any((m.get('source') or '') in ('/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock') for m in w.get('mounts') or [])})
