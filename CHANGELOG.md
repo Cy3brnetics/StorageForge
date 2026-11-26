@@ -2,6 +2,16 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## 0.6.3.2 — 2026-11-26
+
+GitHub CI's heavy block failed on 0.6.3.1 with the same script error as before, at a moment the fix in 0.6.3.1 did not cover. 0.6.3.1 passed every block here on SQLite and light and medium on PostgreSQL 16; this release changes one line of the web UI and two tests, and was checked with the browser, smoke and kernel tests (168) on both databases. GitHub has not run it yet. The image scan job still fails, as in 0.6.3.1.
+
+### Fixed
+- **Signing out while the page is still drawing its first answers no longer raises a script error.** When answers to the page's first load arrive, the infrastructure view waits 50 ms to draw them all at once. A sign-out inside those 50 ms let that drawing run on the emptied page. It now stops once the page is signed out. Found by signing out at each of the first thirty answers the page reads, which a new test now does for the first twenty.
+
+### Tests
+- Browser tests record each page error's stack, so a failure names the file and line. The secrets page test says which script errors the page raised when it times out waiting for the page.
+
 ## 0.6.3.1 — 2026-11-26
 
 The fixes for GitHub CI's test jobs, which had failed since 0.6.0 on PostgreSQL and since 0.6.2 on SQLite: two product bugs found that way are fixed below, and the rest were tests written for SQLite only or for a fast machine. Checked here (GitHub has not run it yet) with every block on SQLite and light and medium on PostgreSQL 16. The image scan job still fails on vulnerabilities in the key enclave's kernel and the Wolfi base, which needs a decision of its own.
