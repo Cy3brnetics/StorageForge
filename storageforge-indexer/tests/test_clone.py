@@ -357,7 +357,8 @@ complete
         self.assertIn('bacman $p', sh_text)
         self.assertIn('deadbeef1234', sh_text)
         # 3d: extra /etc configs + LUKS vault detection
-        cfg = hostconfig.parse_configs(f'/etc/sysctl.d/99-sf.conf\t{base64.b64encode(b"vm.swappiness=10\\n").decode()}\n')
+        sysctl = base64.b64encode(b'vm.swappiness=10\\n').decode()
+        cfg = hostconfig.parse_configs(f'/etc/sysctl.d/99-sf.conf\t{sysctl}\n')
         self.assertIn('/etc/sysctl.d/99-sf.conf', cfg['files'])
         hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-01'")
         inv = json.loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))

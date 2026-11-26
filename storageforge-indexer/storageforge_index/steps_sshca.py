@@ -221,7 +221,8 @@ def _check_trust(conn, c, h, p, say):
     if p['host_cert'] and not sshcerts.host_certificate(conn, h['name']):
         say('crit', f'no host certificate is on record for {h["name"]}: issue one under Keys first')
     users = p['users'].split(',')
-    say('note', f'a certificate for {", ".join(f"{u}@{h["name"]}" for u in users[:4])}{" …" if len(users) > 4 else ""}'
+    shown = ', '.join(f'{u}@{h["name"]}' for u in users[:4])
+    say('note', f'a certificate for {shown}{" …" if len(users) > 4 else ""}'
                 + (f' or {p["principals"]}' if p['principals'] else '') + ' logs in as that user. Keys in authorized_keys go on working')
     if p['principals']:
         say('warn', f'{p["principals"]} is accepted for every user listed here, on every host that lists it: a certificate with it is not tied to this host')

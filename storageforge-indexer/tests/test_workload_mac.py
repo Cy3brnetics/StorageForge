@@ -43,7 +43,8 @@ class Relabel(unittest.TestCase):
 
 class Reading(unittest.TestCase):
     def test_the_vm_mac_section_is_read_and_junk_is_left_out(self):
-        lines = ['m\tselinux', f's\t{b64("/tank/vm")}\tsystem_u:object_r:default_t:s0\tsystem_u:object_r:default_t:s0', 's\tnot base64!\tx', f'a\t{b64("  \"/tank/vm/**\" rwk,")}',
+        rule = b64('  "/tank/vm/**" rwk,')
+        lines = ['m\tselinux', f's\t{b64("/tank/vm")}\tsystem_u:object_r:default_t:s0\tsystem_u:object_r:default_t:s0', 's\tnot base64!\tx', f'a\t{rule}',
                  'junk', f'p\t{b64("relative")}']
         got = wlread.vm_mac(lines)
         self.assertEqual(got['mac'], 'selinux')
