@@ -40,7 +40,7 @@ Each host needs:
 ### Get the code
 
 ```bash
-git clone ssh://git@10.42.0.3:2222/Gabe/StorageForge.git     # or https://github.com/Cy3brnetics/StorageForge.git
+git clone https://github.com/Cy3brnetics/StorageForge.git
 cd StorageForge/storageforge-indexer
 git checkout v0.5.4.1                                           # a release; main is the latest
 ```
@@ -79,7 +79,7 @@ Nothing is needed on the host for this, so a stack manager such as Portainer or 
 
 | Field | Value |
 |---|---|
-| Repository | `http://10.42.0.3:3001/Gabe/StorageForge` or `https://github.com/Cy3brnetics/StorageForge` |
+| Repository | `https://github.com/Cy3brnetics/StorageForge` |
 | Branch | `main`, or the branch you want to run |
 | Compose file path | `storageforge-indexer/docker-compose.yml` |
 | Context directory | `./storageforge-indexer/` |
