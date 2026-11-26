@@ -1,0 +1,1105 @@
+# What StorageForge can do
+
+- files
+  - index
+    - scan over SSH
+      - agentless
+      - read-only commands
+      - one multiplexed session
+      - guardrails
+      - incremental sync
+      - checksums
+      - blocked folders
+      - read-only scan access
+      - scan schedule
+      - quiet hours
+      - signed scan payloads
+      - scan all hosts
+      - queue and progress
+    - search
+      - glob patterns
+      - size filter
+      - age filter
+      - under a folder
+      - type filter
+      - header search
+      - search page
+      - json output
+    - what changed between scans
+    - capacity trend
+    - cleanup
+      - duplicates
+      - cold data
+      - largest files
+      - copies on other hosts
+    - folder browser
+      - rename
+      - trash
+      - permissions
+      - snapshot
+      - copy to another disk
+    - git inventory
+      - repositories matched by history
+      - git inspector
+      - archive to
+    - docker and podman inventory
+      - containers
+      - volumes
+      - compose files
+    - host logs
+      - journal lines
+      - search
+      - csv export
+  - plan steps
+    - create folder
+    - rename or move
+    - move to trash
+    - create symlink
+    - owner and permissions
+    - securely delete
+    - compress into archive
+    - extract archive
+  - move plans
+    - copy
+    - move
+    - mirror
+    - rsnapshot
+    - git
+    - check
+    - script
+    - deploy as job
+  - sync engine
+    - routes
+      - lan
+      - mesh
+    - dedup before transfer
+    - reflink and hard link
+    - snapshot streams
+    - room check
+    - duperemove
+    - volume lock
+    - bandwidth limit
+  - reports
+    - markdown report
+    - canvas export
+    - graph export
+- storage
+  - drives
+    - partition a disk
+    - add a partition
+    - edit a partition
+    - delete a partition
+    - format
+    - filesystem label
+    - tune a drive
+    - secure wipe
+    - smart health
+  - mounts
+    - add a mount
+    - change mount options
+    - unmount
+    - fstab lines
+  - btrfs
+    - add a device
+    - remove a device
+    - replace a device
+    - grow to fill a device
+    - convert profile
+    - reclaim free space
+    - scrub
+    - subvolume
+    - turn a folder into a subvolume
+    - quotas
+  - zfs
+    - create a pool
+    - create a dataset
+    - add a vdev
+    - replace a disk
+    - attach a disk
+    - scrub
+  - lvm
+    - volume group
+    - extend volume group
+    - logical volume
+    - grow a logical volume
+  - mdadm
+    - create an array
+    - add a disk
+    - replace a disk
+    - grow an array
+  - luks
+    - encrypt a device
+    - open
+    - close
+    - add a key
+  - raid calculator
+  - storage tasks
+    - guards
+      - require mounted
+      - require free space
+      - require host up
+    - control
+      - if
+      - try
+      - stop
+    - copy
+      - rsync
+      - rotating backup
+      - verify copy
+      - back up VMs
+    - snapshot
+      - btrfs snapshot and prune
+      - zfs snapshot and prune
+      - send btrfs
+      - send zfs
+      - VM snapshots
+    - service
+      - docker compose
+      - systemd service
+    - other
+      - make folder
+      - btrfs scrub
+      - btrfs reclaim
+      - run command
+      - wait
+      - log
+  - planner
+    - overview
+    - devices
+    - mounts
+    - links
+    - topology
+    - protection grid
+    - export
+      - change plan
+      - systemd units
+      - fstab
+      - blueprint json yaml
+      - ascii tree
+    - design versions
+    - example design
+- shares & remote storage
+  - share wizard
+    - server and client in one deploy
+    - nfs
+    - smb
+    - sftp
+    - s3
+    - webdav
+    - rclone serve
+    - iscsi
+    - nvme over tcp
+    - virtiofs
+    - nbd
+    - glusterfs
+    - fence a share to its clients
+    - shares manager
+    - drift records
+  - rclone mounts
+    - any rclone backend
+      - google drive
+      - onedrive
+      - dropbox
+      - s3 and compatible
+      - backblaze b2
+      - azure
+      - google cloud storage
+      - webdav and nextcloud
+      - sftp
+      - ftp
+      - smb
+      - proton drive
+      - pcloud
+      - mega
+    - rclone crypt
+    - vault secrets
+    - vfs cache
+    - systemd unit
+- backups & copies
+  - jobs
+    - copy
+    - mirror
+    - rotating backup
+    - rsnapshot
+    - git archive
+    - verify
+  - send snapshots between hosts
+    - btrfs send
+    - zfs send
+    - signed receive
+    - retention
+  - existing jobs
+    - rsnapshot
+    - snapper
+  - VM backups on a schedule
+  - restore test
+  - proxmox backup client
+  - backup tools
+    - restic
+    - borg
+    - kopia
+    - proxmox backup server
+  - 3-2-1 protection grid
+  - last copy warnings
+  - StorageForge backups
+    - nightly backup
+    - restore
+    - retention
+    - restore across sites
+- snapshots
+  - btrfs
+    - snapshot a subvolume
+    - restore a subvolume
+    - send
+  - zfs
+    - snapshot a dataset
+    - roll back
+    - hold
+    - send
+  - lvm
+    - snapshot a logical volume
+  - VM snapshots
+    - disk-only
+    - frozen filesystems
+    - internal
+    - revert
+    - delete
+  - stack snapshot
+    - quiesced
+    - stop
+    - pause
+  - holds
+  - retention policies
+  - rollback preview
+- workloads
+  - workloads page
+    - tree
+      - fleet
+      - host
+      - runtime
+      - workload
+    - runtimes
+      - docker
+      - podman
+      - libvirt
+      - incus
+      - lxc
+      - proxmox ve
+    - panel
+    - filter
+    - fold
+    - create wizard
+    - every action as a plan
+    - managed by something else
+  - containers
+    - run a container
+    - compose stack
+    - lxc container
+    - incus instance
+    - start stop or snapshot
+    - remove a workload
+    - remove a managed stack
+    - image update
+      - rollback
+    - labels
+    - firewall rule
+    - quadlets
+    - adopt a workload
+      - drift
+    - placement advice
+    - SELinux labels
+    - docker engine settings
+      - data directory
+      - storage driver
+      - log driver
+      - live-restore
+      - registry mirrors
+      - cgroup driver
+  - VMs
+    - define a VM from a disk
+    - create from cloud image
+    - create from installer ISO
+    - vm specs
+    - change a VM
+    - start stop restart force off
+    - console
+    - libvirt networks
+    - libvirt pools
+    - let VMs use a folder of disks
+    - copy to another libvirt host
+      - send a VM
+      - define the copy
+    - image a physical disk into qcow2
+    - MAC at deploy
+  - proxmox ve
+    - create a VM
+    - create a container
+    - start stop or snapshot a guest
+    - remove a guest
+  - runtime install
+    - docker
+    - podman
+    - libvirt
+    - incus
+  - exports
+    - terraform
+    - opentofu
+    - puppet
+    - ansible
+- hosts & rebuild
+  - host configurations
+    - save
+    - diff
+    - export
+    - reinstall script
+    - rebuild onto new drives
+  - clone and migrate
+    - physical to VM
+    - VM to physical
+    - VM to VM
+    - physical to physical
+    - package list
+    - packages
+    - accounts
+    - config files
+    - services
+    - data layout
+    - user files
+    - data at risk list
+    - snapshots before and after
+    - hardware differences
+    - test mode
+    - migration mode
+    - AUR builds
+    - luks by hand
+  - second system beside the first
+    - install
+    - choose which starts
+    - remove
+    - go on only in it
+  - desktop
+    - dux install
+    - desktop profile
+  - system updates
+    - apt
+    - dnf and yum
+    - zypper
+    - pacman
+    - check for updates
+    - update all hosts
+  - host operations
+    - service state
+    - retire a host
+    - host identity
+    - target host checks
+  - disaster recovery
+    - rebuild on a new machine
+    - vault secret lost
+- network
+  - network steps
+    - bridge
+    - vlan
+    - mtu
+    - bond
+    - address
+    - route
+    - dhcp
+    - read netplan networkmanager networkd
+  - firewall
+    - firewall rule
+    - nftables
+    - iptables
+    - firewalld
+    - ufw
+    - fence
+    - rollback timer
+  - private networks
+    - StorageForge network
+      - wireguard
+      - key rotation
+      - hub forwarding
+      - peer revocation
+      - controller as a member
+    - wireguard
+      - peer
+      - interface
+      - rotate
+      - hub forwarding
+      - peer manager
+    - tailscale
+    - headscale
+    - netbird
+    - zerotier
+    - nebula
+      - ca in the vault
+      - lighthouse
+    - openziti
+    - netmaker
+    - openvpn
+    - strongswan
+  - tunnels
+    - cloudflare tunnel
+    - pangolin site
+    - frp
+    - ngrok
+    - exposure through tunnels
+  - access proxies
+    - teleport
+    - boundary
+    - pomerium
+  - network devices
+    - platforms
+      - mikrotik routeros
+      - openwrt
+      - opnsense
+      - pfsense
+      - cisco ios
+      - snmp read-only
+    - transports
+      - ssh
+      - telnet
+      - legacy ssh
+      - sealed passwords
+    - management planner
+    - fleet
+    - network language
+      - bridges
+      - vlans
+      - bonds
+      - addresses
+      - routes
+      - dns
+      - dhcp
+      - filter rules
+      - nat
+      - address lists
+      - place before
+    - targets
+      - routeros
+      - nftables
+      - iptables
+      - firewalld
+      - ufw
+      - openwrt
+      - pfsense
+      - cisco
+      - networkd
+      - networkmanager
+    - load what it runs
+    - change with rollback on the device
+    - what-if
+    - network scanner
+    - traffic monitoring
+    - lldp
+  - infrastructure map
+    - layers
+      - storage
+      - network
+      - services
+      - firewall
+      - workloads
+    - presets
+    - path query
+    - who can reach a port
+    - exposure
+    - what changed
+    - time travel
+    - what if
+    - placeholders
+    - scan results as ghosts
+    - designs
+    - layouts
+    - exports
+      - netbox
+      - grafana
+    - map actions
+  - reverse proxy and dns
+    - caddy route
+    - registry mirror
+    - apt proxy
+    - tailscale and proxies
+  - netconsole
+    - kernel messages to the controller
+    - pstore
+- security
+  - posture
+    - security center
+    - dashboards
+    - baseline
+    - compliance
+      - standards
+      - waivers
+      - re-converge
+      - cis runtime
+    - integrity
+      - aide
+      - lynis
+    - detection
+      - falco
+      - yara
+      - falco simulator
+      - clamav
+    - identity anomalies
+    - offhours reads
+    - packages check
+    - evidence bundles
+  - hardening steps
+    - kernel setting
+    - ssh server setting
+    - default umask
+    - selinux boolean
+    - selinux label
+    - apparmor local rules
+    - apparmor mode
+    - host access control setup
+    - nts time sources
+    - ssh ca trust
+    - revoked ssh certificates
+  - ssh certificate authority
+    - user certificates
+    - host certificates
+    - revocation
+  - accounts
+    - local accounts
+    - roles
+      - search
+      - viewer
+      - operator
+      - admin
+      - custom roles
+    - sessions
+    - sign-in limits
+    - re-authentication
+    - fido2
+      - guarded actions
+      - sign-in
+    - invite links
+    - reset links
+  - audit log
+    - hash chain
+    - verify
+    - activity log
+  - key enclave
+    - micro vm
+    - vsock
+    - step-up
+    - releases audited
+    - limits
+  - container hardening
+  - scanning of images
+    - trivy
+    - grype
+    - openscap
+  - console
+    - ssh over lan
+    - ssh over tailscale
+    - vm serial console
+    - audited sessions
+    - recorded sessions
+    - monitoring-only console
+- ransomware defense
+  - sentinel
+  - decoys
+    - arming
+    - test it
+  - brake
+    - triage
+    - drop the client
+    - snapshot
+    - freeze
+  - holds
+    - cool-off
+    - two admins
+    - legal hold
+    - offline key
+    - clock guard
+  - quarantine
+  - airgap
+  - exempt list
+  - blast radius
+  - clean room
+  - behaviour
+    - change rate
+    - ransom names
+    - renamed files
+    - entropy
+  - access control
+  - fencing
+  - identity
+    - samba attribution
+    - nfs attribution
+  - retention
+  - playbooks
+  - dashboard
+  - timeline
+  - hardware keys
+  - ban tiers
+    - crowdsec
+    - fail2ban
+  - mirror discovery
+  - client tripwire
+- secrets & keys
+  - key vault
+    - ssh keys
+    - bindings
+      - scan
+      - deploy
+    - argon2id kek
+    - rotate vault secret
+    - weak key refusal
+    - generate-only policy
+  - secret store
+    - generate
+    - shown once
+    - deliver on stdin
+    - rotate
+    - remove
+    - policy
+      - steps
+      - hosts
+      - platforms
+      - sensitive
+    - write secret to a file
+  - host identity
+    - pinned host keys
+    - keys added by hand
+    - rekey
+  - platform api tokens
+    - read-back
+    - expiry
+    - replace
+    - pinned certificate
+  - overlay keys
+    - headscale pre-auth keys
+    - nebula ca
+    - nebula issue
+    - nebula revoke
+  - console keys
+  - sites
+    - site init
+    - fingerprints
+    - archive
+    - reset
+- monitoring & alerts
+  - notification center
+    - ranked
+    - grouped
+    - count in header
+    - acknowledge
+    - snooze
+    - mute
+    - history
+    - prepared fixes
+  - alert sources
+    - jobs
+    - schedules
+    - tasks
+    - drift
+    - scans
+    - mounts
+    - disk full
+    - pools
+    - backups
+    - certificates
+    - security
+    - devices
+    - connections
+  - channels
+    - ntfy
+    - gotify
+    - webhook
+    - pagerduty
+    - sms
+    - routes by host and level
+  - log monitoring
+    - log rules
+      - built-in rules
+      - own rules
+    - anomalies
+      - volume
+      - new kind
+      - silence
+      - unit silence
+    - push ingest
+    - monitoring view
+  - health
+    - smart
+    - cpu memory io
+    - scrub progress
+    - raid rebuilds
+  - traffic
+  - tools
+    - prometheus
+    - grafana
+    - loki
+    - uptime kuma
+    - beszel
+    - netdata
+    - smartd
+    - ntfy
+    - gotify
+    - apprise
+    - wazuh
+    - suricata
+    - zeek
+- deploy & change plans
+  - change plans
+    - staged steps
+    - check
+    - report
+    - apply from the report
+    - 409 on a changed plan
+    - bash script
+    - ansible playbook
+    - import json
+    - from a planner design
+    - reorder
+    - duplicate
+  - deploy access
+    - setup script
+    - signed runner
+    - signed deploys
+    - password re-entry
+    - rollback
+  - deployed jobs
+    - status
+    - drift
+    - report url
+  - scheduler
+    - storage tasks
+    - change plans
+    - move plans
+    - shares
+    - commands
+    - cron
+    - windows
+    - concurrency
+    - jitter
+    - verify
+  - remote nodes
+    - tunnel
+    - add
+    - adopt
+    - revoke
+  - toolbox
+    - signed catalog
+    - install methods
+      - rootless container
+      - package
+      - binary
+      - quadlet
+      - compose
+    - exposure
+      - loopback
+      - management
+      - any
+    - overrides
+    - risk labels
+    - remove keeping data
+    - remove data to trash
+    - adapters
+    - gui levels
+    - custom entries
+    - bundles
+    - panels
+      - cockpit
+      - dockge
+      - portainer
+      - komodo
+      - dockhand
+      - dokploy
+      - incus ui
+    - vpn and overlay
+      - wireguard
+      - headscale
+      - netbird
+      - netmaker
+      - zerotier
+      - nebula
+      - openvpn
+      - strongswan
+      - pangolin
+    - zero trust
+      - openziti
+      - pomerium
+      - cloudflare tunnel
+      - teleport
+      - boundary
+      - ssh ca
+    - identity
+      - authentik
+      - keycloak
+      - authelia
+      - kanidm
+      - lldap
+      - samba ad dc
+      - freeipa
+    - proxy tls dns
+      - caddy
+      - traefik
+      - nginx proxy manager
+      - step-ca
+      - pi-hole
+      - adguard home
+      - unbound
+      - coredns
+      - dnsmasq
+      - technitium
+      - chrony
+    - detection
+      - crowdsec
+      - fail2ban
+      - suricata
+      - zeek
+      - trivy
+      - grype
+      - openscap
+      - falco
+      - wazuh
+    - backup
+      - restic
+      - borg
+      - kopia
+      - proxmox backup server
+      - restore test
+    - secrets
+      - openbao
+      - sops
+      - age
+      - vaultwarden
+    - provisioning
+      - packer
+      - netboot.xyz
+      - forgejo
+      - zot
+      - renovate
+      - ansible
+      - puppet
+      - opentofu
+    - storage apps
+      - samba
+      - nfs server
+      - minio
+      - garage
+      - nextcloud
+      - syncthing
+      - jellyfin
+    - offline
+      - package bundles
+      - local mirrors
+      - registry mirror
+      - apt cacher
+    - ids bans
+      - ban or lift
+      - scan images
+- integrations
+  - platform api connections
+    - proxmox ve
+    - proxmox backup server
+    - proxmox datacenter manager
+    - truenas
+    - xen orchestra
+    - dockhand
+    - portainer
+    - komodo
+    - pangolin
+    - least-privilege guide
+    - read-back
+    - pinned certificate
+    - expiry warning
+    - token replace
+    - compared with scan
+  - appliances
+    - proxmox ve
+    - truenas
+    - xcp-ng
+  - exports
+    - terraform
+    - opentofu
+    - puppet
+    - ansible
+    - netbox
+    - grafana
+    - obsidian canvas
+  - hooks
+    - report url
+    - webhook
+    - ntfy
+- web ui
+  - views
+    - topology
+      - editor
+      - context menus
+      - fit and auto-layout
+      - collapse
+    - graph
+      - files
+      - structure
+    - tasks
+    - map
+    - scan
+    - planner
+    - manage
+    - security
+    - workloads
+    - logs
+    - admin
+    - search
+    - login
+    - enroll
+  - panels
+    - details
+    - search
+    - notify
+    - changes
+    - moves
+    - deploy
+    - scans
+    - infra
+    - git
+    - rebuild
+    - cleanup
+    - schedule
+    - keys
+    - audit
+  - command palette
+  - keyboard shortcuts
+  - deep links
+  - unsaved work
+  - host passwords prompt
+  - preferences
+  - accessibility
+  - small screens
+- cli
+  - scan
+  - search
+  - dupes
+  - folders
+  - changes
+  - docker
+  - git
+  - config
+  - graph
+  - canvas
+  - report
+  - export-markdown
+  - plan
+  - moves
+  - tasks
+  - shares
+  - schedule
+  - deploy
+  - access
+  - vault
+  - hosts
+  - hostlogs
+  - remote
+  - user
+  - role
+  - audit
+  - backup
+  - restore
+  - site
+  - reset
+  - vm
+  - clone
+  - blueprint
+  - migrate
+  - prune
+  - rotate
+  - serve
+  - healthcheck
+  - agentctl
+- agent
+  - optional per host
+  - rust
+  - container
+    - docker
+    - podman
+    - lxc
+    - incus
+    - proxmox pct
+  - plugins
+    - heartbeat
+    - logs
+    - health
+    - network
+    - disks
+    - files
+    - scan
+    - sentinel
+    - toolbox status
+  - signed plugins
+  - manifest
+  - tunnel
+  - receiver
+  - monitoring-only hosts
+  - wipe and stop
+  - storageforge-agentctl
+  - fanotify watchers
+- lab/testing
+  - kvm lab
+    - disposable VMs
+    - test tiers
+    - random builds
+    - appliances
+  - tested distributions
+    - debian
+    - ubuntu
+    - fedora
+    - arch
+    - opensuse
+    - rocky
+    - almalinux
+    - alpine
+  - unit suites
+    - sqlite
+    - postgresql
+    - blocks
+    - random tests
+  - feature map
+  - browser tests
+  - audits
+- planned
+  - network filesystems
+    - gcsfuse
+    - blobfuse2
+    - mountpoint-s3
+    - cephfs client
+    - juicefs
+    - seaweedfs
+    - moosefs
+  - toolbox
+    - sso-link with oidc client
+    - cve deltas in updates
+    - image scans before first deploy
+    - ci check of entries
+    - wireguard qr codes
+  - ui
+    - security and settings workspaces
+    - plan workspace
+    - planner growth
+    - one design document
+    - design mode from what was read
+    - compose editor
+    - scan table and diff
+    - planner status dots
+    - component pass
+    - retire graph structure
+    - native es modules
+  - ci
+    - container scan on forgejo
+  - code
+    - split large modules
+  - lab runs
+    - pfsense
+    - cisco
+    - old ssh ciphers
+    - tailscale through headscale
+    - agent tiers
+    - network and workload tiers
+    - enclave
+  - host migration
+    - bare metal live environment
+    - pxe
+  - rest adapters for devices
