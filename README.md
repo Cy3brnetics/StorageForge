@@ -1,6 +1,6 @@
 # StorageForge
 
-Map, plan and change the storage on a fleet of Linux machines from one place. StorageForge indexes every host over SSH with no agent, shows what it found as an editable topology, checks every plan against that index, and turns plans into scripts that report before they change anything.
+Map, plan and change the storage on a fleet of Linux machines from one place. StorageForge indexes every host over SSH with no agent (an optional agent is switched on per host), shows what it found as an editable topology, checks every plan against that index, and turns plans into scripts that report before they change anything.
 
 ![Topology view](docs/images/topology.jpg)
 
@@ -37,11 +37,17 @@ I built it because I wanted to use it, not because I wanted to maintain a storag
 - **Designs hosts.** The planner covers devices, mounts, links, RAID capacity and protection, and exports Bash, Ansible, systemd and blueprint files.
 - **Plans changes.** Folders, btrfs, ZFS and LVM tasks, mounts and drives, in order, like a playbook for storage.
 - **Moves and protects data.** Copies, cutovers, mirrors, rsnapshot, git mirrors and snapshot sends. Existing rsnapshot and snapper jobs can be imported.
-- **Deploys NFS and SMB shares**, for the server and each client.
+- **Deploys shares**, for the server and each client: NFS and SMB, and SFTP, S3, WebDAV, rclone serve, iSCSI, NVMe over TCP, NBD, virtiofs and GlusterFS. It also mounts any rclone remote on a host, with rclone crypt if asked. See [Network filesystems](docs/network-filesystems.md).
 - **Builds storage tasks from blocks**, with guards such as "require mounted", then runs them by hand or on a timer.
 - **Shows Docker, Podman and Git inventory:** which containers use a folder, which repositories have unpushed work or only one copy.
-- **Raises alerts** for failed jobs, drift, disk and pool health, and sends them to your alert channels.
+- **Shows every container and VM** on the [Workloads page](docs/workloads-page.md), as one tree of hosts, runtimes and workloads. Actions and the new-workload wizard end in checked change plans, and Proxmox VE guests are made with `qm` and `pct`. A Docker runtime's engine settings can be edited the same way.
+- **Maps the network and the infrastructure:** networks, firewalls, listeners and who can reach what, [network devices](docs/network-devices.md) changed through one language with a rollback on the device, and [platform connections](docs/api-connections.md) for Proxmox VE, TrueNAS and others.
+- **Installs tools and rebuilds hosts:** a signed [Toolbox](docs/toolbox.md) catalog of tools such as WireGuard, and [cloning or migrating a host](docs/host-migration.md) between machines and VMs.
+- **Defends against ransomware and watches security:** decoys, retention holds, a host-side brake, logs and an optional [agent](docs/agent.md). See [Ransomware defense](docs/ransomware-defense.md).
+- **Raises alerts** for failed jobs, drift, disk and pool health, and a broken `/etc/fstab`, and sends them to your alert channels (ntfy, Gotify, webhook, SMS).
 - **Writes reports:** Markdown architecture reports and Obsidian `.canvas` exports.
+
+[What StorageForge can do](docs/capabilities.md) lists all of it as one tree. Much of what 0.6.0 added is built and unit-tested and has **not** been through the lab: the pages and the [changelog](CHANGELOG.md) say which.
 
 ## How it works
 
@@ -52,7 +58,7 @@ I built it because I wanted to use it, not because I wanted to maintain a storag
 5. **Act.** Download the script and run it yourself, or deploy it through a runner on the host that only runs scripts StorageForge signed. Run with no options, a script only reports `ok`, `missing` or `conflict`.
 6. **Rescan.** The next scan shows the result, and flags drift if something deployed was changed by hand.
 
-The rules every feature follows are in [Concepts](docs/concepts.md#the-rules), and the protections are in [Security](docs/security.md). In short: SSH keys are encrypted at rest and held in memory only for the length of a task, trash and cutovers rename instead of deleting, drive tasks have three separate locks, and the audit log is hash-chained.
+The rules every feature follows are in [Concepts](docs/concepts.md#the-rules), and the protections are in [Security](docs/security.md). In short: SSH keys are encrypted at rest and held in memory only for the length of a task (optionally inside a small key enclave VM), trash and cutovers rename instead of deleting, drive tasks have three separate locks, and the audit log is hash-chained.
 
 ## Install
 
@@ -95,16 +101,16 @@ To try it without touching a real host, `examples/demo/demo.sh` runs the whole f
 
 ## Where it stands
 
-- Version 0.5.0. Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
+- Version 0.6.0 (2026-11-26). Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
 - It is meant for a LAN behind its TLS proxy. Do not publish it on the internet. The one port that may face it is the optional [tunnel for remote nodes](docs/remote-nodes.md).
-- The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages. The release run of 2026-11-06 passed 561 of 564 checks, and the remaining failure and what has not met a real device or service are listed in the [changelog](CHANGELOG.md) and [progress.md](progress.md).
-- The CI workflow is written and its commands pass by hand, but it has not run on a runner yet.
+- The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages. The last full release run in the lab, on 2026-11-06, passed 561 of 564 checks. 0.6.0 added much more than it has been lab-tested for: the Workloads page, the Proxmox VE steps, Docker engine settings, the extra share protocols, rclone mounts, the Windows agent and much of the security, network and migration work are **built, not lab-tested**. What has not met a real device or service is listed in the [changelog](CHANGELOG.md), [roadmap.md](roadmap.md) and [progress.md](progress.md).
+- The CI workflow (`.github/workflows/ci.yml`) runs the test blocks. The PostgreSQL migrations of 0.6.0 have not been run against PostgreSQL in its release checks.
 
 ## Find your way around
 
 | Where | What |
 | :--- | :--- |
-| [docs/](docs/README.md) | All documentation, starting with [install and set up](docs/install.md), [getting started](docs/getting-started.md) and [concepts](docs/concepts.md) |
+| [docs/](docs/README.md) | All documentation, starting with [install and set up](docs/install.md), [getting started](docs/getting-started.md), [concepts](docs/concepts.md) and [what StorageForge can do](docs/capabilities.md) |
 | [storageforge-indexer/](storageforge-indexer/README.md) | The code |
 | [StorageForge-Website/](StorageForge-Website/index.html) | The one-page project website, as static files |
 | [CHANGELOG.md](CHANGELOG.md) | What changed |
