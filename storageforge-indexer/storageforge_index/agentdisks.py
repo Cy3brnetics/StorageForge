@@ -20,13 +20,13 @@ import json
 import re
 import time
 
+from .agentwatch import LABEL
 from .db import Conn, loads
 
 LINES_KEPT = 20
 ERRORS_RECENT_SECS = 86400
 MOST_DISKS = 64
 DEV_RE = re.compile(r'[A-Za-z0-9]{1,32}|md:[A-Za-z0-9]{1,16}/[A-Za-z0-9]{1,32}')
-LABEL = 'reported by agent'
 
 
 def _text(value, most: int) -> str:

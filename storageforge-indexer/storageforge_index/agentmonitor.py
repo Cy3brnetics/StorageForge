@@ -22,7 +22,7 @@ import hashlib
 import re
 import time
 
-from . import deploy, sfagent
+from . import agentwatch, deploy, sfagent
 from .db import Database
 from .sshwire import fingerprint_of_blob
 
@@ -115,7 +115,7 @@ def register(conn, name: str, address: str, port: int, arch: str, actor: str, os
             raise MonitoringError(f'{name} is a network device: routers, firewalls, switches and appliances stay agentless')
         import json
         conn.execute(f"""INSERT INTO hosts (hostname, ssh_host, ssh_user, ssh_port, inventory_json) VALUES (:h, :a, :u, :p, {conn.jsonp(':inv')})""",
-                     {'h': name, 'a': address, 'u': sfagent.MANAGER, 'p': int(port), 'inv': json.dumps({'packages': f'arch\t{arch}\nos\t{os_family}', 'source': 'agent', 'label': 'reported by agent'})})
+                     {'h': name, 'a': address, 'u': sfagent.MANAGER, 'p': int(port), 'inv': json.dumps({'packages': f'arch\t{arch}\nos\t{os_family}', 'source': 'agent', 'label': agentwatch.LABEL})})
         sfagent.switch(conn, name, True, actor)
         sfagent._save(conn, name, actor, mode='monitoring', detail='set up the agent on the host by hand, then paste the line the setup printed')
         return sfagent.get(conn, name)

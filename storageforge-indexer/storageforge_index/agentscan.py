@@ -17,13 +17,12 @@ from __future__ import annotations
 import json
 import time
 
-from .agentwatch import plugins_by_host
+from .agentwatch import LABEL, plugins_by_host
 from .db import Conn, loads
 
 MOST_PARTS = 64
 MOST_PART = 48 << 10
 STALE_SECS = 3 * 3600
-LABEL = 'reported by agent'
 PSEUDO = ('proc', 'sysfs', 'tmpfs', 'devtmpfs', 'devpts', 'cgroup', 'cgroup2', 'securityfs', 'debugfs', 'tracefs', 'mqueue', 'hugetlbfs',
           'pstore', 'bpf', 'configfs', 'fusectl', 'autofs', 'overlay', 'nsfs', 'ramfs', 'squashfs', 'efivarfs', 'binfmt_misc', 'rpc_pipefs')
 

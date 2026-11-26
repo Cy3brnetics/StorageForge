@@ -38,7 +38,7 @@ BEAT_SILENT_SECS = 30        # three beats of the heartbeat plugin missed
 HEALTH_FRESH_SECS = 300      # a health reading older than this says nothing about now
 GAP_SECS = 86400
 RECENT_SECS = 86400
-LABEL = 'reported by agent'
+LABEL = 'reported by agent'      # the one definition: agentdisks, agentfiles, agentscan and agentmonitor take it from here
 
 
 def _loads(text):

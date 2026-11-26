@@ -27,6 +27,7 @@ import posixpath
 import re
 import time
 
+from .agentwatch import LABEL
 from .db import Conn, loads
 from .paths import deepest
 
@@ -36,7 +37,6 @@ RECENT_SECS = 86400
 ACTIONS = ('write', 'create', 'delete', 'moved_from', 'moved_to')
 SETTINGS_KEY = 'agent.files'
 DEFAULTS = {'work_start': 7, 'work_end': 19, 'work_days': [0, 1, 2, 3, 4], 'offhours_reads_per_hour': 500, 'ransomware_burst_per_minute': 40}
-LABEL = 'reported by agent'
 _PATH_BAD = re.compile(r'[\x00-\x1f\x7f]')
 
 
