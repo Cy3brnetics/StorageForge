@@ -32,6 +32,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - A host's short name is worked out by one function, `hostid.short`, which `moves.host_slug` and `db.short_name` now name, and the host-name pattern of plans and of key installs is one, `hostid.HOST_RE`, which `scriptkit.HOST_RE` and `keyinstall.HOST` name. The known-host checks, the host lookup by address and the other host patterns are left as they were (BE-24).
 - A typed host name or address is turned into the scanned host by one function, `deploy.known`, behind the three known-host checks of the security actions, host certificates and the ClamAV deploy. Each keeps its own error and text (400 or 404). `deploy.canonical` still hands back what it was given when nothing matches (BE-32).
 - A host's JSON-lines run log is read by one function, `confirm.jsonl_dicts`, for deploy confirmations, task runs, sync job runs and schedule runs, in place of four loops. Each caller keeps its own field checks (BE-25).
+- The protocol constants written once in the controller's Python and once in the agent, wire and enclave Rust (frame size, Noise names and prologues, batch limits, signature namespaces, the agentctl operations, magic line and exit code, the agent's user and root groups, the enclave's vsock port) are compared by one test, `tests/test_wire_constants.py`, which reads the Rust sources without cargo. It also checks that the agent's inventory scan writes only sections the SSH scan's parser knows (BE-26).
 
 ## 0.6.2 — 2026-11-26
 
