@@ -1,0 +1,229 @@
+{
+  "CVE-2016-0774": {
+    "files": [
+      "fs/pipe.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2016-0774"
+  },
+  "CVE-2016-3695": {
+    "files": [
+      "drivers/acpi/apei/einj.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2016-3695"
+  },
+  "CVE-2018-10840": {
+    "files": [
+      "fs/ext4/xattr.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2018-10840"
+  },
+  "CVE-2018-10876": {
+    "files": [
+      "fs/ext4/balloc.c",
+      "fs/ext4/ialloc.c",
+      "fs/ext4/mballoc.c",
+      "fs/ext4/super.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=8844618d8aa7a9973e7b527d038a2a589665002c"
+  },
+  "CVE-2018-10882": {
+    "files": [
+      "fs/ext4/ext4.h",
+      "fs/ext4/inode.c",
+      "fs/ext4/super.c",
+      "fs/jbd2/transaction.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c37e9e013469521d9adb932d17a1795c139b36db"
+  },
+  "CVE-2018-10902": {
+    "files": [
+      "sound/core/rawmidi.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=39675f7a7c7e7702f7d5341f1e0d01db746543a0"
+  },
+  "CVE-2019-3016": {
+    "files": [
+      "arch/x86/include/asm/kvm_host.h",
+      "arch/x86/kvm/x86.c",
+      "include/linux/kvm_host.h",
+      "include/linux/kvm_types.h",
+      "virt/kvm/kvm_main.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=1eff70a9abd46f175defafd29bc17ad456f398a7"
+  },
+  "CVE-2019-3819": {
+    "files": [
+      "drivers/hid/hid-debug.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2019-3819"
+  },
+  "CVE-2020-27815": {
+    "files": [
+      "fs/jfs/jfs_dmap.h"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=c61b3e4839007668360ed8b87d7da96d2e59fc6c"
+  },
+  "CVE-2021-20265": {
+    "files": [
+      "net/unix/af_unix.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=fa0dc04df259ba2df3ce1920e9690c7842f8fa4b"
+  },
+  "CVE-2022-0286": {
+    "files": [
+      "drivers/net/bonding/bond_main.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=105cd17a866017b45f3c45901b394c711c97bf40"
+  },
+  "CVE-2022-3435": {
+    "files": [
+      "net/ipv4/fib_semantics.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2022-3435"
+  },
+  "CVE-2022-3523": {
+    "files": [
+      "arch/powerpc/kvm/book3s_hv_uvmem.c",
+      "drivers/gpu/drm/amd/amdkfd/kfd_migrate.c",
+      "drivers/gpu/drm/amd/amdkfd/kfd_migrate.h",
+      "drivers/gpu/drm/amd/amdkfd/kfd_svm.c",
+      "include/linux/migrate.h",
+      "lib/test_hmm.c",
+      "mm/memory.c",
+      "mm/migrate.c",
+      "mm/migrate_device.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=16ce101db85db694a91380aa4c89b25530871d33"
+  },
+  "CVE-2022-3567": {
+    "files": [
+      "net/core/sock.c",
+      "net/ipv4/af_inet.c",
+      "net/ipv6/ipv6_sockglue.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=364f997b5cfe1db0d63a390fe7c801fa2b3115f6"
+  },
+  "CVE-2022-3619": {
+    "files": [
+      "net/bluetooth/l2cap_core.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2022-3619"
+  },
+  "CVE-2022-3621": {
+    "files": [
+      "fs/nilfs2/inode.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=21a87d88c2253350e115029f14fe2a10a7e6c856"
+  },
+  "CVE-2022-3624": {
+    "files": [
+      "drivers/net/bonding/bond_alb.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=4f5d33f4f798b1c6d92b613f0087f639d9836971"
+  },
+  "CVE-2022-3629": {
+    "files": [
+      "net/vmw_vsock/af_vsock.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=7e97cfed9929eaabc41829c395eb0d1350fccb9d"
+  },
+  "CVE-2022-3630": {
+    "files": [
+      "fs/fscache/cookie.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=fb24771faf72a2fd62b3b6287af3c610c3ec9cf1"
+  },
+  "CVE-2022-3633": {
+    "files": [
+      "net/can/j1939/transport.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=8c21c54a53ab21842f5050fa090f26b03c0313d6"
+  },
+  "CVE-2022-3636": {
+    "files": [
+      "drivers/net/ethernet/mediatek/mtk_ppe.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=17a5f6a78dc7b8db385de346092d7d9f9dc24df6"
+  },
+  "CVE-2022-36402": {
+    "files": [
+      "drivers/gpu/drm/vmwgfx/vmwgfx_execbuf.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2022-36402",
+    "note": "the advisory text misspells the path as drivers/gpu/vmxgfx/vmxgfx_execbuf.c; the file is the vmwgfx driver's"
+  },
+  "CVE-2022-3646": {
+    "files": [
+      "fs/nilfs2/segment.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=d0d51a97063db4704a5ef6bc978dddab1636a306"
+  },
+  "CVE-2022-38096": {
+    "files": [
+      "drivers/gpu/drm/vmwgfx/vmwgfx_execbuf.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2022-38096",
+    "note": "the advisory text misspells the path as drivers/gpu/vmxgfx/vmxgfx_execbuf.c; the file is the vmwgfx driver's"
+  },
+  "CVE-2022-42895": {
+    "files": [
+      "net/bluetooth/l2cap_core.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b1a2cd50c0357f243b7435a732b4e62ba3157a2e"
+  },
+  "CVE-2023-1073": {
+    "files": [
+      "drivers/hid/hid-core.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=b12fece4c64857e5fab4290bf01b2e0317a88456"
+  },
+  "CVE-2023-1074": {
+    "files": [
+      "net/sctp/bind_addr.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=458e279f861d3f61796894cd158b780765a1569f"
+  },
+  "CVE-2023-1075": {
+    "files": [
+      "net/tls/tls_sw.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ffe2a22562444720b05bdfeb999c03e810d84cbb"
+  },
+  "CVE-2023-1076": {
+    "files": [
+      "drivers/net/tap.c",
+      "drivers/net/tun.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=66b2c338adce580dfce2199591e65e2bab889cff"
+  },
+  "CVE-2023-2898": {
+    "files": [
+      "fs/f2fs/data.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2023-2898"
+  },
+  "CVE-2023-3640": {
+    "files": [
+      "arch/x86/mm/cpu_entry_area.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2023-3640"
+  },
+  "CVE-2023-6176": {
+    "files": [
+      "net/tls/tls_sw.c"
+    ],
+    "source": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cfaa80c91f6f99b9342b6557f0f0e1143e434066"
+  },
+  "CVE-2023-6610": {
+    "files": [
+      "fs/smb/client/smb2ops.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2023-6610"
+  },
+  "CVE-2023-6679": {
+    "files": [
+      "drivers/dpll/dpll_netlink.c"
+    ],
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2023-6679"
+  }
+}

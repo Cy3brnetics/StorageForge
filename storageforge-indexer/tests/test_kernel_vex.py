@@ -18,6 +18,12 @@ def record(files, org=KERNEL_ORG):
     return {"cveMetadata": {"assignerShortName": "Linux"}, "containers": {"cna": {"providerMetadata": {"orgId": org}, "affected": affected}}}
 
 
+def versions(vers, files=None):
+    rec = record(files)
+    rec["containers"]["cna"]["affected"].append({"product": "Linux", "defaultStatus": "affected", "versions": vers})
+    return rec
+
+
 def match(vid, related=(), version=KERNEL, name="linux-kernel"):
     return {
         "vulnerability": {"id": vid},
@@ -138,6 +144,64 @@ class KernelVex(unittest.TestCase):
         for s in doc["statements"]:
             self.assertTrue(s["products"] and s["vulnerability"]["name"])
         json.dumps(doc)
+
+    def test_version_compare(self):
+        self.assertEqual(kernel_vex.cmp_version((6, 18, 9), (6, 18, 27)), -1)
+        self.assertEqual(kernel_vex.cmp_version((6, 18), (6, 18, 0)), 0)
+        self.assertEqual(kernel_vex.cmp_version((7, 1), (6, 18, 65)), 1)
+
+    def test_branch_fixed_before_ours(self):
+        rec = versions([{"version": "6.14", "status": "affected"}, {"version": "6.18.27", "lessThanOrEqual": "6.18.*", "status": "unaffected", "versionType": "semver"}])
+        verdict = kernel_vex.branch_verdict(rec, KERNEL)
+        self.assertEqual(verdict[0], "fixed")
+        self.assertIn("6.18.27", verdict[1])
+        rec = versions([{"version": "6.18.9", "lessThanOrEqual": "6.18.*", "status": "unaffected", "versionType": "semver"}])
+        self.assertEqual(kernel_vex.branch_verdict(rec, KERNEL)[0], "fixed")
+
+    def test_branch_fix_after_ours_is_no_statement(self):
+        rec = versions([{"version": "6.14", "status": "affected"}, {"version": "6.18.70", "lessThanOrEqual": "6.18.*", "status": "unaffected", "versionType": "semver"}])
+        self.assertIsNone(kernel_vex.branch_verdict(rec, KERNEL))
+        rec = versions([{"version": "6.18.1", "lessThan": "6.18.70", "status": "affected", "versionType": "semver"}])
+        self.assertIsNone(kernel_vex.branch_verdict(rec, KERNEL))
+        rec = versions([{"version": "6.14", "status": "affected"}, {"version": "6.19.12", "lessThanOrEqual": "6.19.*", "status": "unaffected", "versionType": "semver"}])
+        self.assertIsNone(kernel_vex.branch_verdict(rec, KERNEL))
+
+    def test_introduced_after_ours(self):
+        rec = versions([{"version": "6.19", "status": "affected"}, {"version": "0", "lessThan": "6.19", "status": "unaffected", "versionType": "semver"}])
+        verdict = kernel_vex.branch_verdict(rec, KERNEL)
+        self.assertEqual(verdict[0], "not_affected")
+        self.assertIn("introduced in 6.19, after 6.18.65", verdict[1])
+        rec = versions([{"version": "7.0", "status": "affected"}])
+        self.assertEqual(kernel_vex.branch_verdict(rec, KERNEL)[0], "not_affected")
+
+    def test_build_uses_branch_data_and_never_affected(self):
+        records = {
+            "CVE-2025-0101": versions([{"version": "6.14", "status": "affected"}, {"version": "6.18.27", "lessThanOrEqual": "6.18.*", "status": "unaffected", "versionType": "semver"}], ["mm/filemap.c"]),
+            "CVE-2025-0102": versions([{"version": "6.19", "status": "affected"}], ["mm/filemap.c"]),
+            "CVE-2025-0103": versions([{"version": "6.14", "status": "affected"}], ["mm/filemap.c"]),
+        }
+        grype = {"matches": [match(c) for c in records]}
+        srcs = {"a": {"mm/filemap.c"}}
+        doc, kept = kernel_vex.build(grype, srcs, KERNEL, timestamp="2026-11-26T00:00:00Z", fetch=lambda c, v=None, k=None: records[c])
+        by = {s["vulnerability"]["name"]: s for s in doc["statements"]}
+        self.assertEqual(by["CVE-2025-0101"]["status"], "fixed")
+        self.assertNotIn("justification", by["CVE-2025-0101"])
+        self.assertIn("6.18.27", by["CVE-2025-0101"]["status_notes"])
+        self.assertEqual(by["CVE-2025-0102"]["status"], "not_affected")
+        self.assertIn("introduced in 6.19", by["CVE-2025-0102"]["impact_statement"])
+        self.assertNotIn("CVE-2025-0103", by)
+        self.assertEqual([k[0] for k in kept], ["CVE-2025-0103"])
+        self.assertNotIn("affected", {s["status"] for s in doc["statements"]})
+
+    def test_manual_fallback(self):
+        manual = {"CVE-2018-1001": {"files": ["net/ipv4/tcp_input.c"], "source": "https://git.kernel.org/x"},
+                  "CVE-2018-1002": {"files": ["kernel/fork.c"], "source": "https://git.kernel.org/y"}}
+        grype = {"matches": [match("CVE-2018-1001"), match("CVE-2018-1002"), match("CVE-2018-1003")]}
+        doc, kept = kernel_vex.build(grype, {"a": X86}, KERNEL, timestamp="t", fetch=lambda c, v=None, k=None: None, manual=manual)
+        self.assertEqual([s["vulnerability"]["name"] for s in doc["statements"]], ["CVE-2018-1001"])
+        self.assertIn("https://git.kernel.org/x", doc["statements"][0]["impact_statement"])
+        self.assertEqual(dict(kept)["CVE-2018-1002"].split(" ")[0], "compiled")
+        self.assertIn("no record", dict(kept)["CVE-2018-1003"])
 
     def test_cli_with_local_checkout(self):
         with tempfile.TemporaryDirectory() as d:
