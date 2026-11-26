@@ -5,6 +5,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ## Unreleased
 
 ### Fixed
+- **Signing out no longer leaves a half-read answer to draw on the emptied page.** Signing out empties the page before `/login` loads. An answer whose headers had arrived but whose body was still being read could then run its handler on the empty page, which raised a script error (seen once on GitHub CI). Reading a body after sign-out now never finishes, as the request itself already didn't.
 - **A long answer from a network device no longer slows the session in the square of its length.** Reading from a router or switch over SSH or telnet cleaned all the output received so far every time more arrived, to find the prompt on the last line. A megabyte took about 15 s on a fast machine and over 30 s on a slow one, where a command could time out; the 64 MiB cap was out of reach. Only the last line is cleaned now, and the whole answer once, when the prompt arrives. Found when GitHub CI's test of the cap timed out.
 
 ## 0.6.3 — 2026-11-26

@@ -709,6 +709,18 @@ async function sfFetch(path, init, confirmed, busyTries = 0, steppedUp = false) 
     err.body = body;
     throw err;
   }
+  return sfAfterSignOut(res);
+}
+/* The headers came before sign-out, but the body may come after: reading it then never settles either, so no handler draws on the emptied page. */
+function sfAfterSignOut(res) {
+  for (const how of ['json', 'text']) {
+    const read = res[how].bind(res);
+    res[how] = async () => {
+      let got;
+      try { got = await read(); } catch (err) { if (sfSignedOut.gone) return sfNever(); throw err; }
+      return sfSignedOut.gone ? sfNever() : got;
+    };
+  }
   return res;
 }
 const getJSON = async (path, opts) => (await api(path, opts)).json();

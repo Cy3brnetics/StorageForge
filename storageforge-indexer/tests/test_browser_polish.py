@@ -225,6 +225,18 @@ class BrowserPolish(unittest.TestCase):
         page.wait_for_timeout(300)
         self.assertEqual(self.errors, [])
 
+    def test_an_answer_whose_body_is_still_being_read_at_sign_out_does_not_run_on_the_emptied_page(self):
+        # the answer's headers came before sign-out, its body after: what reads the body must not draw either (found on GitHub CI)
+        page = self.open(self.full)
+        page.wait_for_selector('#sesslen')
+        page.evaluate("""() => {
+            const read = Response.prototype.json;
+            Response.prototype.json = function () { sfSignedOut.gone = true; document.body.replaceChildren(); return read.call(this); };
+        }""")
+        page.evaluate('void loadDupes()')
+        page.wait_for_timeout(500)
+        self.assertEqual(self.errors, [])
+
     def test_the_theme_really_changes_the_colours_both_ways(self):
         page = self.open(self.full)
         page.wait_for_selector('#sesslen')
