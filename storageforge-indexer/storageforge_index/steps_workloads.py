@@ -132,6 +132,7 @@ t_stack() { local runtime=$1 name=$2 compose=$3 dir=${4:-@STACKS@/$2} labels=$5 
 
 t_managed_workload_remove() { local runtime=$1 name=$2 ids id labels expected path
   if [[ $runtime == lxc ]]; then
+    not_on_pve || return 0
     path=$(lxc-config lxc.lxcpath) && [[ $path == /* && -d $path && -x $path ]] || { conflict "cannot read the LXC container folder"; return 0; }
     if [[ ! -e $path/$name && ! -L $path/$name ]]; then ok "no LXC container named $name"; return 0; fi
     if [[ -L $path/$name || ! -f $path/$name/storageforge.made || -L $path/$name/storageforge.made ]]; then
@@ -169,6 +170,7 @@ wl_lxc_rest() { # name dir labels network bridge ports allow: the labels file, a
   return 0
 }
 t_lxc() { local name=$1 distro=$2 release=$3 arch=${4:-amd64} network=$5 bridge=$6 autostart=$7 labels=$8 ports=$9 allow=${10}
+  not_on_pve || return 0
   local root=${WL_ROOT:-} path dir state sub= gsub= conf b c how
   command -v lxc-create >/dev/null || { later "LXC is not installed: add a runtime-install step (lxc) before this one"; return 0; }
   path=$(lxc-config lxc.lxcpath 2>/dev/null || true); dir=${path:-/var/lib/lxc}/$name
@@ -228,6 +230,7 @@ wl_incus_rest() { # name publish labels: proxy devices and user keys, made to ma
   return 0
 }
 t_incus() { local name=$1 image=${2:-images:debian/13} type=${3:-container} profiles=${4:-default} cpus=$5 mem=$6 pool=$7 network=$8 publish=$9 nesting=${10} autostart=${11} labels=${12} allow=${13} ports=${14}
+  not_on_pve || return 0
   local args=() p l fp state
   command -v incus >/dev/null || { later "Incus is not installed: add a runtime-install step (incus) before this one"; return 0; }
   if ! incus info >/dev/null 2>&1; then
@@ -652,7 +655,9 @@ def _mac_check(conn, h, m, relabel, say):
 
 
 def check_lxc(conn, c, h, p, say):
-    from . import inframeasure
+    from . import inframeasure, pvenode
+    if pvenode.refuse_on_node(conn, h, say):
+        return
     r = inframeasure.reading(conn, h['name']) or {}
     if r and 'lxc-ls' not in (r.get('tools') or []):
         say('note', f'the last reading of {h["name"]} saw no LXC: a runtime-install step (lxc) before this one installs it')
@@ -678,7 +683,9 @@ def check_lxc(conn, c, h, p, say):
 
 
 def check_incus(conn, c, h, p, say):
-    from . import inframeasure
+    from . import inframeasure, pvenode
+    if pvenode.refuse_on_node(conn, h, say):
+        return
     r = inframeasure.reading(conn, h['name']) or {}
     if r and 'incus' not in (r.get('tools') or []):
         say('note', f'the last reading of {h["name"]} saw no Incus: a runtime-install step (incus) before this one installs it')
@@ -761,6 +768,9 @@ REMOVE_ARGS = ('runtime', 'name')
 
 
 def check_managed_remove(conn, c, h, p, say):
+    from . import pvenode
+    if p['runtime'] == 'lxc' and pvenode.refuse_on_node(conn, h, say):
+        return
     if p['runtime'] == 'lxc':
         say('warn', 'destroying an LXC container deletes its root filesystem')
     else:

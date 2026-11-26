@@ -24,6 +24,7 @@ ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "c
 info() { echo "info: $*"; }; doing() { echo "doing: $*"; }; PROBLEMS=0; STAMP=20261107-120000
 act() { if ((!APPLY)); then missing "would: $*"; return 1; fi; doing "$*"; }
 try() { "$@" || { conflict "failed: $*"; return 1; }; }
+not_on_pve() { return 0; }
 later() { if ((APPLY)); then conflict "$*"; else missing "after the tasks before it: $*"; fi; }
 '''
 

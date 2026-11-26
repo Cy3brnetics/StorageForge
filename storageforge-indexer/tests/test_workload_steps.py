@@ -23,6 +23,7 @@ info() { echo "info: $*"; }; doing() { echo "doing: $*"; }; PROBLEMS=0; STAMP=20
 act() { if ((!APPLY)); then echo "would: $*"; return 1; fi; doing "$*"; }
 try() { "$@" || { conflict "failed: $*"; return 1; }; }
 later() { if ((APPLY)); then conflict "$*"; else missing "after the tasks before it: $*"; fi; }
+not_on_pve() { return 0; }
 fw_tool() { FW=$FAKE/fw; }; fw_need_nft() { :; }
 fw_id() { printf '%s' "$*" | sha256sum | cut -c1-12; }
 '''

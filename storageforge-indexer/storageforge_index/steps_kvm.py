@@ -402,6 +402,7 @@ t_vm_send() { local name=$1 dir=$3 live=$4 q=${5:-auto} as=${6:-$1} st= t= f= fm
 
 # ── the target side: define the copy from what the plan says ──
 t_vm_define() { local name=$1 dir=$2 disks=$3 vcpus=${4:-1} mem=${5:-1024} fw=$6 cpu=${7:-host-model} nics=$8 os=$9 machine=${10} gfx=${11:-none} tpm=${12} serial=${13} auto=${14} start=${15}
+  not_on_pve || return 0
   local args=() d= t= bus= fmt= n= f= x= kind= src= model= mac= tmp=
   need virsh libvirt-clients || return 0
   vm_reach || return 0
@@ -663,6 +664,9 @@ def _check_send(conn, c, h, p, say):
 
 
 def _check_define(conn, c, h, p, say):
+    from . import pvenode
+    if pvenode.refuse_on_node(conn, h, say):
+        return
     _check_name(p, say, 'name')
     r = _libvirt_ready(conn, h, say)
     if r and _vm(r, p['name']):

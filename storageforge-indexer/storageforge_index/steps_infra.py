@@ -22,7 +22,8 @@ SMB, NFS, ISCSI = '445,139', '2049,111,20048', '3260'
 SERVICE_PORTS = {'smb': SMB, 'nfs': NFS, 'iscsi': ISCSI}
 SSHD_KEYS = ['PermitRootLogin', 'PasswordAuthentication', 'PermitEmptyPasswords', 'X11Forwarding', 'AllowTcpForwarding', 'AllowAgentForwarding', 'MaxAuthTries', 'MaxSessions',
              'LoginGraceTime', 'ClientAliveInterval', 'ClientAliveCountMax', 'LogLevel', 'TCPKeepAlive', 'Compression', 'UseDNS']
-RUNTIMES = ['docker', 'podman', 'libvirt', 'incus']
+ACTION_RUNTIMES = ['docker', 'podman', 'libvirt', 'incus', 'lxc']
+REMOVE_RUNTIMES = ['docker', 'podman', 'libvirt', 'incus']
 
 changes.CHECKS.update({
     'port': re.compile(r'\d{1,5}([:-]\d{1,5})?'),
@@ -748,8 +749,11 @@ t_wg_forward() { local iface=$1 cidr=$2 state=${3:-present}
   ok "hub forwarding enabled on $iface ($key=1)"
 }
 
+not_on_pve() { [[ -e ${SF_PVE_DIR:-/etc/pve} ]] && { conflict "this is a Proxmox VE node: use the Proxmox VE steps, so Proxmox knows about it"; return 1; }; return 0; }
+
 t_workload_action() { local runtime=$1 name=$2 action=$3 state
-  command -v "${runtime/libvirt/virsh}" >/dev/null || { conflict "$runtime is not on this host"; return 0; }
+  [[ $runtime == lxc ]] && { not_on_pve || return 0; }
+  command -v "${runtime/libvirt/virsh}" >/dev/null || [[ $runtime == lxc ]] || { conflict "$runtime is not on this host"; return 0; }
   case $runtime in
     docker|podman)
       state=$("$runtime" inspect -f '{{.State.Status}}' "$name" 2>/dev/null) || { conflict "no container named $name"; return 0; }
@@ -777,6 +781,23 @@ t_workload_action() { local runtime=$1 name=$2 action=$3 state
           local q=; [[ $state == running ]] && virsh -c qemu:///system qemu-agent-command "$name" "{\"execute\":\"guest-ping\"}" --timeout 5 >/dev/null 2>&1 && q=--quiesce
           act "snapshot $name, disk-only${q:+, its filesystems frozen by the guest agent}" || return 0
           try virsh -c qemu:///system snapshot-create-as "$name" "sf-$STAMP" --disk-only --atomic $q >/dev/null ;;
+      esac && ok "$action: $name" ;;
+    lxc)
+      command -v lxc-info >/dev/null || { conflict "LXC is not on this host"; return 0; }
+      state=$(lxc-info -n "$name" -s 2>/dev/null) || { conflict "no LXC container named $name"; return 0; }
+      state=${state##*:}; state=${state//[[:space:]]/}
+      [[ -n $state ]] || { conflict "no LXC container named $name"; return 0; }
+      case $action in
+        start) [[ $state == RUNNING ]] && { ok "$name is running"; return 0; } ;;
+        stop|force-off) [[ $state != RUNNING ]] && { ok "$name is stopped"; return 0; } ;;
+      esac
+      act "$action $name${action/#force-off/ (killed, with no time to stop cleanly)}" || return 0
+      case $action in
+        start) try lxc-start -n "$name" ;;
+        stop) try lxc-stop -n "$name" ;;
+        restart) try lxc-stop -r -n "$name" ;;
+        force-off) try lxc-stop -k -n "$name" ;;
+        snapshot) try lxc-snapshot -n "$name" ;;
       esac && ok "$action: $name" ;;
     incus)
       state=$(incus list -f csv -c s "$name" 2>/dev/null) || { conflict "no instance named $name"; return 0; }
@@ -834,6 +855,7 @@ t_container() { local runtime=$1 name=$2 image=$3 publish=$4 binds=$5 restart=${
 }
 
 t_vm() { local name=$1 disk=$2 vcpus=${3:-2} ram=${4:-2048} network=${5:-default} variant=${6:-generic} bridge=$7
+  not_on_pve || return 0
   command -v virt-install >/dev/null || { later "virt-install is not installed"; return 0; }
   if virsh -c qemu:///system dominfo "$name" >/dev/null 2>&1; then ok "$name is defined"; return 0; fi
   [[ -r $disk ]] || { later "$disk is not there"; return 0; }
@@ -1162,6 +1184,9 @@ def _workload(conn, h, runtime, name):
 
 
 def _check_workload_action(conn, c, h, p, say):
+    from . import pvenode
+    if p['runtime'] == 'lxc' and pvenode.refuse_on_node(conn, h, say):
+        return
     w = _workload(conn, h, p['runtime'], p['name'])
     if not w:
         say('note', f'{p["name"]} was not in the last reading: the script looks when it runs')
@@ -1212,6 +1237,9 @@ def _check_container(conn, c, h, p, say):
 
 
 def _check_vm(conn, c, h, p, say):
+    from . import pvenode
+    if pvenode.refuse_on_node(conn, h, say):
+        return
     where, _ = c.mount_at(p['disk'])
     if where:
         say('ok', f'its disk sits on {where}')
@@ -1417,11 +1445,11 @@ changes.register('wg-forward', {'group': 'Network', 'label': 'WireGuard hub forw
     _check_wg_forward, _ansible_bash('t_wg_forward', ('iface', 'range', 'state')))
 
 changes.register('workload-action', {'group': 'Workloads', 'label': 'Start, stop or snapshot', 'fields': [
-    F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},
+    F('runtime', 'choice', 'Runtime', options=ACTION_RUNTIMES, required=True), F('name', 'name', 'Name', required=True), F('action', 'choice', 'Action', options=['start', 'stop', 'restart', 'force-off', 'snapshot'], required=True)]},
     ('runtime', 'name', 'action'), lambda p: f'{p["action"].capitalize()} {p["runtime"]} {p["name"]}', _check_workload_action, _ansible_bash('t_workload_action', ('runtime', 'name', 'action')))
 
 changes.register('workload-remove', {'group': 'Workloads', 'label': 'Remove a workload', 'destructive': True, 'fields': [
-    F('runtime', 'choice', 'Runtime', options=RUNTIMES, required=True), F('name', 'name', 'Name', required=True)],
+    F('runtime', 'choice', 'Runtime', options=REMOVE_RUNTIMES, required=True), F('name', 'name', 'Name', required=True)],
     'help': 'Takes away the container or VM definition. Volumes and disks stay.'},
     ('runtime', 'name'), lambda p: f'Remove {p["runtime"]} {p["name"]}', _check_workload_remove, _ansible_bash('t_workload_remove', ('runtime', 'name')))
 

@@ -121,6 +121,7 @@ vm_undo() { # the disks a failed t_vm_create made in this run (its made array), 
   info "removed what this run had made: ${made[*]##*/}"
 }
 t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:-2048} disk=${8:-20} data=$9 pool=${10:-default} network=${11:-default} bridge=${12} firmware=${13:-bios} cpu=${14:-host-model} console=${15:-serial} user=${16:-admin} key=${17} sudo=${18:-nopasswd} autostart=${19} agent=${20}
+  not_on_pve || return 0
   local V="virsh -c qemu:///system" c sums='' dir net root f i=0 d files=() need base want have fmt seed tool
   for c in virsh virt-install qemu-img curl sha256sum sha512sum; do
     command -v "$c" >/dev/null || { later "$c is not installed: the VM needs the libvirt client tools (virt-install, qemu-img) and curl"; return 0; }
@@ -360,7 +361,9 @@ def image_for(distro: str | None, version: str | None) -> str | None:
 
 # ── the check against the index ─────────────────────────────────────
 def _check(conn, c, h, p, say):
-    from . import inframeasure
+    from . import inframeasure, pvenode
+    if pvenode.refuse_on_node(conn, h, say):
+        return
     r = inframeasure.reading(conn, h['name'])
     if not r:
         say('crit', f'{h["name"]} has no infrastructure reading yet, so nothing is known of its libvirt: measure it first')

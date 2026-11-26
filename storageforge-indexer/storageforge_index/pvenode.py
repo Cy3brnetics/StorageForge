@@ -18,6 +18,15 @@ def is_proxmox_host(conn, host: str, reading: dict | None = None) -> bool:
     return is_proxmox(reading if reading is not None else inframeasure.reading(conn, host))
 
 
+def refuse_on_node(conn, h: dict, say) -> bool:
+    """The generic VM and LXC steps would make things Proxmox VE does not know of: on a node they say so and the check stops."""
+    if not is_proxmox_host(conn, h['name']):
+        return False
+    say('crit', 'this is a Proxmox VE node: use Create a Proxmox VM or Create a Proxmox container (or the Proxmox action and remove steps), '
+                'so Proxmox knows about it')
+    return True
+
+
 def _int(v: str) -> int | None:
     return int(v) if v.strip().isdigit() else None
 

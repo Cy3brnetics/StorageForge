@@ -70,6 +70,7 @@ viso_firmware_ok() { # is there UEFI firmware for QEMU here
     || compgen -G "$root/usr/share/edk2/*/OVMF_CODE*" >/dev/null || compgen -G "$root/usr/share/edk2-ovmf/*/OVMF_CODE*" >/dev/null
 }
 t_vm_iso() { local name=$1 iso=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:-4096} disk=${8:-32} pool=${9:-default} network=${10:-default} bridge=${11} firmware=${12} tpm=${13} console=${14:-spice} autostart=${15}
+  not_on_pve || return 0
   local V="virsh -c qemu:///system" c dir net sums pattern cos list file got base root have tool extra=() made=()
   for c in virsh virt-install qemu-img curl sha256sum sha512sum; do
     command -v "$c" >/dev/null || { later "$c is not installed: the VM needs the libvirt client tools (virt-install, qemu-img) and curl"; return 0; }
@@ -156,7 +157,9 @@ def bash() -> str:
 
 
 def _check(conn, c, h, p, say):
-    from . import inframeasure
+    from . import inframeasure, pvenode
+    if pvenode.refuse_on_node(conn, h, say):
+        return
     r = inframeasure.reading(conn, h['name'])
     if not r:
         say('crit', f'{h["name"]} has no infrastructure reading yet, so nothing is known of its libvirt: measure it first')
