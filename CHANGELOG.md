@@ -34,6 +34,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - A host's JSON-lines run log is read by one function, `confirm.jsonl_dicts`, for deploy confirmations, task runs, sync job runs and schedule runs, in place of four loops. Each caller keeps its own field checks (BE-25).
 - The protocol constants written once in the controller's Python and once in the agent, wire and enclave Rust (frame size, Noise names and prologues, batch limits, signature namespaces, the agentctl operations, magic line and exit code, the agent's user and root groups, the enclave's vsock port) are compared by one test, `tests/test_wire_constants.py`, which reads the Rust sources without cargo. It also checks that the agent's inventory scan writes only sections the SSH scan's parser knows (BE-26).
 - A kernel line from netconsole or pstore is built by one function, `hostlogs.kernel_line`, with its message cleaned by `hostlogs.kernel_message`, and the `side` status row they both need is written by one, `hostlogs.ensure_side_status`. Each keeps its own priority prefix and line key (BE-27).
+- The agent's record queue is cleared by one function, `agentplugins.forget`, with one batch size, `agentplugins.RECORDS_PER_TICK`, for the pushed log lines and the plugin readings. The wipe reports keep their own drain and limit (BE-28).
 
 ## 0.6.2 — 2026-11-26
 

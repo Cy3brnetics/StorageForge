@@ -25,7 +25,7 @@ from . import agentguard, agentplugins, agentwatch, errlog, hostlogs
 from .db import Database
 
 TICK_SECS = 5
-RECORDS_PER_TICK = 500          # pushed readings taken per tick, oldest first; more wait for the next
+RECORDS_PER_TICK = agentplugins.RECORDS_PER_TICK
 
 
 def _lines_of(body: dict) -> list:
@@ -40,7 +40,7 @@ def take_lines(db: Database, now: float | None = None, counts: dict | None = Non
     counts = {} if counts is None else counts
     try:
         rows = conn.all("""SELECT record_id, host, received_at, body_json FROM agent_records WHERE plugin = 'logs' AND kind = 'lines'
-                           ORDER BY record_id LIMIT :n""", {'n': RECORDS_PER_TICK})
+                           ORDER BY record_id LIMIT :n""", {'n': agentplugins.RECORDS_PER_TICK})
         by_host: dict[str, list] = {}
         for record_id, host, received_at, body_json in rows:
             try:
@@ -54,10 +54,7 @@ def take_lines(db: Database, now: float | None = None, counts: dict | None = Non
             except Exception:       # one host's odd reading (a number past what the database holds) is dropped, never retried forever
                 errlog.trace()
                 stored[host] = 0
-            ids = [r[0] for r in records]
-            for i in range(0, len(ids), 200):
-                part = ids[i:i + 200]
-                conn.execute(f"DELETE FROM agent_records WHERE record_id IN ({', '.join(f':r{j}' for j in range(len(part)))})", {f'r{j}': r for j, r in enumerate(part)})
+            agentplugins.forget(conn, [r[0] for r in records])
     finally:
         conn.close()
     return stored

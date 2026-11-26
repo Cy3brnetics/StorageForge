@@ -3,6 +3,7 @@
 the key that signed the batch, never one a reading names), then deleted: what was made of it is kept in that module's tables.
 
     take(db, now)        the readings waiting, oldest first, at most RECORDS_PER_TICK: {plugin: readings taken}
+    forget(conn, ids)    deletes the agent_records rows taken, for take here and agentingest.take_lines
     problems(conn, now)  every plugin module's notifications, for agentwatch.problems
 """
 from __future__ import annotations
@@ -54,7 +55,16 @@ def take_toolbox_status(conn, host: str, body: dict, at: int) -> int:
 
 from .db import Database
 
-RECORDS_PER_TICK = 500
+RECORDS_PER_TICK = 500          # pushed readings taken per tick by each drain, oldest first; more wait for the next
+FORGET_CHUNK = 200              # record ids per DELETE
+
+
+def forget(conn, record_ids) -> None:
+    """Deletes the agent_records rows a drain has taken, FORGET_CHUNK ids per statement."""
+    ids = list(record_ids)
+    for i in range(0, len(ids), FORGET_CHUNK):
+        part = ids[i:i + FORGET_CHUNK]
+        conn.execute(f"DELETE FROM agent_records WHERE record_id IN ({', '.join(f':r{j}' for j in range(len(part)))})", {f'r{j}': r for j, r in enumerate(part)})
 
 
 def _takers() -> dict:
@@ -89,9 +99,7 @@ def take(db: Database, now: float | None = None) -> dict:
                 out[plugin] = out.get(plugin, 0) + 1
             except Exception:     # any reading that cannot be taken (2**70 fits no INTEGER, on either database) is dropped, never retried
                 errlog.trace()        # a reading of a form nothing here reads: dropped, the rest go on
-        for i in range(0, len(done), 200):
-            part = done[i:i + 200]
-            conn.execute(f"DELETE FROM agent_records WHERE record_id IN ({', '.join(f':r{j}' for j in range(len(part)))})", {f'r{j}': r for j, r in enumerate(part)})
+        forget(conn, done)
     finally:
         conn.close()
     return out
