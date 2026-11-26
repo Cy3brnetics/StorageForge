@@ -84,7 +84,7 @@ READS = {
     'payloads.parse_zpool_status': payloads.parse_zpool_status, 'payloads.parse_nfs_exports': payloads.parse_nfs_exports, 'payloads.parse_smb_conf': payloads.parse_smb_conf,
     'remote.parse_findmnt': remote.parse_findmnt, 'remote.parse_mountinfo': remote.parse_mountinfo, 'security.parse_event_line': security.parse_event_line,
     'security.parse_entropy': security.parse_entropy, 'authkeys.parse': authkeys.parse, 'clamav.parse_report': clamav.parse_report,
-    'hostconfig.parse_configs': hostconfig.parse_configs, 'hostconfig.parse_accounts': hostconfig.parse_accounts, 'hostconfig.parse_fstab_lines': hostconfig.parse_fstab_lines,
+    'hostconfig.parse_configs': hostconfig.parse_configs, 'hostconfig.parse_accounts': hostconfig.parse_accounts, 'hostconfig.parse_fstab_lines': hostconfig.parse_fstab_lines, 'hostconfig.parse_fstab_verify': hostconfig.parse_fstab_verify,
     'gitrepos.parse_survey': gitrepos.parse_survey, 'preflight.parse_probe': preflight.parse_probe, 'pkglist.parse': pkglist.parse,
     'openwrt.parse_uci': openwrt.parse_uci, 'openwrt.parse_leases': openwrt.parse_leases, 'openwrt.parse_arp': openwrt.parse_arp, 'openwrt.parse_netstat': openwrt.parse_netstat,
     'pfsense.parse_netstat': pfsense.parse_netstat, 'pfsense.parse_arp': pfsense.parse_arp, 'pfsense.parse_sockstat': pfsense.parse_sockstat,
