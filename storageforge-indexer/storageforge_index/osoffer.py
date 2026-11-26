@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from . import changes, desktop, steps_desktop, steps_osinstall
 from .db import Conn, epoch, loads
+from .payloads import VIRTUAL_BLOCK
 
 GIB = 1024 ** 3
 MIN_FREE = 3 * GIB                      # what os-install refuses below
@@ -48,7 +49,7 @@ def disks(inv: dict) -> list[dict]:
     """The disks of a host as the last scan's lsblk had them, each with whether os-install could use it and why not."""
     out = []
     for d in ((inv or {}).get('lsblk') or {}).get('blockdevices') or []:
-        if d.get('type') != 'disk' or not (d.get('path') or d.get('name')):
+        if d.get('type') != 'disk' or not (d.get('path') or d.get('name')) or str(d.get('name') or '').startswith(VIRTUAL_BLOCK):
             continue
         kids = d.get('children') or []
         below = list(_walk(kids))

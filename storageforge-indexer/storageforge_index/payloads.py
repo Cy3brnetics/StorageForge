@@ -332,7 +332,9 @@ def _i(v):
         return None
 
 
-VIRTUAL_BLOCK = ('zram', 'loop', 'ram', 'fd', 'sr', 'nbd', 'dm-')
+# Block devices lsblk calls disks that are not disks of this host: memory, loops, optical drives, network block devices, device-mapper
+# targets, ZFS volumes (zd*, a Proxmox VE node's VM disks, already inside their pool) and Ceph RBD images (rbd*, in the cluster)
+VIRTUAL_BLOCK = ('zram', 'loop', 'ram', 'fd', 'sr', 'nbd', 'dm-', 'zd', 'rbd')
 BUS = {'nvme': 'NVMe', 'sata': 'SATA', 'sas': 'SAS', 'iscsi': 'iSCSI LUN', 'usb': 'USB', 'ata': 'PATA', 'fc': 'Fibre Channel'}
 
 
