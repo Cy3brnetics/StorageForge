@@ -1,6 +1,7 @@
 """One read of a platform connection: the token released, the read-back of what it can do, then what the platform's reader takes (apipve,
 apipbs, apipdm), stored as platform_objects in place of the last read. A failure of any kind is recorded on the connection, cleaned of the
-token, and the objects of the last good read stay until the next good one.
+token, and the objects of the last good read stay until the next good one. A certificate that changes in the middle of a read fails the whole read,
+whichever call met it and whatever the reader did with the error.
 
 tick() reads each connection whose certificate a person accepted, once every INTERVAL, from the server's background thread."""
 from __future__ import annotations
@@ -62,9 +63,13 @@ def read(db, conn: Conn, row: dict) -> dict:
     try:
         with apiconn.open_client(db, conn, row) as client:
             rb = apireadback.readback(client, row)
+            if client.fatal:             # a read-back forgives some errors, and a reader writes one down as a skipped line: not this one
+                raise client.fatal
             apireadback.store(conn, row, rb)
             mod = reader(row['kind'])
             got, skipped = (mod.read(client, row, rb) if mod else ([], ['no reader for this platform yet']))
+            if client.fatal:
+                raise client.fatal
     except Exception as exc:
         if not isinstance(exc, apiconn.ApiError):
             exc = apiconn.ApiError(apiconn._clean(f'{type(exc).__name__}: {exc}'))

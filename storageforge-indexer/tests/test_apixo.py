@@ -105,6 +105,35 @@ class Read(Base):
         self.assertEqual(apiread.read(self.db, self.conn, apiconn.get(self.conn, self.row['conn_id']))['readback']['verdict'], 'exact')
         self.no_token_anywhere_xo()
 
+    def changed_certificate_in_the_middle(self, path):
+        """A good read, then one in which the certificate changes while `path` is answered: every request after it meets the new one."""
+        apiread.read(self.db, self.conn, self.row)
+        before = apiread.objects(self.conn, self.row['conn_id'])
+        self.assertTrue(before)
+        answer, new = self.fake.routes[path], []
+
+        def swap(req):
+            new.append(self.fake.new_certificate())
+            return answer
+        self.fake.routes[path] = swap
+        sent = len(self.fake.requests)
+        with self.assertRaises(apiconn.CertificateChanged):
+            apiread.read(self.db, self.conn, self.row)
+        self.assertEqual(len(new), 1)
+        self.assertEqual(self.fake.requests[-1]['path'].split('?')[0], '/rest/v0' + path, 'nothing reached the server after its certificate changed')
+        self.assertGreater(len(self.fake.requests), sent)
+        row = apiconn.get(self.conn, self.row['conn_id'])
+        self.assertEqual((row['state'], row['cert_offered'], row['read_ok']), ('certificate-changed', new[0], False))
+        self.assertEqual(apiread.objects(self.conn, self.row['conn_id']), before, 'the objects of the last good read stay')
+        self.assertIn('security-api-cert:xo', apiconn.problems(self.conn))
+        self.no_token_anywhere_xo()
+
+    def test_a_certificate_that_changes_during_the_read_fails_the_read_and_keeps_the_last_good_one(self):
+        self.changed_certificate_in_the_middle('/pools')
+
+    def test_a_certificate_that_changes_during_the_read_back_fails_the_read(self):
+        self.changed_certificate_in_the_middle('/users/me/acl-privileges')        # the next call, for the token's expiry, forgives an error
+
     def test_a_role_without_backup_logs_skips_them_and_says_what_to_add(self):
         self.fake.routes.update(routes([p for p in READS if p['resource'] != 'backup-log']))
         got = apiread.read(self.db, self.conn, self.row)

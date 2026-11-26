@@ -522,6 +522,7 @@ class Client:
         self._auth = auth_headers(self.spec, row['token_id'], secret)
         self.host, self.port = _split(row['base_url'])
         self.sent = 0
+        self.fatal: ApiError | None = None       # a changed certificate or a lost pin: nothing more is sent, whatever the caller does with the error
 
     def close(self):
         self._secret = self._auth = None
@@ -536,6 +537,13 @@ class Client:
         return _clean(text, self._secret or '', *(self._auth or {}).values())
 
     def _connect(self) -> http.client.HTTPSConnection:
+        try:
+            return self._pinned()
+        except (CertificateChanged, NotPinned) as exc:
+            self.fatal = exc
+            raise
+
+    def _pinned(self) -> http.client.HTTPSConnection:
         pinned = self.row.get('cert_sha256')
         if not pinned:
             raise NotPinned(f'the certificate of {self.row["base_url"]} has not been accepted yet: nothing was sent')
@@ -567,6 +575,8 @@ class Client:
         """The body of the answer, as text. Anything that changes something: refused unless the person turned on the action it is for."""
         if self._auth is None:
             raise ApiError('this client was closed')
+        if self.fatal:
+            raise self.fatal
         reading = self.reads_only(method, path)
         if not reading and (not action or action not in (self.row.get('actions') or [])):
             raise ReadOnly(f'{self.row["name"]} is read-only: {method} {path} needs an action turned on for it' + (f' ({action})' if action else ''))
@@ -791,6 +801,8 @@ class WsClient(Client):
         """The result of one call. Raises RpcError for an error the platform answered, Refused for one that says the session may not."""
         if self._auth is None:
             raise ApiError('this client was closed')
+        if self.fatal:
+            raise self.fatal
         if not self.READ_METHODS.fullmatch(method) and (not action or action not in (self.row.get('actions') or [])):
             raise ReadOnly(f'{self.row["name"]} is read-only: {method} needs an action turned on for it' + (f' ({action})' if action else ''))
         if self.sent >= self.budget:

@@ -2,6 +2,11 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Security
+- **A platform certificate that changes in the middle of a read fails the whole read.** Each request already refused the new certificate and sent nothing, but the read-backs and the readers of Xen Orchestra, Pangolin, Portainer, Komodo, Dockhand and parts of the Proxmox ones wrote that refusal down as one more thing they could not read. The read then counted as good: the connection did not say *certificate changed*, no finding was raised, and what the calls before the change had returned (with Xen Orchestra, Pangolin or Portainer possibly nothing) replaced the last good reading. Now the read fails, the connection says *certificate changed* with the fingerprint that was offered, the critical finding is raised, the last good reading stays, and no further request is made on that read.
+
 ## 0.6.1 — 2026-11-26
 
 ### Security
