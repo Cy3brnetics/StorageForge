@@ -11,7 +11,8 @@ client (a report by default, --apply to make it so), the deploy, drift records a
     normalize_mount(s)    the same for one mount's settings
     check(conn, hs, srv, e, say)   what the share check says about this share (say(level, text), level ok|note|warn|crit)
     check_mount(conn, srv, e, mt, ch, say)   what it says about one client mount, after the checks every mount gets
-    server_params(e, srv) / client_params(e, mt, srv)   plain key=value strings the script reads (never a secret)
+    server_params(e, srv, hs) / client_params(e, mt, srv, hs)   plain key=value strings the script reads (never a secret);
+                          hs is the fleet (shares.hosts), for a driver that needs another host's address
     client_source(e, address)   what a client mounts, for the report and the mount's record ('sftp://nas/srv/x')
     server_secrets(e) / client_secrets(e, mt)   vault secret names that side needs: they come on the runner's stdin in an apply
     peer_hosts(e)         other servers the share needs (GlusterFS bricks): each runs peer_<k> I (I indexes E_*) before the server
@@ -85,10 +86,10 @@ class Driver:
     def check_mount(self, conn, srv, e, mt, ch, say) -> None:
         return None
 
-    def server_params(self, e: dict, srv: dict) -> dict:
+    def server_params(self, e: dict, srv: dict, hs: list) -> dict:
         return {}
 
-    def client_params(self, e: dict, mt: dict, srv: dict) -> dict:
+    def client_params(self, e: dict, mt: dict, srv: dict, hs: list) -> dict:
         return {}
 
     def client_source(self, e: dict, address: str) -> str:

@@ -64,6 +64,14 @@ class IscsiShare(Fleet):
         self.assertIn('addrs=10.0.0.9', text)
         self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).returncode, 0)
 
+    def test_the_client_address_comes_from_the_fleet_even_without_a_check(self):
+        shares.save_export(self.db, self.conn, 'nas', SHARE, None, 'test')
+        self.conn.execute("UPDATE hosts SET ssh_host = '10.0.0.77' WHERE hostname = 'pc'")
+        drv = netshares.DRIVERS['ISCSI']
+        e = shares.design_exports(self.conn, 'nas')[0]
+        srv = shares.find_host(shares.hosts(self.conn), 'nas')
+        self.assertEqual(drv.server_params(e, srv, shares.hosts(self.conn))['addrs'], '10.0.0.77')
+
     def test_an_apply_brings_both_sides_the_chap_secret_and_nothing_else(self):
         shares.save_export(self.db, self.conn, 'nas', SHARE, None, 'test')
         self.assertEqual(shares.share_secrets(self.conn, shares.check(self.conn, 'nas')),

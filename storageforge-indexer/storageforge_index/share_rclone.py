@@ -256,13 +256,13 @@ class RcloneServe(Driver):
         if s['serve_as'] == 'http':
             say('note', f'{ch["name"]}:{mt["path"]} is read only')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         s = self.st(e)
         return {'backend': s['backend'], 'remote_path': s['remote_path'], 'options': s['options'], 'secret': s['secret'], 'crypt': s['crypt'],
                 'crypt_secret': s['crypt_secret'], 'serve_as': s['serve_as'], 'port': s['port'], 'access_secret': s['access_secret'],
                 'readonly': s['readonly'], 'cache': s['cache']}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         s = self.st(e)
         return {'serve_as': s['serve_as'], 'port': s['port'], 'secret': (mt.get('settings') or {}).get('secret') or '',
                 'cache': (mt.get('settings') or {}).get('cache') or 'writes'}

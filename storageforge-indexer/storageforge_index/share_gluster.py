@@ -186,8 +186,6 @@ cleanup_gluster() { return 0; }    # its client units go with driver_units_clean
 
 
 class Gluster(Driver):
-    _addr: dict = {}        # peer name (lower case) -> its address, from the last check(): server_params gets no host list
-
     def normalize(self, s: dict) -> dict:
         s = dict(s or {})
         if s.get('replica') not in (None, ''):
@@ -227,7 +225,6 @@ class Gluster(Driver):
                 continue
             seen.add(ph['name'].lower())
             found.append(ph)
-            self._addr[p.lower()] = ph['ssh_host']
             if not ADDRESS.fullmatch(str(ph['ssh_host'] or '')):
                 say('crit', f'{ph["name"]} is reached at {ph["ssh_host"]!r}: GlusterFS here needs an IPv4 address or host name for a peer')
             say(*package_check(conn, ph, 'GlusterFS server'))
@@ -254,13 +251,13 @@ class Gluster(Driver):
         say('note', f'each brick is the folder brick inside {e["path"]} on its host. All peers run part of the deploy first (glusterd, the brick folder, '
                     f'the ports); then {srv["name"]} probes them and creates the volume. A volume that exists with other bricks is never changed or deleted')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
-        addrs = [self._addr.get(p.lower(), p) for p in self.peers(e)]
+        addrs = [(ph['ssh_host'] if ph else p) for ph, p in ((find_host(hs, p), p) for p in self.peers(e))]
         return {'replica': st.get('replica') or 'none', 'peer_addrs': ' '.join(a for a in addrs if ADDRESS.fullmatch(str(a)))}
 
-    def client_params(self, e, mt, srv):
-        return {'peer_addrs': self.server_params(e, srv)['peer_addrs']}
+    def client_params(self, e, mt, srv, hs):
+        return {'peer_addrs': self.server_params(e, srv, hs)['peer_addrs']}
 
     def client_source(self, e, address):
         return f'{address}:/{e["name"]}'

@@ -182,11 +182,11 @@ class Sftp(Driver):
         if not srv.get('host_keys'):
             say('warn', f'StorageForge has no host key pinned for {srv["name"]}: rescan it, or the mount refuses to connect')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
         return {'users': ' '.join(self.users(e)), 'readonly': bool(st.get('readonly')), 'umask': st.get('umask') or ''}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         st = mt.get('settings') or {}
         keys = srv.get('host_keys') or []
         addr, port = srv['ssh_host'], int(srv.get('ssh_port') or 22)

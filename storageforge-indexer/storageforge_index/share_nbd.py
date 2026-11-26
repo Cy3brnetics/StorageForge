@@ -342,12 +342,12 @@ class Nbd(Driver):
         else:
             say('note', f'{where}: formatted {st.get("format") or "ext4"} only when the disk holds nothing at all')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
         return {'size_gb': st.get('size_gb') or '', 'allow': ' '.join(self.allowed(e)),
                 'tls_cert': st.get('tls_cert') or '', 'tls_key': st.get('tls_key') or '', 'tls_ca': st.get('tls_ca') or ''}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         st = mt.get('settings') or {}
         es = e.get('settings') or {}
         shared = bool(es.get('tls_cert'))

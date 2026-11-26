@@ -65,6 +65,14 @@ class GlusterShare(Fleet):
         self.assertIn("P_HOST=(pc)", text)
         self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).returncode, 0)
 
+    def test_a_peer_that_moved_is_reached_at_its_new_address(self):
+        shares.save_export(self.db, self.conn, 'nas', SHARE, None, 'test')
+        self.assertIn('peer_addrs=10.0.0.9', shares.script(self.conn, 'nas'))
+        self.conn.execute("UPDATE hosts SET ssh_host = '10.0.0.77' WHERE hostname = 'pc'")
+        text = shares.script(self.conn, 'nas')
+        self.assertIn('peer_addrs=10.0.0.77', text)
+        self.assertNotIn('10.0.0.9', text)
+
     def test_an_apply_runs_the_peer_first_and_brings_no_secrets(self):
         shares.save_export(self.db, self.conn, 'nas', SHARE, None, 'test')
         self.assertEqual(shares.share_secrets(self.conn, shares.check(self.conn, 'nas')), {})

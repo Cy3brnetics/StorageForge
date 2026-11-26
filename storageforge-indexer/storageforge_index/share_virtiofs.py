@@ -252,10 +252,10 @@ class Virtiofs(Driver):
             say('crit', f'{where}: the mount point is letters, digits, . _ - and / only')
         say('note', f'{where} mounts tag {tag_of(e["name"]) or "sf-<name>"}; its VM sees it after the next full power cycle, not a reboot')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         return {'tag': tag_of(e['name'])}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         st = mt.get('settings') or {}
         return {'domain': st.get('domain') or '', 'tag': tag_of(e['name'])}
 

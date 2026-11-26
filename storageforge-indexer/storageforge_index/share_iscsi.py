@@ -18,17 +18,13 @@ from __future__ import annotations
 import re
 
 from . import netshares
-from .moves import host_slug
+from .moves import find_host, host_slug
 from .netshares import Driver, Field
 
 IQN_BASE = 'iqn.2026-11.org.storageforge'
 NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')       # part of an IQN and of a backstore name, so lower case and no dots
 CHAP_USER = re.compile(r'[A-Za-z0-9][A-Za-z0-9._@-]{0,31}')
 ADDRESS = re.compile(r'[0-9a-fA-F.:]+(/[0-9]+)?')
-
-# The addresses of a share's client hosts, which only check() can look up (it gets the fleet; server_params does not). check() runs
-# before the script is made, so server_params finds what it needs here.
-_ADDRS: dict[tuple[str, str], str] = {}
 
 BASH = r"""
 ISCSI_PREFIX=iqn.2026-11.org.storageforge
@@ -334,7 +330,6 @@ class Iscsi(Driver):
         return f'sf-{Iscsi.server_slug(srv)}-{e["name"]}'
 
     def check(self, conn, hs, srv, e, say):
-        from .moves import find_host
         st = e.get('settings') or {}
         if not NAME.fullmatch(e['name'] or ''):
             say('crit', 'an iSCSI share needs a name of lower-case letters, digits and - (it is part of the target name)')
@@ -355,10 +350,6 @@ class Iscsi(Driver):
                         'Keep one client, or share a filesystem (NFS, SMB) instead')
         elif not mounts:
             say('warn', 'no client mount: the target lets no initiator in until one is added')
-        for mt in mounts:
-            ch = find_host(hs, mt['host'])
-            if ch:
-                _ADDRS[(srv['name'], host_slug(mt['host']))] = ch['ssh_host']
         say('warn', 'the disk is one file on the share\'s filesystem: a snapshot of that filesystem holds it as it was at that instant, '
                     'which the client sees as a crash (crash-consistent only)')
 
@@ -372,15 +363,15 @@ class Iscsi(Driver):
         else:
             say('note', f'{ch["name"]}:{mt["path"]}: a blank disk is formatted as {st["format"]}; a disk with anything on it is never touched')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
         mounts = e.get('mounts') or []
-        addrs = [_ADDRS[k] for k in ((srv['name'], host_slug(m['host'])) for m in mounts) if k in _ADDRS]
+        addrs = [ch['ssh_host'] for ch in (find_host(hs, m['host']) for m in mounts) if ch]
         return {'iqn': self.iqn(srv, e), 'backstore': self.backstore(srv, e), 'size_gb': st.get('size_gb') or 0,
                 'chap_user': st.get('chap_user') or 'storageforge', 'chap_secret': st.get('chap_secret') or '',
                 'initiators': ' '.join(self.initiator(m['host']) for m in mounts), 'addrs': ' '.join(addrs)}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         st, ms = e.get('settings') or {}, mt.get('settings') or {}
         return {'iqn': self.iqn(srv, e), 'initiator': self.initiator(mt['host']), 'chap_user': st.get('chap_user') or 'storageforge',
                 'chap_secret': st.get('chap_secret') or '', 'format': ms.get('format') or 'none', 'port': 3260}

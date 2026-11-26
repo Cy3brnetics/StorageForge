@@ -666,7 +666,7 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
                      ('E_RULES', nfs_rules(e) if e['proto'] == 'NFS' and e['clients'] else ''),
                      ('E_SMB', '\n'.join('   ' + x for x in smb_lines(e)) if e['proto'] == 'SMB' else ''),
                      ('E_TAKE', _take_ref(e.get('takeover'))),
-                     ('E_PARAM', netshares.params_blob(drv.server_params(e, srv)) if drv else '')):
+                     ('E_PARAM', netshares.params_blob(drv.server_params(e, srv, hs)) if drv else '')):
             e_arrays[k].append(v)
         for p in (drv.peer_hosts(e) if drv else []):
             ph = find_host(hs, p)
@@ -685,7 +685,7 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
                          ('C_PROTO', e['proto']), ('C_SOURCE', src), ('C_NAME', e['name'] or 'share'),
                          ('C_FS', drv.key.lower() if drv else 'nfs' if v3 else 'nfs4'), ('C_OPTS', extra), ('C_AUTO', '1' if auto else '0'),
                          ('C_SET', '1' if extra or not auto else '0'),
-                         ('C_PARAM', netshares.params_blob(drv.client_params(e, mt, srv)) if drv else '')):
+                         ('C_PARAM', netshares.params_blob(drv.client_params(e, mt, srv, hs)) if drv else '')):
                 c_arrays[k].append(v)
             lines.append(f'#       mounted on {mt["host"]}:{mt["path"]}')
     problems = [f'#   {x["level"].upper()}: {x["text"]}' for x in c['items'] if x['level'] in ('crit', 'warn')]

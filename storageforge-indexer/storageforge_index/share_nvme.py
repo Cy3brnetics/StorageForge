@@ -354,11 +354,11 @@ class Nvme(Driver):
         else:
             say('note', f'{who}: a {st["format"]} filesystem is made only if the disk shows no signature at all')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
         return {'size_gb': st.get('size_gb') or '', 'device': st.get('device') or '', 'port': st.get('port') or 4420}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         return {'port': (e.get('settings') or {}).get('port') or 4420, 'format': (mt.get('settings') or {}).get('format') or 'none'}
 
     def client_source(self, e, address):

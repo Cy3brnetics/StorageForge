@@ -217,12 +217,12 @@ class WebDav(Driver):
         if st.get('crypt'):
             say('warn', f'{where}: the files are encrypted with the crypt secret: without it nobody can read them again. Keep a copy offline')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
         return {'port': self.port(e), 'readonly': bool(st.get('readonly')), 'users_secret': st.get('users_secret') or '',
                 'tls_cert': st.get('tls_cert') or '', 'tls_key': st.get('tls_key') or ''}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         st = mt.get('settings') or {}
         return {'scheme': 'https' if self.tls(e) else 'http', 'port': self.port(e), 'login_secret': st.get('login_secret') or '',
                 'crypt': bool(st.get('crypt')), 'crypt_secret': st.get('crypt_secret') or ''}

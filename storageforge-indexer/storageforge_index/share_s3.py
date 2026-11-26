@@ -183,12 +183,12 @@ class S3(Driver):
         elif (e.get('settings') or {}).get('tls') is not True:
             say('note', f'{ch["name"]}:{mt["path"]}: no TLS and no encryption: the data is readable on the network')
 
-    def server_params(self, e, srv):
+    def server_params(self, e, srv, hs):
         st = e.get('settings') or {}
         return {'port': self.port(e), 'tls': bool(st.get('tls')), 'cert_file': st.get('cert_file') or '', 'key_file': st.get('key_file') or '',
                 'secret': st.get('secret') or ''}
 
-    def client_params(self, e, mt, srv):
+    def client_params(self, e, mt, srv, hs):
         st, ms = e.get('settings') or {}, mt.get('settings') or {}
         addr = srv['ssh_host']
         host = f'[{addr}]' if ':' in addr else addr
