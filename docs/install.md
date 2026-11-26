@@ -75,6 +75,20 @@ The first start runs the one-shot `init-secrets` service, then exits. It makes t
 
 Nothing is needed on the host for this, so a stack manager such as Portainer or Dockge can deploy the folder as it is.
 
+**From a Git stack in Dockhand or Komodo** (or Portainer), point the stack at the repository and set:
+
+| Field | Value |
+|---|---|
+| Repository | `http://10.42.0.3:3001/Gabe/StorageForge` or `https://github.com/Cy3brnetics/StorageForge` |
+| Branch | `main`, or the branch you want to run |
+| Compose file path | `storageforge-indexer/docker-compose.yml` |
+| Context directory | `./storageforge-indexer/` |
+| Build images on deploy | on (`--build`): the images are built from the repository, not pulled |
+
+- **Settings** go in the stack's environment variables, not a `.env` file: the tool has only the repository. [`.env.example`](../storageforge-indexer/.env.example) lists every one.
+- **Scheduled sync and webhooks** redeploy on each push to the branch, so leave them off on `main` unless you want every commit; a migration runs on each new version.
+- **The `docker compose exec …` commands below** run from the Docker host as `docker exec storageforge-storageforge-1 …` (`-it` where it prompts), or from the tool's terminal for the `storageforge` container. The stack names its project `storageforge`; if the tool names it after the stack instead, use that name.
+
 **It worked if** `docker compose ps` shows `storageforge` and `proxy` running and healthy, and `init-secrets` exited 0. To ask the app itself:
 
 ```bash
