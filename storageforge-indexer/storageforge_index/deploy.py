@@ -286,6 +286,16 @@ def canonical(conn, host: str) -> str:
     return row[0][0] if row else host
 
 
+def known(conn, host) -> str | None:
+    """The scanned host a typed name or address stands for (canonical's order), or None when it names none. An empty
+    name names none. Callers raise their own error: security.known_host, sshcerts._known_host, clamav.deploy_items."""
+    h = str(host or '').strip()
+    if not h:
+        return None
+    name = canonical(conn, h)
+    return name if conn.scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': name}) else None
+
+
 def _machine(conn, name: str) -> str | None:
     """The machine id the host reported in its last scan; deploys are signed for that machine only."""
     return conn.scalar('SELECT machine_id FROM hosts WHERE hostname = :h', {'h': name}) or None

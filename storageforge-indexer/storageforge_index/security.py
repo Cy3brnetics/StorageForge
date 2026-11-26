@@ -99,8 +99,8 @@ def profile_key(host: str) -> str:
 
 def known_host(conn: Conn, host) -> str:
     """Anything that runs on a host names one that has been scanned: nothing here acts on a name it has never seen."""
-    name = deploy.canonical(conn, str(host or '').strip())
-    if not name or not conn.scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': name}):
+    name = deploy.known(conn, host)
+    if not name:
         raise ValueError(f'{str(host or "")[:80]!r} has not been scanned')
     return name
 

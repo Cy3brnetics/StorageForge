@@ -1843,6 +1843,22 @@ class HostIdentityTests(DBCase):
         self.assertEqual(deploy.canonical(self.conn, '10.0.0.5'), 'nas.lan')
         self.assertEqual(deploy.canonical(self.conn, 'NAS.lan'), 'nas.lan')
 
+    def test_known_names_a_scanned_host_and_the_three_checks_keep_their_errors(self):
+        from storageforge_index import clamav, deploy, security, sshcerts
+        self.scan_as('nas.lan', '10.0.0.5', ['SHA256:nas'])
+        self.conn.execute("INSERT INTO hosts (hostname, ip_address, ssh_host, inventory_json) VALUES ('blank', '', 'b.lab', '{}')")
+        self.assertEqual(deploy.known(self.conn, ' NAS.lan '), 'nas.lan')
+        self.assertEqual(deploy.known(self.conn, '10.0.0.5'), 'nas.lan')
+        for nobody in ('', '  ', None, 'ghost'):        # an empty name never matches a host whose address is empty
+            self.assertIsNone(deploy.known(self.conn, nobody))
+        self.assertEqual(deploy.canonical(self.conn, 'ghost'), 'ghost')     # canonical still hands back what it was given
+        with self.assertRaisesRegex(ValueError, "^'ghost' has not been scanned$"):
+            security.known_host(self.conn, 'ghost')
+        with self.assertRaisesRegex(LookupError, "^no host named 'ghost'$"):
+            sshcerts._known_host(self.conn, 'ghost')
+        with self.assertRaisesRegex(ValueError, '^ghost has not been scanned$'):
+            clamav.deploy_items(self.db, self.conn, 'ghost', 'check', 't')
+
     @unittest.skipUnless(shutil.which('ssh-keygen'), 'needs ssh-keygen')
     def test_host_keys_come_from_known_hosts(self):
         from storageforge_index.remote import Transport

@@ -343,8 +343,8 @@ def digest(conn: Conn, host: str) -> str:
 
 def deploy_items(db, conn: Conn, host: str, mode: str, actor: str, run_now: bool = False, remove: bool = False) -> list[dict]:
     from . import deploy
-    name = deploy.canonical(conn, host)
-    if not conn.scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': name}):
+    name = deploy.known(conn, host)
+    if not name:
         raise ValueError(f'{host} has not been scanned')
     config = get_config(conn, name)
     text = install_script(config)

@@ -91,9 +91,9 @@ def principal(user: str, host: str) -> str:
 
 
 def _known_host(conn: Conn, host) -> str:
-    from .deploy import canonical
-    name = canonical(conn, str(host or '').strip())
-    if not conn.scalar('SELECT 1 FROM hosts WHERE hostname = :h', {'h': name}):
+    from .deploy import known
+    name = known(conn, host)
+    if not name:
         raise LookupError(f'no host named {host!r}')
     return name
 
