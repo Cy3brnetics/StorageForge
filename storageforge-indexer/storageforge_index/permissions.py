@@ -117,7 +117,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (('POST',), r'/api/clamav/hosts/[^/]+/config', 'deploy.apply'),
     (('POST',), r'/api/clamav/hosts/[^/]+/collect', 'deploy.report'),
     (('POST',), r'/api/clamav/detections/\d+/(quarantine|restore|ignore)', 'deploy.destructive'),
-    (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check)', 'services.view'),
+    (READ, r'/api/(docker(/.*)?|git|git/ignore|shares/check|shares/protocols)', 'services.view'),
     (READ, r'/api/security/compliance/script', 'plans.scripts'),
     (('POST',), r'/api/security/evidence', 'audit.verify'),                 # unlocks the vault, so not audit.view alone: the view checks that too
     (('POST',), r'/api/security/sentinel', 'security.sentinel'),

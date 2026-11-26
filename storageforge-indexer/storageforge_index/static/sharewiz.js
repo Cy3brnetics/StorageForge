@@ -13,16 +13,21 @@ async function openShareWizard({ host = '', path = '', index = null, share = nul
   let hostsList = [];
   try { hostsList = (await getJSON('/api/hosts')).indexed; } catch (err) { notify(err.message, 'error'); return false; }
   if (host && !hostsList.some((h) => h.hostname === host)) return false;      // a planned host: nothing to browse
+  if (!SW.protocols) {             // the protocols beyond NFS and SMB, each with the fields it asks for (netshares.py)
+    try { SW.protocols = (await getJSON('/api/shares/protocols')).protocols; } catch { SW.protocols = []; }
+  }
   const e = share || {};
   const isSmb = /^(SMB|CIFS)/i.test(e.protocol || e.proto || '');
+  const drv = swDriver(e.protocol || e.proto);
   Object.assign(SW, {
     step: share ? 1 : 0, hosts: hostsList, index: takeover ? null : index, share, takeover: !!(takeover && share), saved: null, check: null, here: null, anyway: false, checking: false, busy: false, touched: false,
-    s: { host: host || (hostsList[0] || {}).hostname || '', path: e.path || path || '', proto: isSmb ? 'SMB' : 'NFS',
+    s: { host: host || (hostsList[0] || {}).hostname || '', path: e.path || path || '', proto: drv ? drv.key : isSmb ? 'SMB' : 'NFS',
+         settings: { ...(e.settings || {}) },
          version: isSmb ? 'SMB3' : (/^NFS/i.test(e.protocol || '') ? e.protocol : 'NFSv4.2'), name: e.name || '',
          rules: (e.rules && e.rules.length ? e.rules : e.clients && !isSmb ? [{ clients: e.clients, options: e.options || NFS_PRESETS['read-write'] }] : [])
            .map((r) => ({ ...r })),
-         users: isSmb ? e.clients || '' : '', readonly: isSmb && /\bro\b/.test(e.options || ''),
-         smb: isSmb ? e.smb : null, mounts: (e.mounts || []).map((m) => ({ ...m })) },
+         users: isSmb || drv ? e.clients || '' : '', readonly: isSmb && /\bro\b/.test(e.options || ''),
+         smb: isSmb ? e.smb : null, mounts: (e.mounts || []).map((m) => ({ ...m, settings: { ...(m.settings || {}) } })) },
   });
   if (SW.dlg) SW.dlg.remove();
   SW.dlg = el('dialog', { class: 'swdlg', 'aria-label': 'Share wizard' });
@@ -48,9 +53,26 @@ function swLeave() {
 }
 function closeShareWizard() { if (SW.dlg) { SW.dlg.close(); SW.dlg.remove(); SW.dlg = null; } if (SM.dlg) smRender(); }
 
+function swDriver(p) { return (SW.protocols || []).find((d) => d.key === String(p || '').toUpperCase()) || null; }
+/* One setting of a driver, drawn from its field description: the wizard knows no protocol beyond NFS and SMB by name. */
+function swField(f, obj, onChange) {
+  const v = obj[f.name] ?? f.default ?? '';
+  const set = (x) => { obj[f.name] = x; onChange(); };
+  let input;
+  if (f.kind === 'bool') return check(f.label, !!v, set);
+  if (f.kind === 'choice') input = choice(f.options, v || f.options[0], set);
+  else input = entry(String(v), (x) => set(f.kind === 'int' ? (x === '' ? '' : Number(x)) : x), { placeholder: f.placeholder || '', class: f.kind === 'text' ? '' : 'mono' });
+  const box = field(f.label + (f.required ? '' : ' (optional)'), input);
+  return f.help ? el('div', { class: 'stack' }, box, text('span', f.help, 'muted small')) : box;
+}
 function swExport() {
   const s = SW.s;
   const name = s.name || (s.path.split('/').pop() || 'share');
+  const drv = swDriver(s.proto);
+  if (drv) {
+    return { protocol: drv.key, name, path: s.path, clients: s.users, settings: s.settings,
+             mounts: s.mounts.filter((m) => m.host).map((m) => ({ host: m.host, path: m.path, ...(m.options ? { options: m.options } : {}), settings: m.settings || {} })) };
+  }
   return s.proto === 'NFS'
     ? { protocol: s.version, name, path: s.path, rules: s.rules.filter((r) => r.clients.trim()), mounts: s.mounts.filter((m) => m.host) }
     : { protocol: 'SMB3', name, path: s.path, clients: s.users, options: s.readonly ? 'ro' : '', mounts: s.mounts.filter((m) => m.host), ...(s.smb ? { smb: s.smb } : {}) };
@@ -125,14 +147,20 @@ function swRenderStep(full) {
   }
   if (SW.step === 1) {
     if (!full) return;
-    const proto = el('div', { class: 'seg', role: 'group', 'aria-label': 'Protocol' }, ...['NFS', 'SMB'].map((p) =>
-      el('button', { type: 'button', 'aria-pressed': String(s.proto === p), onclick: () => { s.proto = p; s.version = p === 'SMB' ? 'SMB3' : 'NFSv4.2'; swChanged(); swRender(); } }, p)));
-    const help = s.proto === 'NFS' ? 'For Linux and macOS clients. Access is by client address; files keep their numeric owners.'
+    const drv = swDriver(s.proto);
+    const proto = el('div', { class: 'seg wrap', role: 'group', 'aria-label': 'Protocol' }, ...['NFS', 'SMB', ...(SW.protocols || []).map((d) => d.key)].map((p) =>
+      el('button', { type: 'button', 'aria-pressed': String(s.proto === p), title: (swDriver(p) || {}).help || '',
+        onclick: () => { if (s.proto !== p) s.settings = {}; s.proto = p; s.version = p === 'SMB' ? 'SMB3' : 'NFSv4.2'; swChanged(); swRender(); } }, (swDriver(p) || {}).label || p)));
+    const help = drv ? drv.help : s.proto === 'NFS' ? 'For Linux and macOS clients. Access is by client address; files keep their numeric owners.'
       : 'For Windows, macOS and Linux. Access is by Samba user; clients mount with a password file.';
     const name = entry(s.name, (v) => { s.name = v; swChanged(); }, { placeholder: s.path.split('/').pop() || 'share', class: 'mono' });
     const kids = [el('div', { class: 'row' }, proto, text('span', help, 'muted small')),
       field(s.proto === 'SMB' ? 'Share name (clients see //server/name)' : 'Name (for you)', name)];
-    if (s.proto === 'NFS') {
+    if (drv) {
+      kids.push(field(drv.clients_label, entry(s.users, (v) => { s.users = v; swChanged(); }, { placeholder: '', class: 'mono' })));
+      if (drv.clients_help) kids.push(text('span', drv.clients_help, 'muted small'));
+      for (const f of drv.fields) kids.push(swField(f, s.settings, () => swChanged()));
+    } else if (s.proto === 'NFS') {
       const ver = choice(['NFSv4.2', 'NFSv3'], s.version, (v) => { s.version = v; swChanged(); });
       kids.push(field('Version', ver), swRulesEditor());
     } else {
@@ -157,10 +185,10 @@ function swRenderStep(full) {
   main._sig = sig;
   const anyway = check('Save even with problems (the deploy check still blocks them)', SW.anyway, (v) => { SW.anyway = v; swRenderStep(true); });
   const what = [
-    `${s.host} shares ${ex.path} over ${ex.protocol}${ex.protocol.startsWith('SMB') ? ` as //${s.host}/${ex.name}` : ''}`,
-    ex.protocol.startsWith('NFS') ? (ex.rules.length ? `to ${ex.rules.map((r) => `${r.clients} (${r.options || 'rw'})`).join(', ')}` : 'to nobody yet: add a client rule')
+    `${s.host} shares ${ex.path} over ${(swDriver(ex.protocol) || {}).label || ex.protocol}${ex.protocol.startsWith('SMB') ? ` as //${s.host}/${ex.name}` : ''}`,
+    swDriver(ex.protocol) ? (s.users ? `for ${s.users}` : 'for nobody yet') : ex.protocol.startsWith('NFS') ? (ex.rules.length ? `to ${ex.rules.map((r) => `${r.clients} (${r.options || 'rw'})`).join(', ')}` : 'to nobody yet: add a client rule')
       : (s.users ? `for ${s.users}${s.readonly ? ', read-only' : ''}` : `for any Samba account${s.readonly ? ', read-only' : ''}`),
-    ...ex.mounts.map((m) => `${m.host} mounts it at ${m.path} (fstab: automount, nofail)`)];
+    ...ex.mounts.map((m) => `${m.host} mounts it at ${m.path}${swDriver(ex.protocol) ? '' : ' (fstab: automount, nofail)'}`)];
   main.replaceChildren(
     el('ul', { class: 'swsummary' }, ...what.map((t) => text('li', t))),
     SW.saved ? el('div', { class: 'card' }, text('b', `Saved in ${SW.saved.host}'s design.`, 'st-ok'),
@@ -226,17 +254,21 @@ function swClientsEditor() {
         const p = await pickPath(m.host, m.path ? dirOf(m.path) : '/mnt', { pick: 'mount', title: `Mount point on ${m.host}` });
         if (p) { m.path = p; path.value = p; swChanged(); }
       }, 'btn ghost sm');
+      const drv = swDriver(s.proto);
+      if (drv && !m.settings) m.settings = {};
       return el('div', { class: 'card swclient', dataset: { host: m.host || '', path: m.path || '' } },
         el('div', { class: 'row' }, host, path, browse, button('×', () => { s.mounts.splice(j, 1); swChanged(); draw(); }, 'btn ghost sm')),
+        ...(drv ? drv.mount_fields.map((f) => swField(f, m.settings, () => swChanged())) : []),
         el('ul', { class: 'mvcheck' }));
     });
     const unused = SW.hosts.filter((h) => h.hostname !== s.host && !s.mounts.some((m) => m.host === h.hostname));
     box.replaceChildren(
-      text('p', 'Each client gets an fstab line (automount, nofail, so a missing server never blocks its boot) and the folder is created. Leave this empty to only share it.', 'muted small'),
+      text('p', swDriver(s.proto) ? 'Each client gets a unit of its own that mounts the share after the network is up, and the folder is created. Leave this empty to only share it.'
+        : 'Each client gets an fstab line (automount, nofail, so a missing server never blocks its boot) and the folder is created. Leave this empty to only share it.', 'muted small'),
       ...rows,
-      el('div', { class: 'row wrap' }, button('+ Client', () => { s.mounts.push({ host: '', path: def }); swChanged(); draw(); }, 'btn ghost sm'),
+      el('div', { class: 'row wrap' }, button('+ Client', () => { s.mounts.push({ host: '', path: def, settings: {} }); swChanged(); draw(); }, 'btn ghost sm'),
         unused.length ? text('span', 'Add:', 'muted small') : null,
-        ...unused.slice(0, 10).map((h) => button(h.hostname, () => { s.mounts.push({ host: h.hostname, path: def }); swChanged(); draw(); }, 'chip'))));
+        ...unused.slice(0, 10).map((h) => button(h.hostname, () => { s.mounts.push({ host: h.hostname, path: def, settings: {} }); swChanged(); draw(); }, 'chip'))));
     swClientResults();
   };
   draw();
@@ -368,7 +400,8 @@ function smAccess(e) {
 }
 function smShow(host, key) { closeSharesManager(); showTab('details'); selectBox(host, key); reveal(host, key); }
 async function smEdit(doc, i, e, takeover = false) {
-  const managed = /^(NFS|SMB|CIFS)/i.test(e.protocol || e.proto || '');
+  if (!SW.protocols) { try { SW.protocols = (await getJSON('/api/shares/protocols')).protocols; } catch { SW.protocols = []; } }
+  const managed = /^(NFS|SMB|CIFS)/i.test(e.protocol || e.proto || '') || !!swDriver(e.protocol || e.proto);
   if (managed && await openShareWizard({ host: doc.host, index: i, share: e, takeover })) return;
   smShow(doc.host, `exp:${i}`);                   // a planned host, or SFTP/S3: the topology's own form
 }

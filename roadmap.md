@@ -626,6 +626,17 @@ The enclave is the second layer on the keys. These are the rest of that directio
 
 **Lab:** the enclave boots on the controller in the lab and every SSH task, deploy, `vault send-secret` and audit verify works through it. From inside the VM there is no network interface to list and nothing to reach. A private key is never found in the web app's memory, read with a debugger during a task. A taken-over web app (simulated by calling the vsock socket directly) cannot export a key, exceeds its release rate and is refused, and cannot release a sensitive secret without a step-up the enclave checks. The enclave killed: key operations fail closed and a notification opens. A host without KVM: today's vault, labelled. The image rebuilt from source gives the same hash.
 
+## 15. Network filesystems and remote storage
+
+StorageForge manages remote storage the way it manages NFS and SMB: credentials in the vault and delivered on the runner's stdin, systemd units that never hold up boot, a report before any apply, drift records, and cleanup when a mount leaves the design. One framework, `netshares.py`, with a driver per protocol; rclone is the shared library for anything with an API (`rclone.py`). User guide: `docs/network-filesystems.md`.
+
+| Step | What | Target | Status |
+| :--- | :--- | :--- | :--- |
+| 1 | **rclone init:** the share-driver framework (`netshares.py`, secrets on stdin for share deploys, generic wizard fields), the rclone library with **crypt**, the `rclone-mount` plan step for every rclone backend, Google Drive with your own client ID (rclone's shared client is retired during 2026), and the SFTP driver as the first wizard protocol | 0.6.x | in progress |
+| 2 | **Wizard pairs, server and clients:** SFTP, S3 (rclone serve s3; MinIO and Garage stay in the Toolbox), WebDAV, rclone serve (any remote served to the LAN), iSCSI, NVMe over TCP, virtiofs, NBD, GlusterFS | 0.6.x | in progress |
+| 3 | **Client-only mounts:** gcsfuse, blobfuse2, mountpoint-s3, the CephFS client against an existing cluster | about 0.7.x | open |
+| 4 | **Cluster filesystems:** JuiceFS, SeaweedFS, MooseFS (each needs a metadata service and object storage, so it is closer to deploying a small cluster) | close to 0.8.0 | open |
+
 ## Will not be built
 
 A shadow-copy trap on the Samba server (the deletion runs on the Windows client and never crosses SMB; the client-side tripwire is in section 11), cryptographic shred, compliance certificates, a *SECURE* banner and a WebSocket event stream, because they can't work or would claim too much: see [ransomware defense](docs/ransomware-defense.md). It isn't a replacement for NetBox, LibreNMS or Zabbix. The UI adds no framework, build step, CDN or third-party script, no telemetry about how it is used, no mobile-first redesign and no dashboard builder.

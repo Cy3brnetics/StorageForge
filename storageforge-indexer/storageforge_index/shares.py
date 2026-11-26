@@ -22,11 +22,12 @@ import json
 import re
 import shlex
 
-from . import site
+from . import netshares, site
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed, share_key
 from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
+from . import secretstore
 
 SMB_NAME = re.compile(r'[A-Za-z0-9_.$-]{1,80}')
 NFS_DEFAULT = 'rw,sync,no_subtree_check'
@@ -159,6 +160,16 @@ def proto(e: dict) -> str:
     return 'SMB' if p.startswith(('SMB', 'CIFS')) else 'NFS' if p.startswith('NFS') else p
 
 
+def protocols() -> tuple[str, ...]:
+    """Every protocol a share can be deployed with: NFS, SMB, and the drivers netshares.py has (SFTP, S3, ...)."""
+    netshares.load_all()
+    return ('NFS', 'SMB', *netshares.keys())
+
+
+def deployable(e: dict) -> bool:
+    return proto(e) in protocols()
+
+
 def design_exports(conn: Conn, host: str) -> list[dict]:
     from .graph import stored_blueprint
     bp = stored_blueprint(conn, host)
@@ -166,7 +177,7 @@ def design_exports(conn: Conn, host: str) -> list[dict]:
         raise LookupError(f'{host} has no saved design: add exports in the topology view and save it')
     out = []
     for e in bp.get('exports') or []:
-        if not is_designed(e) or proto(e) not in ('NFS', 'SMB'):
+        if not is_designed(e) or not deployable(e):
             continue
         rules = [{'clients': str(r.get('clients') or '').strip(), 'options': str(r.get('options') or '').strip()}
                  for r in e.get('rules') or [] if str(r.get('clients') or '').strip()]
@@ -176,7 +187,8 @@ def design_exports(conn: Conn, host: str) -> list[dict]:
                     'clients': ' '.join(r['clients'] for r in rules) or str(e.get('clients') or '').strip(),
                     'options': str(e.get('options') or '').strip(), 'rules': rules,
                     'mounts': [_client_mount(m) for m in e.get('mounts') or [] if m.get('host') and m.get('path')],
-                    **_settings(e), **({'takeover': _takeover(e['takeover'])} if e.get('takeover') else {})})
+                    **_settings(e), **({'takeover': _takeover(e['takeover'])} if e.get('takeover') else {}),
+                    **({'settings': e['settings']} if e.get('settings') and netshares.driver(proto(e)) else {})})
     return out
 
 
@@ -189,7 +201,8 @@ def _takeover(t: dict) -> dict:
 def _client_mount(m: dict) -> dict:
     # settings only when set: a share's hash stays what it was at its last deploy unless something changed
     return {'host': str(m.get('host') or '').strip(), 'path': str(m.get('path') or '').strip(),
-            **{k: m[k] for k in ('options', 'idle_min') if m.get(k)}, **({'automount': False} if m.get('automount') is False else {})}
+            **{k: m[k] for k in ('options', 'idle_min') if m.get(k)}, **({'automount': False} if m.get('automount') is False else {}),
+            **({'settings': m['settings']} if m.get('settings') else {})}
 
 
 def _settings(e: dict) -> dict:
@@ -289,6 +302,7 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
     items = []
     say = lambda i, level, text: items.append({'export': i, 'level': level, 'text': text})   # noqa: E731
     others = [d for d in designed_mounts(conn) if not same_host(d['server'], srv['name'])]
+    srv = with_keys(conn, srv)          # drivers pin the server's SSH host keys (SFTP)
     for i, e in enumerate(exports):
         if only is not None and i != only:
             continue
@@ -339,8 +353,16 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
                                f'inside {e["path"]}: clients see empty folders there unless you add crossmnt to the options')
         elif below:
             say(i, 'note', f'{len(below)} filesystem(s) mounted inside are shared too (Samba follows mounts)')
-        say(i, *package_check(conn, srv, 'NFS server' if e['proto'] == 'NFS' else 'Samba'))
-        if e['proto'] == 'NFS':
+        drv = netshares.driver(e['proto'])
+        need = 'NFS server' if e['proto'] == 'NFS' else 'Samba' if e['proto'] == 'SMB' else drv.needs_server if drv else ''
+        if need:
+            say(i, *package_check(conn, srv, need))
+        if drv:
+            try:
+                drv.check(conn, hs, srv, e, lambda level, text, i=i: say(i, level, text))
+            except ValueError as exc:
+                say(i, 'crit', str(exc))
+        elif e['proto'] == 'NFS':
             if not e['clients']:
                 say(i, 'crit', 'NFS needs clients: a subnet like 10.42.0.0/24, or host names. "*" would export to everyone')
             elif '*' in e['clients'].split():
@@ -413,7 +435,14 @@ def check_exports(conn: Conn, hs: dict, srv: dict, exports: list[dict], only: in
                 continue
             seen.add((ch['id'], target))
             where = f'{ch["name"]}:{target}'
-            say(i, *package_check(conn, ch, 'NFS client' if e['proto'] == 'NFS' else 'SMB client'))
+            need = 'NFS client' if e['proto'] == 'NFS' else 'SMB client' if e['proto'] == 'SMB' else drv.needs_client if drv else ''
+            if need:
+                say(i, *package_check(conn, ch, need))
+            if drv:
+                try:
+                    drv.check_mount(conn, srv, e, mt, ch, lambda level, text, i=i: say(i, level, text))
+                except ValueError as exc:
+                    say(i, 'crit', f'{ch["name"]}:{target}: {exc}')
             if target in SYSTEM_DIRS:
                 say(i, 'crit', f'{where} is a system folder: mounting over it hides what the OS keeps there')
                 continue
@@ -457,9 +486,10 @@ def normalize_export(body: dict) -> dict:
     """A share from the wizard, in the design's shape. Raises ValueError for what cannot be saved at all."""
     from .moves import _path
     p = proto(body)
-    if p not in ('NFS', 'SMB'):
-        raise ValueError('protocol is NFS or SMB')
-    protocol = str(body.get('protocol') or ('NFSv4.2' if p == 'NFS' else 'SMB3'))
+    if p not in protocols():
+        raise ValueError(f'protocol is one of {", ".join(protocols())}')
+    drv = netshares.driver(p)
+    protocol = drv.key if drv else str(body.get('protocol') or ('NFSv4.2' if p == 'NFS' else 'SMB3'))
     path = _path(body.get('path'), 'the shared folder')
     name = str(body.get('name') or '').strip() or (path.rsplit('/', 1)[-1] or 'share')
     if len(name) > 80 or '\n' in name:
@@ -475,9 +505,18 @@ def normalize_export(body: dict) -> dict:
         mt = {'host': host_name(m['host'], 'a client host'), 'path': _path(m.get('path'), f'the mount point on {m["host"]}'),
               **{k: m[k] for k in ('options', 'idle_min') if m.get(k)}, **({'automount': False} if m.get('automount') is False else {})}
         client_options(mt)
+        if drv:
+            ms = drv.normalize_mount(m.get('settings') or {})
+            if ms:
+                mt['settings'] = ms
         mounts.append(mt)
     out = {'protocol': protocol, 'name': name, 'path': path, 'mounts': mounts}
-    if p == 'NFS':
+    if drv:          # who may connect is the driver's to read (subnets, accounts, initiators); its own settings are checked by it
+        out.update(clients=' '.join(str(body.get('clients') or '').split()), options='')
+        st = drv.normalize(body.get('settings') or {})
+        if st:
+            out['settings'] = st
+    elif p == 'NFS':
         out.update(rules=rules, clients=' '.join(r['clients'] for r in rules), options='')
     else:
         out.update(clients=' '.join(str(body.get('clients') or '').split()), options=str(body.get('options') or '').strip())
@@ -491,7 +530,7 @@ def normalize_export(body: dict) -> dict:
 def _as_checked(e: dict) -> dict:
     return {'deployed': False, 'proto': proto(e), 'name': e['name'], 'path': e['path'].rstrip('/') or '/',
             'clients': e.get('clients') or '', 'options': e.get('options') or '', 'rules': e.get('rules') or [],
-            'mounts': e['mounts'], **_settings(e)}
+            'mounts': e['mounts'], **_settings(e), **({'settings': e['settings']} if e.get('settings') else {})}
 
 
 def _designed_index(exports: list[dict], was: dict, host: str) -> int:
@@ -583,7 +622,7 @@ def save_export(db, conn: Conn, host: str, body: dict, index: int | None, actor:
         old = exports[index]
         if old.get('fromScan'):                 # editing a share the scan found: keep it marked as deployed
             e['fromScan'] = True
-        exports[index] = {**{k: v for k, v in old.items() if k not in ('rules', 'clients', 'options', 'mounts', 'smb')}, **e}
+        exports[index] = {**{k: v for k, v in old.items() if k not in ('rules', 'clients', 'options', 'mounts', 'smb', 'settings')}, **e}
     else:
         exports.append(e)
         index = len(exports) - 1
@@ -616,29 +655,37 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
     c = check(conn, host)
     hs = hosts(conn)
     q = shlex.quote
-    e_arrays = {k: [] for k in ('E_PROTO', 'E_NAME', 'E_PATH', 'E_CLIENTS', 'E_OPTS', 'E_RULES', 'E_SMB', 'E_TAKE')}
-    c_arrays = {k: [] for k in ('C_HOST', 'C_TARGET', 'C_PROTO', 'C_SOURCE', 'C_NAME', 'C_FS', 'C_OPTS', 'C_AUTO', 'C_SET')}
-    lines = []
+    e_arrays = {k: [] for k in ('E_PROTO', 'E_NAME', 'E_PATH', 'E_CLIENTS', 'E_OPTS', 'E_RULES', 'E_SMB', 'E_TAKE', 'E_PARAM')}
+    c_arrays = {k: [] for k in ('C_HOST', 'C_TARGET', 'C_PROTO', 'C_SOURCE', 'C_NAME', 'C_FS', 'C_OPTS', 'C_AUTO', 'C_SET', 'C_PARAM')}
+    lines, peers = [], []
+    srv = with_keys(conn, find_host(hs, c['host']))
     for e in c['exports']:
+        drv = netshares.driver(e['proto'])
         for k, v in (('E_PROTO', e['proto']), ('E_NAME', e['name'] or e['path']), ('E_PATH', e['path']),
                      ('E_CLIENTS', e['clients']), ('E_OPTS', e['options'] or (NFS_DEFAULT if e['proto'] == 'NFS' else 'rw')),
                      ('E_RULES', nfs_rules(e) if e['proto'] == 'NFS' and e['clients'] else ''),
                      ('E_SMB', '\n'.join('   ' + x for x in smb_lines(e)) if e['proto'] == 'SMB' else ''),
-                     ('E_TAKE', _take_ref(e.get('takeover')))):
+                     ('E_TAKE', _take_ref(e.get('takeover'))),
+                     ('E_PARAM', netshares.params_blob(drv.server_params(e, srv)) if drv else '')):
             e_arrays[k].append(v)
+        for p in (drv.peer_hosts(e) if drv else []):
+            ph = find_host(hs, p)
+            peers.append((host_slug(ph['name'] if ph else p), str(len(e_arrays['E_PROTO']) - 1)))
         lines.append(f'#   {e["proto"]} {e["name"] if e["proto"] == "SMB" else e["path"]}  ({e["path"]} → {e["clients"] or "anyone"})'
                      + (f'  taken over from the host\'s {"smb.conf" if e["takeover"]["proto"] == "SMB" else "exports"}' if e.get('takeover') else ''))
         for mt in e['mounts']:
             ch = find_host(hs, mt['host'])
-            src = f'{c["address"]}:{e["path"]}' if e['proto'] == 'NFS' else f'//{c["address"]}/{e["name"]}'
+            src = (drv.client_source(e, c['address']) if drv else f'{c["address"]}:{e["path"]}' if e['proto'] == 'NFS'
+                   else f'//{c["address"]}/{e["name"]}')
             extra, auto = client_options(mt)
             v3 = e.get('nfs_version') == 3
             if v3 and 'vers=' not in extra:
                 extra = ','.join(x for x in ('vers=3', extra) if x)
             for k, v in (('C_HOST', host_slug(ch['name'] if ch else mt['host'])), ('C_TARGET', mt['path']),
                          ('C_PROTO', e['proto']), ('C_SOURCE', src), ('C_NAME', e['name'] or 'share'),
-                         ('C_FS', 'nfs' if v3 else 'nfs4'), ('C_OPTS', extra), ('C_AUTO', '1' if auto else '0'),
-                         ('C_SET', '1' if extra or not auto else '0')):
+                         ('C_FS', drv.key.lower() if drv else 'nfs' if v3 else 'nfs4'), ('C_OPTS', extra), ('C_AUTO', '1' if auto else '0'),
+                         ('C_SET', '1' if extra or not auto else '0'),
+                         ('C_PARAM', netshares.params_blob(drv.client_params(e, mt, srv)) if drv else '')):
                 c_arrays[k].append(v)
             lines.append(f'#       mounted on {mt["host"]}:{mt["path"]}')
     problems = [f'#   {x["level"].upper()}: {x["text"]}' for x in c['items'] if x['level'] in ('crit', 'warn')]
@@ -647,7 +694,20 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
                                shares=comments(lines, '#   (no exports in the design)'), problems=comments(problems, '#   none'))
             + f'SERVER={q(host_slug(c["host"]))}\nSERVER_ADDR={q(c["address"])}\n{decl}\n'
             + f'PREV_CLIENTS=({" ".join(q(host_slug(h)) for h in prev_clients or [])})\n'
-            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES + CIFS_KERNEL))
+            + f'P_HOST=({" ".join(q(h) for h, _ in peers)})\nP_IDX=({" ".join(q(i) for _, i in peers)})\n'
+            + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE
+            + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES + CIFS_KERNEL)
+                           .replace('@@SECRETS@@\n', secretstore.BASH)
+                           .replace('@@DRIVERS@@\n', netshares.BASH + ''.join(netshares.DRIVERS[k].bash for k in netshares.keys()))
+                           .replace('@@DRIVER_KEYS@@', ' '.join(netshares.keys())))
+
+
+def with_keys(conn: Conn, srv: dict | None) -> dict | None:
+    """The host with the SSH host keys StorageForge pinned for it, as a list of 'type base64'."""
+    if not srv:
+        return srv
+    raw = conn.scalar('SELECT host_keys FROM hosts WHERE host_id = :h', {'h': srv['id']})
+    return {**srv, 'host_keys': (json.loads(raw) if isinstance(raw, str) else raw) or []}
 
 
 def _take_ref(t: dict | None) -> str:
@@ -699,12 +759,50 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]
                 c2.close()
         return done
     args = ['--apply'] if mode == 'apply' else []
-    items = [{'host': srv, 'script': text, 'args': args + ['--only', 'server'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 0,
-              **({'on_ok': done_for(None)} if mode == 'apply' else {})}]
+    wants = share_secrets(conn, c, hs) if mode == 'apply' else {}
+    token = secretstore.presented_token() if wants else None
+
+    def carried(h):           # the vault secrets this host's side of the shares needs, on the runner's stdin, in an apply only
+        w = wants.get(h)
+        return {'args': ['--secrets-stdin'], 'data': secretstore.stream(db, h, w, token)} if w else {'args': [], 'data': None}
+    s0 = carried(srv)
+    peer_names = sorted({ph['name'] for e in c['exports'] if netshares.driver(e['proto'])
+                         for ph in (find_host(hs, p) for p in netshares.driver(e['proto']).peer_hosts(e)) if ph and ph['name'] != srv})
+    items = [{'host': p, 'script': text, 'args': args + ['--only', 'server'] + carried(p)['args'], 'kind': 'shares', 'ref': srv, 'mode': mode,
+              'phase': -1, **({'data': carried(p)['data']} if carried(p)['data'] else {})} for p in peer_names]
+    items += [{'host': srv, 'script': text, 'args': args + ['--only', 'server'] + s0['args'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 0,
+              **({'data': s0['data']} if s0['data'] else {}), **({'on_ok': done_for(None)} if mode == 'apply' else {})}]
     for h in peers:
-        items.append({'host': h, 'script': text, 'args': args + ['--only', 'clients'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 1,
-                      **({'on_ok': done_for(h)} if mode == 'apply' else {})})
+        sh = carried(h)
+        items.append({'host': h, 'script': text, 'args': args + ['--only', 'clients'] + sh['args'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 1,
+                      **({'data': sh['data']} if sh['data'] else {}), **({'on_ok': done_for(h)} if mode == 'apply' else {})})
     return items
+
+
+def share_secrets(conn: Conn, c: dict, hs: dict | None = None) -> dict[str, list[tuple[str, str]]]:
+    """host -> [(vault secret, step)] the deploy brings it: the server's for each share a driver serves, a client's for each mount.
+    The step names the protocol (share-sftp, ...), which a secret's policy can name to be released for it alone."""
+    hs = hs or hosts(conn)
+    out: dict[str, list] = {}
+
+    def want(host, names, step):
+        got = out.setdefault(host, [])
+        for n in names:
+            if not netshares.SECRET_NAME.fullmatch(str(n)):
+                raise ValueError(f'{n!r} is not the name of a vault secret')
+            if (n, step) not in got:
+                got.append((n, step))
+    for e in c['exports']:
+        drv = netshares.driver(e['proto'])
+        if not drv:
+            continue
+        step = f'share-{drv.key.lower()}'
+        want(c['host'], drv.server_secrets(e), step)
+        for mt in e['mounts']:
+            ch = find_host(hs, mt['host'])
+            if ch:
+                want(ch['name'], drv.client_secrets(e, mt), step)
+    return {h: w for h, w in out.items() if w}
 
 
 def design_hash(conn: Conn, host: str) -> str | None:
@@ -722,7 +820,7 @@ def designed_hosts(conn: Conn) -> list[str]:
     out = []
     for host, body in conn.all('SELECT hostname, body_json FROM host_storage_designs'):
         exports = (json.loads(body) or {}).get('exports') or []
-        if find_host(scanned, host) and any(is_designed(e) and proto(e) in ('NFS', 'SMB') for e in exports):
+        if find_host(scanned, host) and any(is_designed(e) and deployable(e) for e in exports):
             out.append(host)
     return out
 
@@ -764,6 +862,7 @@ while (($#)); do
     --only) ONLY=${2:?--only server or clients}; shift ;;
     --host) HOST=${2:?--host needs [user@]host}; shift ;;
     --forward-agent) FWD_AGENT=1 ;;
+    --secrets-stdin) SECRETS_STDIN=1 ;;   # a signed run: the vault secrets this host's shares need follow on stdin (secretstore.py)
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -782,6 +881,7 @@ if ((APPLY)) && [[ $EUID -ne 0 ]]; then echo "--apply needs root: sudo $0 ${ARGS
 STAMP=$(date +%Y%m%d-%H%M%S)
 
 @@PACKAGES@@
+@@SECRETS@@
 backup() { [[ ! -e $1 || -e $1.storageforge-$STAMP ]] || cp -a -- "$1" "$1.storageforge-$STAMP"; }   # the first of a run is the file as it was
 own_file() { # path content -> StorageForge's own file: written whole (after a backup) when it differs
   if [[ -e $1 && $(cat "$1") == "$2" ]]; then ok "$1"; return 1; fi
@@ -1106,25 +1206,38 @@ record_managed() { # what this run wrote, for drift checks in later scans
   local d=/var/lib/storageforge/managed f files=()
   mkdir -p "$d"; chmod 0755 "$d"
   if [[ $ME == "$SERVER" ]]; then
-    for f in /etc/exports.d/storageforge.exports /etc/samba/storageforge.conf; do [[ -r $f ]] && files+=("$f"); done
+    for f in /etc/exports.d/storageforge.exports /etc/samba/storageforge.conf ${MANAGED_FILES[@]+"${MANAGED_FILES[@]}"}; do [[ -r $f ]] && files+=("$f"); done
     if ((${#files[@]})); then sha256sum "${files[@]}" >"$d/shares-$SERVER.sha256"; chmod 0644 "$d/shares-$SERVER.sha256"; fi
   fi
   if ((${#WANT_LINES[@]})); then printf '%s\n' "${WANT_LINES[@]}" >"$d/shares-$SERVER.lines"; chmod 0644 "$d/shares-$SERVER.lines"
   else rm -f "$d/shares-$SERVER.lines"; fi
 }
 WANT_LINES=()
+@@DRIVERS@@
+DRIVER_KEYS=(@@DRIVER_KEYS@@)
 
 echo "${H}shares for $SERVER${N0} · $MODE on $(uname -n)"
 if [[ $ONLY != clients ]]; then
-  if [[ $ME == "$SERVER" ]]; then take_over; server_nfs; server_smb
+  if [[ $ME == "$SERVER" ]]; then
+    take_over; server_nfs; server_smb
+    for k in ${DRIVER_KEYS[@]+"${DRIVER_KEYS[@]}"}; do "server_${k,,}" || true; done
+  elif [[ " ${P_HOST[*]} " == *" $ME "* ]]; then      # a peer of a share on $SERVER (a GlusterFS brick): its part, before the server
+    for i in "${!P_HOST[@]}"; do [[ ${P_HOST[$i]} == "$ME" ]] || continue
+      k=${E_PROTO[${P_IDX[$i]}]}; declare -F "peer_${k,,}" >/dev/null && { "peer_${k,,}" "${P_IDX[$i]}" || true; }
+    done
   else section "server"; skip "the shares are served by $SERVER: ./$(basename "$0") --host <user>@$SERVER_ADDR ${ARGS[*]}"; fi
 fi
 if [[ $ONLY != server ]]; then
   for i in "${!C_HOST[@]}"; do
-    if [[ ${C_HOST[$i]} == "$ME" ]]; then client_mount "$i" || true
-    else section "mount ${C_SOURCE[$i]} at ${C_TARGET[$i]}"; skip "client ${C_HOST[$i]}: run this script there (or --host)"; fi
+    if [[ ${C_HOST[$i]} != "$ME" ]]; then section "mount ${C_SOURCE[$i]} at ${C_TARGET[$i]}"; skip "client ${C_HOST[$i]}: run this script there (or --host)"
+    elif [[ ${C_PROTO[$i]} == NFS || ${C_PROTO[$i]} == SMB ]]; then client_mount "$i" || true
+    else "client_${C_PROTO[$i],,}" "$i" || true; fi
   done
-  if [[ " ${C_HOST[*]} ${PREV_CLIENTS[*]} " == *" $ME "* ]]; then client_cleanup || true; fi
+  if [[ " ${C_HOST[*]} ${PREV_CLIENTS[*]} " == *" $ME "* ]]; then
+    client_cleanup || true
+    driver_units_cleanup || true
+    for k in ${DRIVER_KEYS[@]+"${DRIVER_KEYS[@]}"}; do "cleanup_${k,,}" || true; done
+  fi
 fi
 record_managed
 echo

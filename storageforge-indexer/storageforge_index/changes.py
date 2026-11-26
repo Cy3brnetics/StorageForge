@@ -203,6 +203,7 @@ CHECKS = {
     'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
     'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'unit': re.compile(r'[A-Za-z0-9:_.@-]{1,200}\.service'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
+    'secret': re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}'),     # a vault secret's name (secretstore.NAME)
     'zfs-snapshot': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}@[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'),
     'btrfs-device': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+|\d{1,5}|missing'), 'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
     'mkfs': re.compile(r'[a-z_]+=[A-Za-z0-9_.+:-]+(,[a-z_]+=[A-Za-z0-9_.+:-]+)*'),
@@ -2088,6 +2089,7 @@ from . import steps_pools  # noqa: E402,F401  (vdevs, disk replacements, md grow
 from . import steps_network  # noqa: E402,F401  (bonds, addresses, routes and DHCP, in netplan, NetworkManager, networkd or ifupdown)
 from . import steps_services  # noqa: E402,F401  (services of another host)
 from . import steps_tailscale  # noqa: E402,F401  (joining a tailnet)
+from . import rclone  # noqa: E402,F401  (rclone-mount: any rclone backend mounted, rclone crypt on top)
 from . import steps_sshca  # noqa: E402,F401  (trusting the SSH CA, and its revocation list)
 from . import steps_tunnels  # noqa: E402,F401  (a Cloudflare Tunnel and a Pangolin site, from a token in the vault)
 from . import steps_overlay  # noqa: E402,F401  (joining and leaving NetBird, ZeroTier, Nebula and OpenZiti, after steps_tunnels, whose helpers it uses)

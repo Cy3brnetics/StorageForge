@@ -80,6 +80,7 @@ GET  /api/moves/<id>/script          the Bash script that runs the plan (copy, v
 GET  /api/folders/cold?host=&years=&min_size=   folders whose newest file is older than the cutoff
 GET  /api/git?host=                  git repositories found by scans, with their copies and archive state
 GET|PUT /api/git/ignore              path fragments hidden from the Git tab, for every host ("*") or one; "!x" shows x
+GET  /api/shares/protocols            the share protocols beyond NFS and SMB (SFTP, S3, ...) and the wizard's fields for each
 GET  /api/shares/check?host=         the NFS/SMB shares in a host's design, checked against the index
 GET  /api/shares/script?host=        the script that deploys them on the server and mounts them on clients
 POST /api/shares/validate  {"host", "export", "index"|"was", "takeover"}   check one share before saving it (folder, access, mount points)
@@ -181,7 +182,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import (__version__, access, selfupdate, alerts, inframeasure, netdevice, netscan, errlog, remotes, blueprint, canvas, changes, clamav, deploy, engine, filemap, folders, gitrepos, graph, jobs, logbook, receiving, preflight, protection,
                folderwork, fromdesign, fsmap, hostconfig, hostkeys, hostlogs, keyinstall, moves, permissions, pkglist, reinstall, reset, retire, routes_accounts, routes_agent, routes_clamav, routes_copies, routes_git, routes_logrules, routes_notifications, routes_infra, routes_network, routes_apiconn, routes_scheduler, routes_secplus, routes_secrets, routes_security, routes_sshca, routes_toolbox, scheduler, security, shares, site, snapjobs, tasks, updates, users, routes_workloads)
-from . import copies, rotate_keys, routecode, routes_enclave, routes_planner
+from . import copies, netshares, rotate_keys, routecode, routes_enclave, routes_planner
 from . import agentguard, agentingest
 from .runtimes import docker
 from .capacity import parse_size, trends
@@ -1717,6 +1718,13 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     routes_planner.register(web, ctx)
     routes_workloads.register(web, ctx)    # placement, captures and drift, exports (0.5.11)
     routes_toolbox.register(web, ctx)      # the Toolbox: catalog, installs, adapters (0.5.12)
+
+    @web.get('/api/shares/protocols')
+    @login_required
+    def api_shares_protocols():
+        """The protocols a share can be deployed with beyond NFS and SMB, with the fields the wizard shows for each (netshares.py)."""
+        shares.protocols()
+        return jsonify(protocols=[netshares.DRIVERS[k].public() for k in netshares.keys()])
 
     @web.get('/api/shares/check')
     @login_required

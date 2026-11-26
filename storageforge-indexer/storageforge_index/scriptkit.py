@@ -408,7 +408,18 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'inotify-tools': ('inotifywait', {'apt-get': 'inotify-tools', 'dnf': 'inotify-tools', 'yum': 'inotify-tools', 'pacman': 'inotify-tools', 'zypper': 'inotify-tools'}),
          'zstd': ('zstd', {'apt-get': 'zstd', 'dnf': 'zstd', 'yum': 'zstd', 'pacman': 'zstd', 'zypper': 'zstd'}),
          'xz': ('xz', {'apt-get': 'xz-utils', 'dnf': 'xz', 'yum': 'xz', 'pacman': 'xz', 'zypper': 'xz'}),
-         '7z': ('7z', {'apt-get': 'p7zip-full', 'dnf': 'p7zip-plugins', 'yum': 'p7zip-plugins', 'pacman': '7zip', 'zypper': 'p7zip-full'})}
+         '7z': ('7z', {'apt-get': 'p7zip-full', 'dnf': 'p7zip-plugins', 'yum': 'p7zip-plugins', 'pacman': '7zip', 'zypper': 'p7zip-full'}),
+         # network filesystems and block storage the share drivers (netshares.py) deploy
+         'rclone': ('rclone', {'apt-get': 'rclone', 'dnf': 'rclone', 'yum': 'rclone', 'pacman': 'rclone', 'zypper': 'rclone'}),
+         'sshfs': ('sshfs', {'apt-get': 'sshfs', 'dnf': 'fuse-sshfs', 'yum': 'fuse-sshfs', 'pacman': 'sshfs', 'zypper': 'sshfs'}),
+         'davfs2': ('mount.davfs', {'apt-get': 'davfs2', 'dnf': 'davfs2', 'yum': 'davfs2', 'pacman': 'davfs2', 'zypper': 'davfs2'}),
+         'iSCSI target': ('targetcli', {'apt-get': 'targetcli-fb', 'dnf': 'targetcli', 'yum': 'targetcli', 'pacman': 'targetcli-fb', 'zypper': 'targetcli-fb'}),
+         'iSCSI initiator': ('iscsiadm', {'apt-get': 'open-iscsi', 'dnf': 'iscsi-initiator-utils', 'yum': 'iscsi-initiator-utils', 'pacman': 'open-iscsi', 'zypper': 'open-iscsi'}),
+         'NVMe tools': ('nvme', {'apt-get': 'nvme-cli', 'dnf': 'nvme-cli', 'yum': 'nvme-cli', 'pacman': 'nvme-cli', 'zypper': 'nvme-cli'}),
+         'NBD server': ('nbd-server', {'apt-get': 'nbd-server', 'dnf': 'nbd', 'yum': 'nbd', 'pacman': 'nbd', 'zypper': 'nbd'}),
+         'NBD client': ('nbd-client', {'apt-get': 'nbd-client', 'dnf': 'nbd', 'yum': 'nbd', 'pacman': 'nbd', 'zypper': 'nbd'}),
+         'GlusterFS server': ('glusterd', {'apt-get': 'glusterfs-server', 'dnf': 'glusterfs-server', 'yum': 'glusterfs-server', 'pacman': 'glusterfs', 'zypper': 'glusterfs'}),
+         'GlusterFS client': ('mount.glusterfs', {'apt-get': 'glusterfs-client', 'dnf': 'glusterfs-fuse', 'yum': 'glusterfs-fuse', 'pacman': 'glusterfs', 'zypper': 'glusterfs'})}
 
 
 def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
