@@ -1,4 +1,5 @@
 """The Proxmox VE action and remove steps: checked against the reading, run as a report and as an Ansible export with stubbed qm and pct."""
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -296,6 +297,122 @@ class CtRun(Steps):
         r = subprocess.run(['bash', '-c', self.export_cmd(password_secret='ct-root')], env=self.env(tmp), capture_output=True, text=True, timeout=60)
         self.assertIn('is not on this host', r.stderr)
         self.assertNotIn('create', log.read_text())
+
+
+VM = {'name': 'app-01', 'source': 'iso', 'iso': 'local:iso/debian-13.iso', 'storage': 'local-lvm', 'vmid': '106'}
+BASE['pve-vm'] = VM
+SHA = 'a' * 64
+
+
+class Vm(CtRun):
+    def make_node(self, node=NODE):
+        security._save_measurement(self.conn, 'nas', 'infra', int(time.time()), 'test', {'tools': ['qm', 'pct', 'pvesm'], 'proxmox': GUESTS,
+                                                                                       'proxmox_node': {**node, 'isos': [{'storage': 'local', 'volid': 'local:iso/debian-13.iso', 'size': 1}]}})
+
+    def says(self, **over):
+        return self.items('pve-vm', **over)
+
+    def prepared(self, **over):
+        return changes.normalize(changes.prepare(self.conn, plan('pve-vm', **over)))
+
+    def vm_stubs(self, exists=False, match=True):
+        tmp, log = self.ct_stubs()
+        (tmp / 'qm').write_text('#!/bin/sh\necho "$0 $*" >> %s\ncase "$1" in status) %s ;; help) echo "--scsi0 import-from" ;; esac\n'
+                                % (log, 'echo "status: stopped"; exit 0' if exists else 'exit 2'))
+        # the stub curl serves an image of known content, and a checksum list that matches it or does not
+        (tmp / 'curl').write_text('#!/bin/sh\necho "$0 $*" >> %s\nout=\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; last=$1; shift; done\n'
+                                  'case "$last" in *SUMS) echo "%s  debian-13-genericcloud-amd64.qcow2" ;; *) if [ -n "$out" ]; then echo image > "$out"; fi ;; esac\n'
+                                  % (log, hashlib.sha256(b'image\n').hexdigest() if match else SHA))
+        (tmp / 'curl').chmod(0o755)
+        (tmp / 'qm').chmod(0o755)
+        (tmp / 'tmpdir').mkdir()
+        return tmp, log
+
+    def vm_export_cmd(self, **over):
+        doc = yaml.load(changes.ansible(self.conn, self.prepared(**over)), Loader)
+        cmd = next(t['ansible.builtin.shell']['cmd'] for play in doc for t in play['tasks'] if 'ansible.builtin.shell' in t and 't_pve_vm' in t['ansible.builtin.shell']['cmd'])
+        self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, text=True, capture_output=True).returncode, 0)
+        return cmd
+
+    def run_vm(self, tmp, **over):
+        env = {**self.env(tmp), 'TMPDIR': str(tmp / 'tmpdir')}
+        return subprocess.run(['bash', '-c', self.vm_export_cmd(**over)], env=env, capture_output=True, text=True, timeout=60)
+
+    def test_a_source_brings_its_own_field_and_not_the_others(self):
+        for over in ({'iso': ''}, {'image': 'debian13'}, {'source': 'image', 'iso': '', 'image': ''}, {'source': 'image', 'image': 'debian13'}):
+            with self.subTest(over):
+                with self.assertRaises(ValueError):
+                    self.prepared(**over)
+        self.prepared()
+        self.prepared(source='image', iso='', image='debian13')
+
+    def test_storage_iso_and_ssh_key_are_checked(self):
+        self.make_node()
+        self.assertFalse(any(lv == 'crit' for lv, _ in self.says()), self.says())
+        self.assertTrue(any(lv == 'crit' and 'does not hold VM disks' in t for lv, t in self.says(storage='local')))
+        self.assertTrue(any(lv == 'crit' and 'no storage nope' in t for lv, t in self.says(storage='nope')))
+        self.assertTrue(any(lv == 'crit' and 'not among the ISO images' in t for lv, t in self.says(iso='local:iso/other.iso')))
+        self.assertTrue(any(lv == 'warn' and 'no way to log in' in t for lv, t in self.says(source='image', iso='', image='debian13')))
+        self.assertFalse(any(lv == 'warn' for lv, _ in self.says(source='image', iso='', image='debian13', ssh_key=KEY)))
+        self.assertTrue(any(lv == 'crit' and 'not a Proxmox VE node' in t for lv, t in self.says(host='pc')))
+
+    def test_the_report_would_create_from_the_image_and_the_script_is_valid_bash(self):
+        text = changes.script(self.conn, self.prepared(source='image', iso='', image='debian13', vmid=''))
+        self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).returncode, 0)
+        tmp, log = self.vm_stubs()
+        r = subprocess.run(['bash', '-s', '--', '--report'], input=text, env=self.env(tmp), capture_output=True, text=True, timeout=120)
+        self.assertIn('would: create VM 105 (app-01) from debian13', r.stdout + r.stderr)
+        self.assertNotIn('command not found', r.stdout + r.stderr)
+        self.assertNotIn('create', log.read_text().replace('status', ''))
+
+    def test_a_vmid_that_exists_is_a_conflict_and_qm_create_is_never_called(self):
+        tmp, log = self.vm_stubs(exists=True)
+        r = self.run_vm(tmp)
+        self.assertIn('already a guest', r.stderr)
+        self.assertNotIn('create', log.read_text())
+
+    def test_an_iso_vm_is_made_with_the_cdrom_and_boot_order(self):
+        tmp, log = self.vm_stubs()
+        r = self.run_vm(tmp, onboot=True, start=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("qm create 106 --name app-01 --memory 2048 --cores 2 --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-single --ostype l26 --agent 1 --onboot 1 "
+                      "--scsi0 local-lvm:32 --ide2 local:iso/debian-13.iso,media=cdrom --boot order=scsi0;ide2", log.read_text())
+        self.assertIn('qm start 106', log.read_text())
+
+    def test_an_image_vm_is_downloaded_checked_imported_and_the_temp_folder_is_gone(self):
+        tmp, log = self.vm_stubs()
+        r = self.run_vm(tmp, source='image', iso='', image='debian13', ssh_key=KEY)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = log.read_text()
+        self.assertRegex(argv, r'qm create 106 .* --boot order=scsi0 --scsi0 local-lvm:0,import-from=/.*/debian-13-genericcloud-amd64\.qcow2')
+        for want in ('qm resize 106 scsi0 32G', '--ide2 local-lvm:cloudinit --ciuser admin --ipconfig0 ip=dhcp --serial0 socket --vga serial0', 'qm set 106 --sshkeys /'):
+            self.assertIn(want, argv)
+        self.assertEqual(list((tmp / 'tmpdir').iterdir()), [], 'the temporary folder is removed')
+
+    def test_a_download_that_does_not_match_its_checksum_stops_everything(self):
+        tmp, log = self.vm_stubs(match=False)
+        r = self.run_vm(tmp, source='image', iso='', image='debian13', ssh_key=KEY)
+        self.assertIn('does not match its checksum', r.stderr)
+        lines = log.read_text().splitlines()
+        self.assertTrue(lines[-1].startswith(str(tmp / 'curl')) or ' curl ' in lines[-1] or 'curl' in lines[-1], lines)
+        self.assertFalse(any('create' in l or 'importdisk' in l for l in lines))
+        self.assertEqual(list((tmp / 'tmpdir').iterdir()), [], 'the temporary folder is removed on this way out too')
+
+    def test_an_export_carries_the_catalog_and_the_fetch_function(self):
+        cmd = self.vm_export_cmd(source='image', iso='', image='debian13')
+        self.assertIn('sf_vm_image()', cmd)
+        self.assertIn('sf_vm_fetch()', cmd)
+
+
+class CtPassword(CtRun):
+    def test_a_failing_chpasswd_stops_the_container_before_the_conflict_and_shows_the_real_error(self):
+        tmp, log = self.ct_stubs()
+        (tmp / 'pct').write_text('#!/bin/sh\necho "$0 $*" >> %s\ncase "$1" in status) exit 2 ;; exec) cat >/dev/null; echo "chpasswd: PAM failure" >&2; exit 1 ;; esac\n' % log)
+        r = subprocess.run(['bash', '-c', self.export_cmd(password_secret='ct-root')], env=self.env(tmp), capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('could not set the root password of 105: chpasswd: PAM failure', r.stderr)
+        self.assertNotIn(PASSWORD, r.stdout + r.stderr + log.read_text())
+        self.assertIn('pct shutdown 105', log.read_text())
 
 
 if __name__ == '__main__':

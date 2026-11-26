@@ -116,6 +116,24 @@ sf_vm_image() { # catalog key -> image URL, checksums URL and osinfo, by tabs
   esac
 }
 
+sf_vm_fetch() { # URL SUM SUMS_URL DEST: download URL to DEST unless DEST already holds the checked image, and check it against SUM (or the one SUMS_URL lists for it)
+  local url=$1 sum=$2 sums=$3 base=$4 have
+  if [[ -z $sum ]]; then
+    sum=$(curl -fsSL --retry 3 "$sums" | { case $sums in (*.sha512|*.sha256|*.SHA256) cat ;; (*) grep -F "$(basename "$url")" ;; esac; } \
+          | grep -oE '\b[0-9a-f]{64}([0-9a-f]{64})?\b' | head -n 1) || true
+    [[ -n $sum ]] || { conflict "no published checksum for $(basename "$url") at $sums"; return 1; }
+  fi
+  if [[ ! -f $base || $(cat "$base.ok" 2>/dev/null) != "$sum" ]]; then
+    doing "download $(basename "$url")"
+    curl -fsSL --retry 3 -o "$base.part" "$url" || { rm -f "$base.part"; conflict "could not download $url"; return 1; }
+    case ${#sum} in 64) have=$(sha256sum "$base.part") ;; *) have=$(sha512sum "$base.part") ;; esac
+    if [[ ${have%% *} != "$sum" ]]; then rm -f "$base.part"; conflict "$(basename "$url") does not match its checksum: not used"; return 1; fi
+    mv -f "$base.part" "$base"; printf '%s\n' "$sum" >"$base.ok"
+    ok "downloaded and checked $(basename "$url")"
+  fi
+  return 0
+}
+
 vm_undo() { # the disks a failed t_vm_create made in this run (its made array), and nothing else
   local f; for f in "${made[@]}"; do [[ -e $f ]] && rm -f -- "$f"; done
   info "removed what this run had made: ${made[*]##*/}"
@@ -165,19 +183,7 @@ t_vm_create() { local name=$1 image=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram
   info "from $(basename "$url"), checked against ${sum:+the checksum given}${sums:+$sums}; login $user with the SSH key$how"
   act "create VM $name in $pool" || return 0
   install -d -m 0755 "$dir/.storageforge-images"
-  if [[ -z $sum ]]; then
-    sum=$(curl -fsSL --retry 3 "$sums" | { case $sums in (*.sha512|*.sha256|*.SHA256) cat ;; (*) grep -F "$(basename "$url")" ;; esac; } \
-          | grep -oE '\b[0-9a-f]{64}([0-9a-f]{64})?\b' | head -n 1) || true
-    [[ -n $sum ]] || { conflict "no published checksum for $(basename "$url") at $sums"; return 0; }
-  fi
-  if [[ ! -f $base || $(cat "$base.ok" 2>/dev/null) != "$sum" ]]; then
-    doing "download $(basename "$url")"
-    curl -fsSL --retry 3 -o "$base.part" "$url" || { rm -f "$base.part"; conflict "could not download $url"; return 0; }
-    case ${#sum} in 64) have=$(sha256sum "$base.part") ;; *) have=$(sha512sum "$base.part") ;; esac
-    if [[ ${have%% *} != "$sum" ]]; then rm -f "$base.part"; conflict "$(basename "$url") does not match its checksum: not used"; return 0; fi
-    mv -f "$base.part" "$base"; printf '%s\n' "$sum" >"$base.ok"
-    ok "downloaded and checked $(basename "$url")"
-  fi
+  sf_vm_fetch "$url" "$sum" "$sums" "$base" || return 0
   fmt=$(qemu-img info "$base" 2>/dev/null | sed -n 's/^file format: //p' | head -n 1)
   # a copy, not an overlay: the VM keeps working if the downloaded image is replaced or removed
   # what this run makes, removed again if a later step fails, so running it again does not find them in the way
