@@ -42,7 +42,7 @@ Each host needs:
 ```bash
 git clone https://github.com/Cy3brnetics/StorageForge.git
 cd StorageForge/storageforge-indexer
-git checkout v0.6.1                                           # a release; main is the latest
+git checkout v0.6.2                                           # a release; main is the latest
 ```
 
 ### Choose settings before the first start
@@ -323,7 +323,7 @@ storageforge-index serve --listen 127.0.0.1 --port 8080
 
 ```bash
 cd StorageForge/storageforge-indexer
-git fetch --tags && git checkout v0.6.1          # the release you want
+git fetch --tags && git checkout v0.6.2          # the release you want
 docker compose up -d --build
 ```
 

@@ -2,7 +2,9 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.6.2 — 2026-11-26
+
+The first version of the [0.7.0 roadmap](roadmap-0.7.0.md): the ten places where a backend consolidation survey found that one copy of shared work was wrong. Built and unit-tested on SQLite (light, medium and heavy blocks); **not lab-tested**, and not run on PostgreSQL in this release's checks.
 
 ### Security
 - **A platform certificate that changes in the middle of a read fails the whole read.** Each request already refused the new certificate and sent nothing, but the read-backs and the readers of Xen Orchestra, Pangolin, Portainer, Komodo, Dockhand and parts of the Proxmox ones wrote that refusal down as one more thing they could not read. The read then counted as good: the connection did not say *certificate changed*, no finding was raised, and what the calls before the change had returned (with Xen Orchestra, Pangolin or Portainer possibly nothing) replaced the last good reading. Now the read fails, the connection says *certificate changed* with the fingerprint that was offered, the critical finding is raised, the last good reading stays, and no further request is made on that read.
