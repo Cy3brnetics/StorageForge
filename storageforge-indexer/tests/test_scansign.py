@@ -335,3 +335,52 @@ class Routes(unittest.TestCase):
         self.assertEqual(gone.status_code, 200)                                                       # the password was just confirmed
         self.assertEqual(gone.get_json(), {'forgotten': True})
         self.assertIsNone(scansign.pinned_key(self.conn, 'nas', 22))
+
+
+@unittest.skipUnless(shutil.which('ssh-keygen'), 'needs ssh-keygen')
+class PinnedHostKeys(unittest.TestCase):
+    """One reader of known_hosts (remote.known_host_entries) behind the scan, job, certificate and fingerprint views (BE-13). A marker
+    line is not a pin: an @revoked or @cert-authority line used to reach a job's known_hosts and a scan's host keys with its fields shifted."""
+
+    def setUp(self):
+        from unittest import mock
+        self.mock = mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        keys = []
+        for kind in ('ed25519', 'ecdsa'):
+            subprocess.run(['ssh-keygen', '-q', '-t', kind, '-N', '', '-f', f'{d}/{kind}'], check=True)
+            keys.append(' '.join(Path(f'{d}/{kind}.pub').read_text().split()[:2]))
+        self.ed, self.ec = keys
+        self.kh = f'{d}/known_hosts'
+        Path(self.kh).write_text(f'# a comment\nbox {self.ed} a note\n@revoked box {self.ec}\n@cert-authority box {self.ec}\n[box]:2222 {self.ec}\n')
+
+    def test_markers_and_comments_are_not_pins(self):
+        from storageforge_index import remote
+        self.assertEqual(remote.known_host_entries('box', 22, self.kh), [tuple(self.ed.split())])
+        self.assertEqual(remote.known_host_entries('[box]', 2222, self.kh), [tuple(self.ec.split())])
+        self.assertEqual(remote.known_host_entries('nowhere', 22, self.kh), [])
+        self.assertEqual(remote.known_host_entries('box', 22, self.kh + '.missing'), [])
+
+    def test_the_scan_reads_only_the_pinned_keys(self):
+        self.assertEqual(scansign.known_host_lines('box', 22, self.kh), [self.ed])
+        self.assertEqual(scansign.known_host_lines('box', None, self.kh), [self.ed], 'no port is port 22')
+        self.assertEqual(scansign.known_host_lines('[box]', 2222, self.kh), [self.ec], 'a bracketed address is the same host')
+        self.assertEqual(scansign.known_host_lines('box', 22, self.kh + '.missing'), [])
+
+    def test_a_scan_stops_when_ssh_keygen_cannot_run(self):
+        with self.mock.patch('storageforge_index.remote.subprocess.run', side_effect=subprocess.TimeoutExpired('ssh-keygen', 10)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                scansign.known_host_lines('box', 22, self.kh)
+
+    def test_a_job_pins_only_the_pinned_keys(self):
+        from storageforge_index import jobs
+        with self.mock.patch.object(jobs, 'known_hosts_path', lambda: self.kh):
+            self.assertEqual(jobs.pinned_key({'ssh_host': 'box', 'ssh_port': 22}), f'storageforge-source {self.ed}\n')
+            self.assertEqual(jobs.pinned_key({'ssh_host': 'nowhere', 'ssh_port': 22}), '')
+
+    def test_the_certificate_and_fingerprint_views(self):
+        from storageforge_index import remote, sshcerts
+        from storageforge_index.sshwire import fingerprint_of_line
+        self.assertEqual(sshcerts.host_public_key('box', 2222, self.kh), self.ec)
+        self.assertEqual(remote.known_host_keys('box', 22, self.kh), [fingerprint_of_line(self.ed)])

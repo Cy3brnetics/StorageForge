@@ -63,21 +63,29 @@ def known_hosts_name(host: str, port: int | None) -> str:
     return addr if port in (None, 22) else f'[{addr}]:{port}'
 
 
-def known_host_keys(host: str, port: int | None = 22, known_hosts: str | None = None) -> list[str]:
-    """Fingerprints of the keys known_hosts holds for host:port (none: never connected)."""
+def known_host_entries(host: str, port: int | None = 22, known_hosts: str | None = None, *, raise_errors: bool = False) -> list[tuple[str, str]]:
+    """The keys known_hosts pins for host:port, as (type, base64) in the file's order: the one reader of `ssh-keygen -F`. Comments and
+    marker lines (@cert-authority, @revoked) are not pins and are skipped; what follows the key on its line is dropped. Without known_hosts,
+    ssh-keygen reads ~/.ssh/known_hosts. Empty when nothing is pinned or the file is missing, and when ssh-keygen cannot run or hangs
+    unless raise_errors (then OSError or TimeoutExpired)."""
     argv = ['ssh-keygen', '-F', known_hosts_name(host, port)] + (['-f', known_hosts] if known_hosts else [])
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=10, env=child_env()).stdout
     except (OSError, subprocess.TimeoutExpired):
+        if raise_errors:
+            raise
         return []
-    fps = set()
+    found = []
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) < 3 or line.startswith('#') or parts[0].startswith('@'):   # comments, @cert-authority, @revoked
-            continue
-        if fp := key_fingerprint(parts[2]):
-            fps.add(fp)
-    return sorted(fps)
+        if len(parts) >= 3 and not line.startswith('#') and not parts[0].startswith('@'):   # comments, @cert-authority, @revoked
+            found.append((parts[1], parts[2]))
+    return found
+
+
+def known_host_keys(host: str, port: int | None = 22, known_hosts: str | None = None) -> list[str]:
+    """Fingerprints of the keys known_hosts holds for host:port (none: never connected)."""
+    return sorted({fp for _, b64 in known_host_entries(host, port, known_hosts) if (fp := key_fingerprint(b64))})
 
 
 # What a host may send back for one inventory, Docker or git survey (the file index streams separately). A host that was

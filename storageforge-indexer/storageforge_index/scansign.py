@@ -36,7 +36,7 @@ import subprocess
 import tempfile
 import time
 
-from .remote import RemoteError
+from .remote import RemoteError, known_host_entries
 from .sshwire import fingerprint_of_line
 
 NAMESPACE = 'storageforge-scan'
@@ -120,18 +120,9 @@ fingerprint = fingerprint_of_line          # SHA256:... of an OpenSSH public key
 
 
 def known_host_lines(host: str, port: int, known_hosts: str | None) -> list[str]:
-    """The public keys pinned for host:port in a known_hosts file, as 'type base64'."""
-    known_hosts = known_hosts or os.path.expanduser('~/.ssh/known_hosts')
-    if not os.path.exists(known_hosts):
-        return []
-    name = host if port == 22 else f'[{host}]:{port}'
-    p = subprocess.run(['ssh-keygen', '-F', name, '-f', known_hosts], capture_output=True, text=True, timeout=15)
-    out = []
-    for line in p.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and not line.startswith('#'):
-            out.append(f'{parts[1]} {parts[2]}')
-    return out
+    """The SSH host keys pinned for host:port in a known_hosts file (~/.ssh/known_hosts without one), as 'type base64'. ssh-keygen failing
+    to run is raised, not read as a host with no keys: a scan's signature check stops rather than treat a host key as a new signer."""
+    return [f'{kind} {b64}' for kind, b64 in known_host_entries(host, port, known_hosts or os.path.expanduser('~/.ssh/known_hosts'), raise_errors=True)]
 
 
 def _verify(msg: bytes, armored: str, keys: list[str]) -> bool:

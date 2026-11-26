@@ -19,7 +19,6 @@ import contextlib
 import os
 import re
 import secrets
-import subprocess
 import tempfile
 import time
 
@@ -172,16 +171,11 @@ def issue_user(vault, *, host: str, user: str, key_name: str, purpose: str, acto
 
 def host_public_key(address: str, port: int | None, known_hosts: str) -> str | None:
     """The host key StorageForge already holds for this address (known_hosts, pinned by a scan), ed25519 first. `type base64`."""
-    from .remote import child_env, known_hosts_name
-    try:
-        out = subprocess.run(['ssh-keygen', '-F', known_hosts_name(address, port), '-f', known_hosts], capture_output=True, text=True, timeout=10, env=child_env()).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    from .remote import known_host_entries
     found = {}
-    for row in out.splitlines():
-        parts = row.split()
-        if len(parts) >= 3 and not row.startswith(('#', '@')) and parts[1] in sshca.KEY_TYPES:
-            found.setdefault(parts[1], f'{parts[1]} {parts[2]}')
+    for kind, b64 in known_host_entries(address, port, known_hosts):
+        if kind in sshca.KEY_TYPES:
+            found.setdefault(kind, f'{kind} {b64}')
     return next((found[t] for t in sshca.KEY_TYPES if t in found), None)
 
 

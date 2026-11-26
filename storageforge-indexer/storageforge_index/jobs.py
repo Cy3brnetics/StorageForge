@@ -21,7 +21,6 @@ import os
 import re
 import secrets
 import shlex
-import subprocess
 import time
 import uuid
 
@@ -32,7 +31,7 @@ from . import site
 from . import deploy, moves, snapjobs
 from .db import Conn
 from .jobscript import JOB_SCRIPT
-from .remote import child_env, known_hosts_name
+from .remote import known_host_entries
 from .runner import known_hosts_path
 from .scriptkit import HELPERS, PACKAGES, longest_gap, need_line, one_line
 
@@ -159,13 +158,7 @@ def specs(conn: Conn, plan: dict) -> list[dict]:
 def pinned_key(host: dict) -> str:
     """The source's key as StorageForge pinned it, for a job that reaches it at addresses it never scanned. Empty when
     it has none yet (the job then trusts its first connection, as jobs without routes do)."""
-    try:
-        out = subprocess.run(['ssh-keygen', '-F', known_hosts_name(host['ssh_host'], host['ssh_port']), '-f', str(known_hosts_path())],
-                             capture_output=True, text=True, timeout=10, env=child_env()).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return ''
-    return ''.join('storageforge-source ' + line.split(None, 1)[1] + '\n' for line in out.splitlines()
-                   if line and not line.startswith('#') and len(line.split()) >= 3)
+    return ''.join(f'storageforge-source {kind} {b64}\n' for kind, b64 in known_host_entries(host['ssh_host'], host['ssh_port'], str(known_hosts_path())))
 
 
 def report_ca(report_url: str | None) -> str | None:

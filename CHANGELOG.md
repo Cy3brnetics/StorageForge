@@ -4,10 +4,16 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 ## Unreleased
 
+### Changed
+
+- **A `@revoked` or `@cert-authority` line in StorageForge's `known_hosts` is no longer read as a host's pinned key by sync jobs and scan signatures.** Jobs copied such a line into the job's own `known_hosts` with its fields shifted, so ssh ignored it, and a receiving host with only such a line counted as pinned when a send to it was deployed, then failed later with a less clear error. Such a host is now refused at deploy as one with no pinned key. Scan signatures listed it as one of the host's keys. Both now skip marker lines, as host fingerprints and host certificates already did, and a job's `known_hosts` no longer carries the comment that followed a key.
+- **Scan signatures find a host's keys in the same cases as the rest of StorageForge.** For a host with no port set or an address written in brackets, the scan looked for the wrong name in `known_hosts` and found no host keys. It now names the host as every other reader does, and ssh-keygen runs without StorageForge's own environment variables, as elsewhere.
+
 ### Internal
 
 - The `@@section` output of the network facts, OpenWrt, pfSense and infrastructure readings is split by one function, `netfacts.split_sections` (BE-11).
 - SSH wire strings and key fingerprints are written by one stdlib-only module, `sshwire`, in place of copies in eight modules. The agent receiver's signature check and the scan signature reader keep their own parsers (BE-12).
+- The keys pinned for a host in `known_hosts` are read by one function, `remote.known_host_entries`, in place of four `ssh-keygen -F` parsers in the fingerprint lookup, host certificates, sync jobs and scan signatures (BE-13).
 
 ## 0.6.2 — 2026-11-26
 
