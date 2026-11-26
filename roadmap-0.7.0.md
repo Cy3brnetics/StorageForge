@@ -29,7 +29,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | **0.6.3** | Shared primitives | BE-11 to BE-34, in the table below | The release |
 | **0.6.4** | One script kit | BE-35 to BE-47, in the table below | The Ansible exports compared before and after, each difference named · the release |
 | **0.6.5** | Platform APIs, network devices and the Toolbox | BE-48 to BE-58, in the table below | The API connection kind is a security boundary: BE-48 and BE-49 before they merge · the release |
-| **0.6.6** | Hosts, keys and credentials | BE-59 to BE-66, in the table below | BE-59, BE-61 and BE-62 each, before they merge: every private key and the KEK rotation pass through them · the release |
+| **0.6.6** | Hosts, keys and credentials | BE-59 to BE-66 and BE-84, in the table below | BE-59, BE-61 and BE-62 each, before they merge: every private key and the KEK rotation pass through them · the release |
 | **0.6.7** | Plans, jobs, alerts and routes | BE-67 to BE-75, in the table below | BE-73 changes who is notified and when · the release |
 | **0.6.8** | Shares, archives and quarantine | BE-76 to BE-80, in the table below | The lab run of the share and archive tiers, since generated scripts change · the release |
 | **0.6.9** | The Rust programs and the secure channels | BE-81 to BE-83, in the table below | Each of BE-82 and BE-83 is a security boundary and changes a signed image: the owner decides whether they are done at all · the release |
@@ -39,16 +39,16 @@ The order goes from what is wrong today, to the small shared pieces everything e
 
 | Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-01** | A certificate that changes, or a connection that loses its pin, in the middle of a platform read stops the read for every platform. Today six readers record it as a skipped line and store the rest as a good reading | Bug in one copy | |
-| **BE-02** | A Xen Orchestra host with no address is no longer matched to whichever scanned host has no address either | Bug in one copy | |
-| **BE-03** | An NVMe over TCP share formats a disk only when `blkid` says it is blank (exit 2), as iSCSI and NBD do. Today any probe that prints nothing, a read error included, is taken as blank | Bug in one copy | |
-| **BE-04** | The tunnel, overlay, restore-test and Toolbox steps reload systemd through `reload_systemd`, so a dead hard NFS or CIFS mount can't make them block logins | Bug in one copy | |
-| **BE-05** | A network scan left `running` by a restart is closed as interrupted at start, as deploys, change runs and file scans are | Bug in one copy | |
-| **BE-06** | One host's malformed agent manifest no longer stops the agent's disk, file and scan alerts for every host | Bug in one copy | |
-| **BE-07** | Retiring a host removes everything it owns: its security readings, ban history, graph snapshots, waivers, retention policies and per-host settings are left behind today. A test lists every table with a host column and fails when retire names neither it nor an exception | Bug in one copy | |
-| **BE-08** | A workload managed through a platform API is named by the platform's title (Portainer), as label evidence names it, not by the connection kind (portainer) | Bug in one copy | |
-| **BE-09** | A plan run as root with `SF_SECRET_DIR` set delivers a secret to the folder its steps then read. Today delivery uses the fixed folder and the tunnel and overlay steps read the variable's | Bug in one copy | |
-| **BE-10** | A stored secret can't silently replace a credential of another kind that holds the same name: `secret-add`, `headscale-key` and the device-credentials route check first, and a re-sealed secret keeps its policy | Bug in one copy | |
+| **BE-01** | A certificate that changes, or a connection that loses its pin, in the middle of a platform read stops the read for every platform. Today six readers record it as a skipped line and store the rest as a good reading | Bug in one copy | `48c877f, 3ae46a5` |
+| **BE-02** | A Xen Orchestra host with no address is no longer matched to whichever scanned host has no address either | Bug in one copy | `f2e3324` |
+| **BE-03** | An NVMe over TCP share formats a disk only when `blkid` says it is blank (exit 2), as iSCSI and NBD do. Today any probe that prints nothing, a read error included, is taken as blank | Bug in one copy | `6e78500` |
+| **BE-04** | The tunnel, overlay, restore-test and Toolbox steps reload systemd through `reload_systemd`, so a dead hard NFS or CIFS mount can't make them block logins | Bug in one copy | `1874de7, 6661c77, 723db68` |
+| **BE-05** | A network scan left `running` by a restart is closed as interrupted at start, as deploys, change runs and file scans are | Bug in one copy | `53e3154` |
+| **BE-06** | One host's malformed agent manifest no longer stops the agent's disk, file and scan alerts for every host | Bug in one copy | `219a0c9` |
+| **BE-07** | Retiring a host removes everything it owns: its security readings, ban history, graph snapshots, waivers, retention policies and per-host settings are left behind today. A test lists every table with a host column and fails when retire names neither it nor an exception | Bug in one copy | `3a53dee` |
+| **BE-08** | A workload managed through a platform API is named by the platform's title (Portainer), as label evidence names it, not by the connection kind (portainer) | Bug in one copy | `55a5253` |
+| **BE-09** | A plan run as root with `SF_SECRET_DIR` set delivers a secret to the folder its steps then read. Today delivery uses the fixed folder and the tunnel and overlay steps read the variable's | Bug in one copy | `8a1ff66` |
+| **BE-10** | A stored secret can't silently replace a credential of another kind that holds the same name: `secret-add`, `headscale-key` and the device-credentials route check first, and a re-sealed secret keeps its policy | Bug in one copy | `75d743c` |
 
 ## 0.6.3: Shared primitives
 
@@ -125,6 +125,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | **BE-64** | The name rules copied between modules (secret name, Unix login, machine id, hex digest) are defined once | Duplicate | |
 | **BE-65** | `security.py` and `secplus.py` share a host-action module instead of one reaching into the other's private functions | Duplicate | |
 | **BE-66** | One store for host readings (security, infrastructure, device, package), in place of raw SQL in ten modules | Duplicate | |
+| **BE-84** | Removing a device credential by name can no longer remove a step secret or an API connection's token: the remove route checks the kind, as storing does since BE-10 | Bug in one copy | |
 
 ## 0.6.7: Plans, jobs, alerts and routes
 
@@ -174,6 +175,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | :--- | :--- |
 | Whether 0.6.9 is done at all. The two Noise implementations and the enclave's own copy of the primitives are real duplication, but they sit on the channels that carry the vault's secrets, and the enclave's image is signed and reproducible: a changed dependency changes its digest. The survey's records for them were not checked by a second reader | BE-82, BE-83 |
 | Whether the CLI and the web should audit and check the same things. They differ today (three actor formats, the web audits saves and the CLI doesn't, the web's clone save checks accepted risks and the CLI's doesn't). The survey refused to merge them without a decision on which is right | Not on this roadmap until decided |
+| What retiring a host does with the 31 tables that still hold its name. BE-07 removed what the roadmap named and lists the rest in `retire.KEPT`, each with a reason that starts *not decided*: the agent's tables, alerts, host logs and their counts, saved host configs, task runs, notification history, playbook runs, traffic samples, scan signatures, host checks, secret deliveries, SSH CA hosts, workload captures and four Toolbox tables. Retire can't be undone, so each needs a yes (removed with the host) or a no (kept as history) | Retire removing them |
 | Unified designs, [roadmap.md](roadmap.md) step 3i. The survey found the two design stores again and left them: they wait on the answers in section 10.1 and a stored-format migration | Not on this roadmap |
 
 ## Will not be combined
