@@ -75,7 +75,7 @@ class BrowserEnclave(unittest.TestCase):
         self.page.set_default_timeout(30000)
         self.errors, self.sent = [], []
         self.page.on('request', lambda r: self.sent.append((r.method, r.url.split('/', 3)[3])) if r.method != 'GET' else None)
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
         self.page.on('console', lambda m: self.errors.append(m.text) if 'Content Security Policy' in m.text else None)
         self.page.goto(self.base + '/login')
         self.page.fill('input[type=text], input[name=username], #username', 'admin')

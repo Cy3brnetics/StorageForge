@@ -63,7 +63,7 @@ class BrowserVms(unittest.TestCase):
         self.addCleanup(self.page.close)
         self.page.set_default_timeout(30000)
         self.errors = []
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
         self.page.on('dialog', lambda d: (self.errors.append(f'dialog: {d.message}'), d.dismiss()))
         self.page.goto(self.base + '/login')
         self.page.wait_for_function("typeof waBtn !== 'undefined'")

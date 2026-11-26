@@ -414,6 +414,7 @@ function renderTopoSoon() {  // for data arriving in the background: the answers
 }
 function renderTopo() {
   clearTimeout(topoSoon);
+  if (sfSignedOut.gone) return;      // a render put off by renderTopoSoon can come due after sign-out has emptied the page
   updateSavebar();
   if (T.mode !== 'topo') return;
   initCanvas();

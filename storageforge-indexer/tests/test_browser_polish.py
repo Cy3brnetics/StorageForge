@@ -53,7 +53,7 @@ class BrowserPolish(unittest.TestCase):
         self.page = self.browser.new_page(**({'viewport': size} if size else {}))
         self.addCleanup(self.page.close)
         self.errors = []
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
         self.login(base, user)
         return self.page
 
@@ -236,6 +236,40 @@ class BrowserPolish(unittest.TestCase):
         page.evaluate('void loadDupes()')
         page.wait_for_timeout(500)
         self.assertEqual(self.errors, [])
+
+    def test_signing_out_at_any_answer_of_the_first_load_leaves_no_script_error(self):
+        # GitHub CI's slower runners signed out while a render put off for 50 ms was due (topology.js renderTopoSoon). Rather than
+        # hope to hit that moment, sign out at each of the first twenty answers the page reads, so every such moment is tried.
+        init = """(() => {
+          const at = Number(sessionStorage.getItem('sf.test.signout_at') || 0); let n = 0;
+          if (!at || location.pathname !== '/') return;
+          for (const how of ['json', 'text']) {
+            const read = Response.prototype[how];
+            Response.prototype[how] = function () {
+              n += 1;
+              if (n === at && typeof sfSignedOut === 'function') { sfSignedOut.gone = true; document.body.replaceChildren(); }
+              return read.call(this);
+            };
+          }
+        })();"""
+        found = {}
+        for at in range(1, 21):
+            page = self.browser.new_page()
+            self.addCleanup(page.close)
+            errors = []
+            page.on('pageerror', lambda e: errors.append(e.stack or str(e)))
+            page.add_init_script(init)
+            page.goto(self.full + '/login')
+            page.evaluate(f"sessionStorage.setItem('sf.test.signout_at', '{at}')")
+            page.fill('#username', 'admin')
+            page.fill('input[type=password]', PW)
+            page.press('input[type=password]', 'Enter')
+            page.wait_for_url(self.full + '/')
+            page.wait_for_timeout(800)
+            for e in errors:
+                found.setdefault(e, []).append(at)
+            page.close()
+        self.assertEqual(found, {}, 'script errors after signing out at these answers')
 
     def test_the_theme_really_changes_the_colours_both_ways(self):
         page = self.open(self.full)
