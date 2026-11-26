@@ -237,7 +237,7 @@ See [Console](console.md).
 **The stack on your tailnet.** Give the stack a Tailscale auth key and it joins your tailnet itself: the web UI is then also at `https://storageforge.<your-tailnet>.ts.net` with a certificate browsers trust, and StorageForge reaches hosts by their Tailscale (100.x) address over the tailnet, while LAN hosts stay on the LAN. The Docker host does not need Tailscale.
 
 1. In the Tailscale admin console, turn on MagicDNS and HTTPS certificates, and make an auth key (reusable is not needed: the node is kept in the `sf-tailscale` volume after the first start; tag it if your ACLs use tags).
-2. Put the key in a file only root can read, and point the stack at it:
+2. Give the stack the key. With a deploy tool that only has the repository (Dockhand, Portainer, Komodo), set `STORAGEFORGE_TS_AUTHKEY=tskey-auth-…` in the stack's environment, deploy once, then remove it and deploy again: the node is kept in the `sf-tailscale` volume, and `docker inspect` shows the key for as long as it is set. Where compose runs on the Docker host, a file only root can read is better:
 
    ```bash
    sudo install -m 0600 /dev/stdin /etc/storageforge/ts-authkey <<<'tskey-auth-…'
@@ -245,7 +245,7 @@ See [Console](console.md).
    docker compose up -d
    ```
 
-   `STORAGEFORGE_TS_AUTHKEY` in the environment works too, but `docker inspect` shows it. `STORAGEFORGE_TS_HOSTNAME` changes the name (default `storageforge`).
+   `STORAGEFORGE_TS_HOSTNAME` changes the name (default `storageforge`).
 3. `docker compose logs tailscale` says where the UI is, or why not. Without a key the container joins nothing and waits.
 
 What it does and does not do:
