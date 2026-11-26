@@ -387,7 +387,8 @@ class Enclave(Harness):
         earned = int((time.time() - started) / 10) + 1       # one more every ten seconds, and a slow machine takes that long
         self.assertEqual(codes[:6], ['auth'] * 6)
         self.assertLessEqual(codes.count('auth'), 6 + earned, 'six a minute, then it says wait: the web app cannot raise that')
-        self.assertEqual(codes[-1], 'rate')
+        if 6 + earned < len(codes):         # the time taken did not earn every attempt, so the last ones were told to wait
+            self.assertEqual(codes[-1], 'rate')
 
     def test_it_holds_nothing_after_a_restart(self):
         self.unlock()
