@@ -121,6 +121,25 @@ class Rotation(Base):
         apiread.read(self.db, self.conn, apiconn.get(self.conn, self.row['conn_id']))       # the old token still reads
         self.no_secret_anywhere(caught.exception)
 
+    def test_a_certificate_that_changes_while_the_new_token_is_checked_refuses_the_rotation_and_is_recorded(self):
+        path = '/access/permissions'        # the next call, for the new token's expiry, forgives an error
+        answer, new = self.fake.routes[path], []
+
+        def swap(req):
+            new.append(self.fake.new_certificate())
+            return answer
+        self.fake.routes[path] = swap
+        with self.assertRaises(apiconn.RotationRefused) as caught:
+            apiconn.rotate(self.db, self.conn, self.row['conn_id'], NEW_ID, NEW, 'gabe')
+        self.assertIn('old token stays', str(caught.exception))
+        self.assertIn('certificate', str(caught.exception))
+        self.assertEqual(self.released()['password'], TOKEN)
+        self.nothing_staged()
+        row = apiconn.get(self.conn, self.row['conn_id'])
+        self.assertEqual((row['token_id'], row['state'], row['cert_offered']), (TOKEN_ID, 'certificate-changed', new[0]))
+        self.assertIn('security-api-cert:lab', apiconn.problems(self.conn))
+        self.no_secret_anywhere(caught.exception)
+
     def test_a_wider_token_or_one_that_reads_less_is_not_taken(self):
         self.known[NEW] = {'/': PVE_ADMIN}
         with self.assertRaisesRegex(apiconn.RotationRefused, 'more than StorageForge needs'):

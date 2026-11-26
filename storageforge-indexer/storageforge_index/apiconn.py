@@ -352,6 +352,12 @@ def rotate(db, conn: Conn, conn_id, token_id: str, secret: str, actor: str, expi
         try:
             with open_client(db, conn, trial) as client:
                 rb = apireadback.readback(client, trial)
+                if client.fatal:         # the read-back forgives some errors, never a changed certificate
+                    raise client.fatal
+        except (CertificateChanged, NotPinned) as exc:
+            record_failure(conn, row, exc)
+            raise RotationRefused(f'{_clean(str(exc), secret)}. Nothing more was sent to it and the old token stays in place: '
+                                  'check the certificate in Keys, Platform connections') from None
         except ApiError as exc:
             raise RotationRefused(f'the platform did not take the new token: {_clean(str(exc), secret)}. The old token stays in place') from None
         old = row.get('readback') or {}
