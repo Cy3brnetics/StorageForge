@@ -522,7 +522,8 @@ def _int(v):
         return None
 
 
-def _unoctal(s: str) -> str:
+def unoctal(s: str) -> str:
+    """Decode the \\NNN octal escapes that fstab, mountinfo and findmnt write for spaces and other bytes."""
     return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), s)
 
 
@@ -587,12 +588,12 @@ def parse_mountinfo(text: str, df_text: str = '') -> list[MountInfo]:
         a, b = left.split(), right.split()
         if len(a) < 6 or len(b) < 2:
             continue
-        target = _unoctal(a[4])
+        target = unoctal(a[4])
         total, used = sizes.get(target, (None, None))
         # the mount's own options, then the filesystem's (subvolid=, compress=, vers=), as findmnt shows them
         opts = list(dict.fromkeys(a[5].split(',') + (b[2].split(',') if len(b) > 2 else [])))
-        out.append(MountInfo(target=target, source=_unoctal(b[1]), fstype=b[0], options=','.join(opts),
-                             majmin=a[2], fsroot=_unoctal(a[3]), total=total, used=used))
+        out.append(MountInfo(target=target, source=unoctal(b[1]), fstype=b[0], options=','.join(opts),
+                             majmin=a[2], fsroot=unoctal(a[3]), total=total, used=used))
     return out
 
 

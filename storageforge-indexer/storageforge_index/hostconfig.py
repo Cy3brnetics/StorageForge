@@ -27,7 +27,7 @@ from pathlib import Path
 from .db import Conn, loads
 from .moves import host_slug
 from .payloads import node_from_index, shares_from_inventory
-from .remote import NETWORK_FS, PSEUDO_FS, TMP_FS, is_under
+from .remote import NETWORK_FS, PSEUDO_FS, TMP_FS, is_under, unoctal
 
 KEEP = 30              # versions kept per host
 CONFIG_PATH = re.compile(r'/etc/(fstab|crypttab|mdadm\.conf|mdadm/mdadm\.conf|exports|exports\.d/[\w.-]+\.exports'
@@ -117,13 +117,9 @@ def parse_fstab_lines(text: str) -> list[dict]:
         parts = raw.split('#', 1)[0].split()
         if len(parts) < 3 or _CONTROL.search(raw):
             continue
-        out.append({'spec': _unoctal(parts[0]), 'target': _unoctal(parts[1]), 'target_raw': parts[1], 'fstype': parts[2],
+        out.append({'spec': unoctal(parts[0]), 'target': unoctal(parts[1]), 'target_raw': parts[1], 'fstype': parts[2],
                     'options': parts[3] if len(parts) > 3 else 'defaults', 'line': raw.strip()})
     return out
-
-
-def _unoctal(s: str) -> str:
-    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), s)
 
 
 def _octal(s: str) -> str:

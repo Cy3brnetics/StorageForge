@@ -13,6 +13,7 @@ import re
 import time
 
 from . import blueprint, graph, protection
+from .capacity import fmt_bin
 
 MAX_VERSIONS = 50                # per host, automatic ones included
 MAX_BYTES = 2 << 20              # one version: as large as the biggest design the planner saves
@@ -173,11 +174,7 @@ def _word(field: str) -> str:
 
 
 def _size(n: float) -> str:
-    u, i = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'], 0
-    while abs(n) >= 1024 and i < len(u) - 1:
-        n /= 1024
-        i += 1
-    return f'{n:.0f} {u[i]}' if i < 2 else f'{n:.2f} {u[i]}'
+    return fmt_bin(n, 2)
 
 
 def _show(field: str, value) -> str:

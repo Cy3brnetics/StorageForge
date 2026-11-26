@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .capacity import MiB, parse_size, pool_capacity
 from .db import Conn, epoch
-from .remote import DEFAULT_EXCLUDE_PATHS, NETWORK_FS, PSEUDO_FS, TMP_FS, is_under
+from .remote import DEFAULT_EXCLUDE_PATHS, NETWORK_FS, PSEUDO_FS, TMP_FS, is_under, unoctal
 from .stream import join_path, split_path
 
 
@@ -155,10 +155,6 @@ def _derive_mounts(node, bp):
 
 # /etc/fstab
 
-def _unoctal(s):
-    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), s)
-
-
 def parse_fstab(text: str) -> list[dict]:
     out = []
     for line in text.splitlines():
@@ -166,7 +162,7 @@ def parse_fstab(text: str) -> list[dict]:
         parts = line.split()
         if len(parts) < 3:
             continue
-        out.append({'spec': _unoctal(parts[0]), 'target': _unoctal(parts[1]), 'fstype': parts[2],
+        out.append({'spec': unoctal(parts[0]), 'target': unoctal(parts[1]), 'fstype': parts[2],
                     'options': parts[3].split(',') if len(parts) > 3 else ['defaults'],
                     'pass': int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0})
     return out
@@ -636,7 +632,7 @@ def parse_nfs_exports(text: str) -> list[dict]:
         else:
             # the path may be separated from the clients by a space or a tab, whichever comes first
             path, rest = (line.split(None, 1) + [''])[:2]
-        path = _unoctal(path.strip())
+        path = unoctal(path.strip())
         clients = [c for c in rest.split() if c]
         e = out.setdefault(path, {'protocol': 'NFS', 'name': path, 'path': path, 'clients': [], 'options': '', 'rules': {}})
         for c in clients:
