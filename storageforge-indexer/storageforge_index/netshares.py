@@ -22,7 +22,8 @@ client (a report by default, --apply to make it so), the deploy, drift records a
                           just `return 0`). <k> is the key in lower case. A client unit named share_unit TARGET (.service or .mount) is
                           stopped and removed for you when its mount leaves the design.
 
-Script conventions (shares.py SHARES_BODY_3 has the helpers): E_PROTO/E_NAME/E_PATH/E_CLIENTS/E_OPTS and E_PARAM per share,
+Script conventions (shares.py SHARES_BODY_3 has the helpers; BASH below adds par, secret, share_unit, unit_file, drop_units, act,
+open_port LABEL PORT/PROTO CLIENTS, indices_of KEY): E_PROTO/E_NAME/E_PATH/E_CLIENTS/E_OPTS and E_PARAM per share,
 C_HOST/C_TARGET/C_PROTO/C_SOURCE/C_NAME and C_PARAM per client mount. par KEY "$blob" reads one value from a *_PARAM blob, and
 secret NAME prints the path of a vault secret the run brought (empty when it did not). own_file, service_on, open_fw, need_cmd,
 backup, durable, ok/doing/missing/conflict/info/skip/section are the same as NFS and SMB use. A driver writes only files and units
@@ -189,6 +190,23 @@ par() { awk -v k="$1" 'BEGIN { FS = "=" } $1 == k { sub(/^[^=]*=/, ""); print; e
 secret() { local d=/run/storageforge/secrets; ((EUID != 0)) && d=${SF_SECRET_DIR:-$d}; [[ -s $d/$1 ]] && echo "$d/$1"; return 0; }
 share_unit() { echo "storageforge-share-$SERVER-$(systemd-escape -p "$1")"; }   # TARGET -> the name a client unit for it gets
 MANAGED_FILES=()
+act() { if ((APPLY)); then doing "$*"; return 0; fi; missing "would: $*"; return 1; }   # the rclone library (rclone.LIB) speaks this
+open_port() { # LABEL PORT/PROTO CLIENTS -> the port open to those clients (addresses and subnets; none: any) in firewalld or ufw
+  local label=$1 port=${2%/*} proto=${2#*/} c from
+  [[ $proto == "$2" ]] && proto=tcp
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    if firewall-cmd -q --query-port="$port/$proto" 2>/dev/null; then ok "firewalld allows $port/$proto ($label)"
+    elif ((APPLY)); then doing "firewalld: allow $port/$proto ($label)"; firewall-cmd -q --permanent --add-port="$port/$proto" && firewall-cmd -q --reload
+    else missing "firewalld does not allow $port/$proto ($label)"; fi
+  elif command -v ufw >/dev/null && ufw status 2>/dev/null | grep "^Status: active" >/dev/null; then
+    from=$(cidrs "$3"); [[ -n $from ]] || from=any
+    for c in $from; do
+      if ufw status | grep -E "^$port/$proto +ALLOW +(IN +)?$([[ $c == any ]] && echo Anywhere || echo "${c//./\\.}")" >/dev/null; then ok "ufw allows $port/$proto from $c"
+      elif ((APPLY)); then doing "ufw allow from $c to any port $port proto $proto"; ufw allow from "$c" to any port "$port" proto "$proto" >/dev/null
+      else missing "ufw does not allow $port/$proto from $c ($label)"; fi
+    done
+  else info "no active firewalld or ufw: nothing to open for $label"; fi
+}
 indices_of() { local i; for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == "$1" ]] && echo "$i"; done; return 0; }
 unit_file() { # NAME CONTENT -> a unit of StorageForge: written whole when it differs, systemd told; 0 if it changed
   local f=/etc/systemd/system/$1
