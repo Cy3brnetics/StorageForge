@@ -763,7 +763,7 @@ t_workload_action() { local runtime=$1 name=$2 action=$3 state
         snapshot) conflict "containers have no snapshot here: snapshot the dataset their volumes are on"; return 0 ;;
         force-off) [[ $state != running ]] && { ok "$name is stopped"; return 0; } ;;
       esac
-      act "$action $name${action/#force-off/ (killed, with no time to stop cleanly)}" || return 0
+      act "$action $name$([[ $action == force-off ]] && echo " (killed, with no time to stop cleanly)")" || return 0
       try "$runtime" "${action/#force-off/kill}" "$name" >/dev/null && ok "$action: $name" ;;
     libvirt)
       if ! virsh -c qemu:///system version >/dev/null 2>&1; then
@@ -791,7 +791,7 @@ t_workload_action() { local runtime=$1 name=$2 action=$3 state
         start) [[ $state == RUNNING ]] && { ok "$name is running"; return 0; } ;;
         stop|force-off) [[ $state != RUNNING ]] && { ok "$name is stopped"; return 0; } ;;
       esac
-      act "$action $name${action/#force-off/ (killed, with no time to stop cleanly)}" || return 0
+      act "$action $name$([[ $action == force-off ]] && echo " (killed, with no time to stop cleanly)")" || return 0
       case $action in
         start) try lxc-start -n "$name" ;;
         stop) try lxc-stop -n "$name" ;;

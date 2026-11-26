@@ -407,6 +407,41 @@ class Vm(CtRun):
         self.assertFalse(any('create' in l or 'importdisk' in l for l in lines))
         self.assertEqual(list((tmp / 'tmpdir').iterdir()), [], 'the temporary folder is removed on this way out too')
 
+    def failing_qm(self, tmp, verb, name='app-01'):
+        (tmp / 'qm').write_text((tmp / 'qm').read_text().replace('esac', f'  config) echo "name: {name}" ;;\n  {verb}) exit 1 ;;\nesac'))
+
+    def test_a_failure_after_qm_create_removes_the_vm_this_run_made(self):
+        for verb, over in (('resize', {'source': 'image', 'iso': '', 'image': 'debian13'}), ('set', {'source': 'image', 'iso': '', 'image': 'debian13'})):
+            with self.subTest(verb):
+                tmp, log = self.vm_stubs()
+                self.failing_qm(tmp, verb)
+                r = self.run_vm(tmp, **over)
+                self.assertNotEqual(r.returncode, 0)
+                lines = log.read_text().splitlines()
+                self.assertIn(f'{tmp}/qm destroy 106 --purge', lines)
+                self.assertLess(next(i for i, x in enumerate(lines) if ' create ' in x), lines.index(f'{tmp}/qm destroy 106 --purge'))
+                self.assertIn('removed the half-made VM 106 (app-01)', r.stdout)
+                self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
+
+    def test_the_undo_leaves_a_vm_that_is_not_named_as_the_step_says(self):
+        tmp, log = self.vm_stubs()
+        self.failing_qm(tmp, 'resize', name='someone-else')
+        r = self.run_vm(tmp, source='image', iso='', image='debian13')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn('destroy', log.read_text())
+
+    def test_a_failure_before_qm_create_destroys_nothing(self):
+        tmp, log = self.vm_stubs(match=False)
+        self.failing_qm(tmp, 'resize')
+        self.run_vm(tmp, source='image', iso='', image='debian13')
+        self.assertNotIn('destroy', log.read_text())
+
+    def test_a_vm_that_was_made_and_started_is_not_destroyed(self):
+        tmp, log = self.vm_stubs()
+        self.failing_qm(tmp, 'start')
+        self.run_vm(tmp, start=True)
+        self.assertNotIn('destroy', log.read_text())
+
     def with_trap(self, tmp, cmd):
         return f"trap 'echo ran > {tmp}/marker' EXIT\n" + cmd
 

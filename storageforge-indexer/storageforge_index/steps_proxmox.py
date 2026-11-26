@@ -162,11 +162,24 @@ t_pve_vm() { local vmid=$1 name=$2 source=$3 iso=$4 image=$5 store=$6 disk=${7:-
   # The folder is the subshell own: its EXIT trap removes it, whether the step ends or a conflict exits (an Ansible export does), and the trap
   # of the script around it is not touched. The subshell cannot count a problem for the script, so a failure is said once more here.
   ( trap 'rm -rf -- "$tmp"' EXIT; pve_vm_make ) || rc=$?
-  rm -rf -- "$tmp"
+  # a failure after qm create leaves a VM that is not what was asked for: the one this run made is removed again
+  # (the mark is beside the temporary folder, not in it: the subshell trap removes the folder, and a conflict of an Ansible run ends the subshell)
+  if ((rc)) && [[ -e $tmp.created ]]; then pve_vm_undo; fi
+  rm -rf -- "$tmp" "$tmp.created"
   ((!rc)) || { conflict "VM $vmid ($name): the step stopped, see above"; return 0; }
   ok "created VM $vmid ($name)"
   # in the parent, so a failed start counts as a problem of the script
   [[ -z $start ]] || { try qm start "$vmid" >/dev/null && ok "started $vmid"; }
+  return 0
+}
+
+# pve_vm_undo: qm destroy --purge of the VMID this run created, and only when it still has the name of the step. Reads the locals of t_pve_vm.
+pve_vm_undo() { local cfg got
+  cfg=$(qm config "$vmid" 2>/dev/null) || cfg=
+  got=$(awk '$1 == "name:" { print $2; exit }' <<<"$cfg")
+  if [[ $got != "$name" ]]; then info "VM $vmid is named ${got:-nothing} now, not $name: it is left as it is"; return 0; fi
+  if qm destroy "$vmid" --purge >/dev/null 2>&1; then ok "removed the half-made VM $vmid ($name) with qm destroy --purge"
+  else conflict "could not remove the half-made VM $vmid ($name): remove it in Proxmox, or with qm destroy $vmid --purge"; fi
   return 0
 }
 
@@ -176,6 +189,7 @@ pve_vm_make() { local url sums cos base keyf help unused
   if [[ $source == iso ]]; then
     args+=(--scsi0 "$store:$disk" --ide2 "$iso,media=cdrom" --boot "order=scsi0;ide2")
     try qm create "${args[@]}" >/dev/null || return 1
+    : >"$tmp.created"
   else
     IFS=$'\t' read -r url sums cos < <(sf_vm_image "$image") || { conflict "no image $image in the catalog"; return 1; }
     base=$tmp/$(basename "$url")
@@ -184,8 +198,10 @@ pve_vm_make() { local url sums cos base keyf help unused
     help=$(qm help create 2>&1) || help=
     if grep -q import-from <<<"$help"; then
       try qm create "${args[@]}" --scsi0 "$store:0,import-from=$base" >/dev/null || return 1
+      : >"$tmp.created"
     else
       try qm create "${args[@]}" >/dev/null || return 1
+      : >"$tmp.created"
       try qm importdisk "$vmid" "$base" "$store" >/dev/null || return 1
       unused=$(qm config "$vmid" | awk '$1 == "unused0:" { print $2; exit }')
       [[ -n $unused ]] || { conflict "qm importdisk made no disk for $vmid"; return 1; }

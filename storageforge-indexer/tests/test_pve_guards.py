@@ -76,7 +76,7 @@ class Report(Fleet):
         text = changes.script(self.conn, p)
         self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).returncode, 0)
         tmp = Path(tempfile.mkdtemp(dir=self.tmp))
-        for name, body in (('uname', 'echo nas'), ('lxc-info', 'echo "State:          RUNNING"')):
+        for name, body in (('uname', 'echo nas'), ('lxc-info', 'echo "State:          RUNNING"'), ('docker', 'echo exited')):
             (tmp / name).write_text(f'#!/bin/sh\n{body}\n')
             (tmp / name).chmod(0o755)
         env = {**os.environ, 'PATH': f'{tmp}:{os.environ["PATH"]}', 'SF_PVE_DIR': pve_dir}
@@ -88,6 +88,23 @@ class Report(Fleet):
         self.assertRegex(out, r'(?i)missing.*stop web')
         self.assertNotIn('command not found', out)
         self.assertNotIn('Proxmox', out)
+
+    def test_the_line_names_the_action_once_and_the_kill_only_for_force_off(self):
+        for runtime, action in (('lxc', 'restart'), ('docker', 'start')):
+            out = self.run_report('workload-action', str(Path(self.tmp) / 'no-pve'), runtime=runtime, action=action)
+            self.assertRegex(out, rf'(?m)missing.*would.*{action} web$', out)
+            self.assertNotIn(f'web{action}', out)
+        out = self.run_report('workload-action', str(Path(self.tmp) / 'no-pve'), runtime='lxc', action='force-off')
+        self.assertIn('force-off web (killed, with no time to stop cleanly)', out)
+
+    def test_the_folder_override_is_for_a_user_that_is_not_root(self):
+        from storageforge_index import pvenode
+        fn = pvenode.NOT_ON_PVE_BASH
+        self.assertRegex(fn, r'\(\(EUID != 0\)\) && d=\$\{SF_PVE_DIR:-\$d\}')
+        self.assertEqual(fn.count('SF_PVE_DIR'), 1)
+        run = lambda env: subprocess.run(['bash', '-c', 'conflict() { echo "conflict: $*"; }\n' + fn + '\nnot_on_pve; echo rc=$?'], env=env, capture_output=True, text=True).stdout   # noqa: E731
+        self.assertIn('rc=1', run({**os.environ, 'SF_PVE_DIR': self.tmp}))
+        self.assertIn('rc=0', run({**os.environ, 'SF_PVE_DIR': str(Path(self.tmp) / 'none')}))
 
     def test_on_a_node_the_script_says_so_and_changes_nothing(self):
         out = self.run_report('workload-action', self.tmp)

@@ -20,7 +20,7 @@ def is_proxmox_host(conn, host: str, reading: dict | None = None) -> bool:
 
 # One definition for the script and for every Ansible export that calls it: an export holds one step's bash, not the whole script.
 NOT_ON_PVE_BASH = (
-    'not_on_pve() { [[ -e ${SF_PVE_DIR:-/etc/pve} ]] && { conflict "this is a Proxmox VE node: use the Proxmox VE steps, so Proxmox knows about it"; return 1; }; return 0; }')
+    'not_on_pve() { local d=/etc/pve; ((EUID != 0)) && d=${SF_PVE_DIR:-$d}; [[ -e $d ]] && { conflict "this is a Proxmox VE node: use the Proxmox VE steps, so Proxmox knows about it"; return 1; }; return 0; }')
 
 
 def refuse_on_node(conn, h: dict, say) -> bool:
