@@ -376,7 +376,7 @@ done
 echo '@@accounts'; getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<60000 {print "u\t" $1 "\t" $3 "\t" $4 "\t" $6 "\t" $7}'
 getent group 2>/dev/null | awk -F: '$4!="" || ($3>=1000 && $3<60000) {print "g\t" $1 "\t" $3 "\t" $4}'
 echo '@@packages'; (PATH="$PATH:/usr/sbin:/sbin"; for m in apt-get dnf yum zypper pacman; do command -v "$m" >/dev/null 2>&1 && { echo "pm $m"; break; }; done
-  for c in exportfs smbd mount.nfs mount.cifs rsync rsnapshot git btrfs bash sudo rclone sshfs mount.davfs targetcli iscsiadm nvme nbd-server nbd-client glusterd mount.glusterfs; do command -v "$c" >/dev/null 2>&1 && echo "have $c"; done
+  for c in exportfs smbd mount.nfs mount.cifs rsync rsnapshot git btrfs bash sudo rclone sshfs mount.davfs targetcli iscsiadm nvme nbd-server nbd-client glusterd mount.glusterfs virsh virtiofsd; do command -v "$c" >/dev/null 2>&1 && echo "have $c"; done
   echo 'probed 1'; if [ -d /run/systemd/system ]; then echo 'init systemd'; else echo 'init other'; fi
   v=$(ssh -V 2>&1 | sed -n 's/^OpenSSH_\([0-9]*\.[0-9]*\).*/\1/p'); [ -n "$v" ] && echo "openssh $v"
   @@PLATFORM@@; [ -n "$platform" ] && echo "platform $platform"

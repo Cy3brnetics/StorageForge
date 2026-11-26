@@ -19,7 +19,7 @@ client (a report by default, --apply to make it so), the deploy, drift records a
     bash                  defines server_<k> (called once on the server, whether or not the design has shares of it: with none it
                           takes its own config away), client_<k> I (one client mount, I indexes C_*), and cleanup_<k> (on a client,
                           after the units of mounts the design dropped are gone: anything else to undo, such as an iSCSI logout; often
-                          just `return 0`). <k> is the key in lower case. A client unit named share_unit TARGET (.service or .mount) is
+                          just `return 0`). <k> is the key in lower case. A client unit named share_unit TARGET (.service) is
                           stopped and removed for you when its mount leaves the design.
 
 Script conventions (shares.py SHARES_BODY_3 has the helpers; BASH below adds par, secret, share_unit, unit_file, drop_units, act,
@@ -28,7 +28,8 @@ C_HOST/C_TARGET/C_PROTO/C_SOURCE/C_NAME and C_PARAM per client mount. par KEY "$
 secret NAME prints the path of a vault secret the run brought (empty when it did not). own_file, service_on, open_fw, need_cmd,
 backup, durable, ok/doing/missing/conflict/info/skip/section are the same as NFS and SMB use. A driver writes only files and units
 named for StorageForge, records what it wrote in MANAGED_FILES, and names a client unit so cleanup can find it:
-    storageforge-share-<server>-<systemd-escaped target>.service (or .mount)
+    storageforge-share-<server>.<systemd-escaped target>.service, from share_unit TARGET (a host slug holds no dot, so one server's
+    prefix never matches another's)
 Values reach the script as single-quoted words (shlex.quote); a driver checks each against a pattern before that, as shares.py does.
 """
 from __future__ import annotations
@@ -188,7 +189,7 @@ def params_blob(params: dict) -> str:
 BASH = r"""
 par() { awk -v k="$1" 'BEGIN { FS = "=" } $1 == k { sub(/^[^=]*=/, ""); print; exit }' <<<"$2"; }   # KEY BLOB -> its value
 secret() { local d=/run/storageforge/secrets; ((EUID != 0)) && d=${SF_SECRET_DIR:-$d}; [[ -s $d/$1 ]] && echo "$d/$1"; return 0; }
-share_unit() { echo "storageforge-share-$SERVER-$(systemd-escape -p "$1")"; }   # TARGET -> the name a client unit for it gets
+share_unit() { echo "storageforge-share-$SERVER.$(systemd-escape -p "$1")"; }   # TARGET -> the name a client unit for it gets. The dot: a host slug has none, so nas. never matches nas-2.
 MANAGED_FILES=()
 act() { if ((APPLY)); then doing "$*"; return 0; fi; missing "would: $*"; return 1; }   # the rclone library (rclone.LIB) speaks this
 open_port() { # LABEL PORT/PROTO CLIENTS -> the port open to those clients (addresses and subnets; none: any) in firewalld or ufw
@@ -229,13 +230,13 @@ drop_units() { # PREFIX KEEP... -> stop, disable and remove units named PREFIX* 
 }
 driver_units_cleanup() { # on a client: units for mounts of this server that the design no longer has, whatever protocol made them
   local i keep=()
-  compgen -G "/etc/systemd/system/storageforge-share-$SERVER-*" >/dev/null || return 0
+  compgen -G "/etc/systemd/system/storageforge-share-$SERVER.*" >/dev/null || return 0
   for i in "${!C_HOST[@]}"; do
     [[ ${C_HOST[$i]} == "$ME" && ${C_PROTO[$i]} != NFS && ${C_PROTO[$i]} != SMB ]] || continue
     keep+=("$(share_unit "${C_TARGET[$i]}").service" "$(share_unit "${C_TARGET[$i]}").mount")
   done
   section "mounts of $SERVER no longer in the design (units)"
-  drop_units "storageforge-share-$SERVER-" ${keep[@]+"${keep[@]}"}
+  drop_units "storageforge-share-$SERVER." ${keep[@]+"${keep[@]}"}
 }
 """
 

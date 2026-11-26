@@ -6,7 +6,7 @@ it at /srv/storageforge-sftp/NAME/NAME by a unit of StorageForge. A drop-in, /et
 accounts the share names in that chroot with internal-sftp only: no shell, no forwarding, no tunnels. sshd -t checks it before sshd is
 reloaded; a config sshd rejects is taken back. Each client mount's public key goes into its account's authorized_keys with `restrict`.
 
-Client: sshfs as a unit (storageforge-share-SERVER-<target>.service), with the mount's private key from the vault in a root-only file
+Client: sshfs as a unit (storageforge-share-SERVER.<target>.service), with the mount's private key from the vault in a root-only file
 and the server's host keys pinned from StorageForge's own scan, so a man in the middle is refused rather than learnt.
 """
 from __future__ import annotations

@@ -419,6 +419,7 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'NBD server': ('nbd-server', {'apt-get': 'nbd-server', 'dnf': 'nbd', 'yum': 'nbd', 'pacman': 'nbd', 'zypper': 'nbd'}),
          'NBD client': ('nbd-client', {'apt-get': 'nbd-client', 'dnf': 'nbd', 'yum': 'nbd', 'pacman': 'nbd', 'zypper': 'nbd'}),
          'GlusterFS server': ('glusterd', {'apt-get': 'glusterfs-server', 'dnf': 'glusterfs-server', 'yum': 'glusterfs-server', 'pacman': 'glusterfs', 'zypper': 'glusterfs'}),
+         'virtiofsd': ('virtiofsd', {'apt-get': 'virtiofsd', 'dnf': 'virtiofsd', 'yum': 'qemu-kvm-common', 'pacman': 'virtiofsd', 'zypper': 'virtiofsd'}),
          'GlusterFS client': ('mount.glusterfs', {'apt-get': 'glusterfs-client', 'dnf': 'glusterfs-fuse', 'yum': 'glusterfs-fuse', 'pacman': 'glusterfs', 'zypper': 'glusterfs'})}
 
 

@@ -63,11 +63,19 @@ The token refreshes itself on the host. An account in Google's Advanced Protecti
 | NFS | nfs-server | kernel mount | addresses and subnets |
 | SMB | Samba | cifs mount | Samba accounts |
 | SFTP | OpenSSH's internal-sftp, chrooted to the share; nothing to install | sshfs, with a key from the vault and the server's host key pinned from StorageForge's scan | accounts on the server |
+| S3 | `rclone serve s3`: the folder is a bucket; access keys from the vault | rclone mount, optionally rclone crypt so data is encrypted before it leaves the client | addresses and subnets |
+| WebDAV | `rclone serve webdav`, users from an htpasswd vault secret, optional TLS | rclone mount, optional crypt | addresses and subnets |
+| rclone serve | serves an rclone *remote* (an encrypted Google Drive, say) over WebDAV, SFTP, S3 or HTTP, so only the server holds the cloud credentials; the folder is its cache | rclone mount | addresses and subnets |
+| iSCSI | Linux LIO (targetcli), a file image in the folder, CHAP from the vault, ACLs for each client's initiator | open-iscsi, formatted only when the disk is blank, mounted by UUID | one client (a non-cluster filesystem) |
+| NVMe over TCP | the kernel's nvmet, a file image or a block device, host NQN allow-list | nvme-cli, formatted only when blank, mounted by UUID | one client |
+| virtiofs | the KVM host adds the folder to the VM's definition (takes effect at the VM's next power cycle) | `mount -t virtiofs` inside the VM | the VMs named per mount |
+| NBD | nbd-server, a file image, address allow-list, optional TLS | nbd-client, formatted only when blank | one client |
+| GlusterFS | a volume with a brick on the server and on each peer (peers run their part first), optional replica | the GlusterFS client, with the peers as backup volfile servers | addresses and subnets |
 
-More protocols are being added: S3, WebDAV, rclone serve, iSCSI, NVMe over TCP, virtiofs, NBD and GlusterFS. See the roadmap, section 15.
+None of the new protocols has run against real servers yet: they are checked by their own tests and by running each generated script as a report. Treat a first deploy of each as a test, and read its report before applying. The S3, WebDAV and rclone-serve servers listen in plain HTTP unless you give them a certificate and key; on anything but a trusted network, set TLS.
 
 ### SFTP
 
 Each share gets a chroot at `/srv/storageforge-sftp/NAME` that sshd accepts (root-owned, not writable by anyone else), with the folder bound into it. A drop-in, `/etc/ssh/sshd_config.d/50-storageforge-sftp.conf`, locks the share's accounts into that chroot with internal-sftp only: no shell, no forwarding, no tunnels. `sshd -t` checks it before sshd reloads, and a config it rejects is taken back. Your `sshd_config` must include `/etc/ssh/sshd_config.d/*.conf`, as current distributions' do.
 
-StorageForge doesn't make the accounts: each one the share names needs to exist on the server (`useradd -M -s /usr/sbin/nologin backup`). For each client, give the account it logs in as, the vault secret with its private key, and its public key. The public key goes into that account's `authorized_keys` with `restrict`. The client mounts with sshfs as a unit, `storageforge-share-SERVER-<mount point>.service`, and refuses a server whose host key isn't the one StorageForge pinned.
+StorageForge doesn't make the accounts: each one the share names needs to exist on the server (`useradd -M -s /usr/sbin/nologin backup`). For each client, give the account it logs in as, the vault secret with its private key, and its public key. The public key goes into that account's `authorized_keys` with `restrict`. The client mounts with sshfs as a unit, `storageforge-share-SERVER.<mount point>.service`, and refuses a server whose host key isn't the one StorageForge pinned.

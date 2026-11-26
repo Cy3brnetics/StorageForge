@@ -632,8 +632,8 @@ StorageForge manages remote storage the way it manages NFS and SMB: credentials 
 
 | Step | What | Target | Status |
 | :--- | :--- | :--- | :--- |
-| 1 | **rclone init:** the share-driver framework (`netshares.py`, secrets on stdin for share deploys, generic wizard fields), the rclone library with **crypt**, the `rclone-mount` plan step for every rclone backend, Google Drive with your own client ID (rclone's shared client is retired during 2026), and the SFTP driver as the first wizard protocol | 0.6.x | in progress |
-| 2 | **Wizard pairs, server and clients:** SFTP, S3 (rclone serve s3; MinIO and Garage stay in the Toolbox), WebDAV, rclone serve (any remote served to the LAN), iSCSI, NVMe over TCP, virtiofs, NBD, GlusterFS | 0.6.x | in progress |
+| 1 | **rclone init:** the share-driver framework (`netshares.py`, secrets on stdin for share deploys, generic wizard fields), the rclone library with **crypt**, the `rclone-mount` plan step for every rclone backend, Google Drive with your own client ID (rclone's shared client is retired during 2026), and the SFTP driver as the first wizard protocol | 0.6.x | built, not lab-tested |
+| 2 | **Wizard pairs, server and clients:** SFTP, S3 (rclone serve s3; MinIO and Garage stay in the Toolbox), WebDAV, rclone serve (any remote served to the LAN), iSCSI, NVMe over TCP, virtiofs, NBD, GlusterFS | 0.6.x | built, not lab-tested: each needs a lab tier with real servers and clients |
 | 3 | **Client-only mounts:** gcsfuse, blobfuse2, mountpoint-s3, the CephFS client against an existing cluster | about 0.7.x | open |
 | 4 | **Cluster filesystems:** JuiceFS, SeaweedFS, MooseFS (each needs a metadata service and object storage, so it is closer to deploying a small cluster) | close to 0.8.0 | open |
 

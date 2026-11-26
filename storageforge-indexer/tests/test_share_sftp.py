@@ -89,5 +89,18 @@ class SftpShare(Fleet):
         self.assertNotIn('command not found', out)
 
 
+class ProtocolsApi(unittest.TestCase):
+    def test_the_wizard_gets_every_protocol_with_its_fields(self):
+        import test_security as T
+        base = T.Base('run')
+        base.setUp()
+        self.addCleanup(base.doCleanups)
+        r = base.client.get('/api/shares/protocols')
+        self.assertEqual(r.status_code, 200)
+        got = {p['key']: p for p in r.get_json()['protocols']}
+        self.assertIn('SFTP', got)
+        self.assertEqual(got['SFTP']['clients_label'], 'Accounts on the server that may connect')
+
+
 if __name__ == '__main__':
     unittest.main()

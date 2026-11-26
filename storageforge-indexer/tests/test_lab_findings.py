@@ -440,6 +440,6 @@ class TakeOver(Scripted):
 
     def test_the_server_runs_it_first_and_reloads_after(self):
         body = shares.SHARES_BODY_3
-        self.assertIn('then take_over; server_nfs; server_smb', body)
+        self.assertIn('then\n    take_over; server_nfs; server_smb', body)     # the drivers' server_<k> follow (netshares.py)
         self.assertIn('|| ((TOOK_NFS)); then ((APPLY)) && reexport; fi', body)
         self.assertIn('local changed=$TOOK_SMB;', body)
