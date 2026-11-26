@@ -3,10 +3,11 @@
 What it changes by itself, each step only once the one before it worked:
 
 - **SSH keys in the vault.** For each key that a scan or deploy would use on a host now: a new key is made in the vault, its public half is
-  added to that account's authorized_keys over the old key, and a login with the new key is tried on every one of those hosts. Only when
-  every host takes it are the bindings moved to the new key, the old key's line taken out of each authorized_keys (over the new key), and
-  the old key deleted. The new key then takes the old one's name, so nothing that names it changes. If one host does not take the new key,
-  nothing moves for that key: the new line is taken off the hosts that had it, the new key is deleted, and the old one stays.
+  added to that account's authorized_keys over the old key, and a login with the new key is tried on every one of those hosts. Then
+  the bindings of the hosts that take it are moved to the new key, and the old key's line is taken out of each of those authorized_keys (over
+  the new key). A host that does not take the new key keeps the old one: the new line is taken off it, its bindings stay, and the old key
+  stays in the vault while any binding uses it (the result lists the hosts left). With no binding left on it the old key is deleted and the
+  new key takes its name, so nothing that names it changes.
 - **Web sessions**: all of them end, so everyone signs in again.
 - **Invites**: every one not yet used is revoked.
 - **The vault's own secret**, when a new one is given: every key is wrapped again under it.
@@ -48,9 +49,12 @@ def key_hosts(v: Vault, conn) -> dict[str, list[dict]]:
             except NoBinding:
                 continue
             if (b.key_name, b.user, b.port) in seen:
+                place = next(x for x in out[b.key_name] if x['host'] == hostname and x['user'] == b.user and x['port'] == b.port)
+                if b.binding_id not in place['bindings']:
+                    place['bindings'].append(b.binding_id)
                 continue
             seen.add((b.key_name, b.user, b.port))
-            out.setdefault(b.key_name, []).append({'host': hostname, 'address': target, 'user': b.user, 'port': b.port})
+            out.setdefault(b.key_name, []).append({'host': hostname, 'address': target, 'user': b.user, 'port': b.port, 'bindings': [b.binding_id]})
     return out
 
 
@@ -112,37 +116,61 @@ def rotate_key(v: Vault, conn, name: str, places: list[dict]) -> dict:
     v.remove_key(nxt)                                         # a run that stopped half-way left one
     v.generate_key(nxt, 'rsa' if kind == 'ssh-rsa' else 'ed25519', comment)       # an ECDSA key comes back as ed25519: the vault makes those two
     new_public = v.public_key(nxt)
-    done: list[dict] = []
-    try:
-        for p in places:
+    good: list[dict] = []
+    bad: list[dict] = []
+    for p in places:                                          # a host that does not take the new key does not stop the others
+        added = False
+        try:
             if 'added' not in _run(v, conn, name, p, add_line(new_public)):
                 raise RotationError(f'{p["user"]}@{p["host"]}: the new key was not added')
-            done.append(p)
+            added = True
             if not _login_works(v, conn, nxt, p):
                 raise RotationError(f'{p["user"]}@{p["host"]}: the new key was added but does not log in')
-            steps.append(f'{p["user"]}@{p["host"]}: the new key logs in')
-    except RotationError as exc:
-        for p in done:                                        # take the new line back off, over the old key that still works
-            try:
-                _run(v, conn, name, p, drop_line(_blob(new_public)))
-            except RotationError:
-                steps.append(f'{p["user"]}@{p["host"]}: could not take the new key back off: remove it by hand')
+        except RotationError as exc:
+            if added:                                         # take the new line back off, over the old key that still works
+                try:
+                    _run(v, conn, name, p, drop_line(_blob(new_public)))
+                except RotationError:
+                    steps.append(f'{p["user"]}@{p["host"]}: could not take the new key back off: remove it by hand')
+            bad.append(p)
+            steps.append(f'{exc}: this host stays on the old key')
+            continue
+        good.append(p)
+        steps.append(f'{p["user"]}@{p["host"]}: the new key logs in')
+    if not good:
         v.remove_key(nxt)
-        return {'key': name, 'hosts': places, 'ok': False, 'steps': steps + [f'stopped: {exc}. The old key is unchanged and still bound']}
+        return {'key': name, 'hosts': places, 'ok': False, 'left': sorted({p['host'] for p in bad}),
+                'steps': steps + ['stopped: no host took the new key. The old key is unchanged and still bound']}
     new_id = conn.scalar('SELECT key_id FROM ssh_keys WHERE name = :n', {'n': nxt})
-    conn.execute('UPDATE key_bindings SET key_id = :new WHERE key_id = :old', {'new': new_id, 'old': old_id})
-    steps.append('bindings moved to the new key')
+    # Only the bindings whose every host took the new key move. A pattern that also reaches a host that did not take it stays on the old key.
+    held = {b for p in bad for b in p.get('bindings', [])}
+    move = {b for p in good for b in p.get('bindings', [])} - held
+    for b in sorted(move):
+        conn.execute('UPDATE key_bindings SET key_id = :new WHERE binding_id = :b AND key_id = :old', {'new': new_id, 'b': b, 'old': old_id})
+    steps.append(f'{len(move)} binding(s) moved to the new key')
     blob = _blob(old_public)
-    for p in places:
+    for p in good:
+        if not set(p.get('bindings', [])) <= move:
+            steps.append(f'{p["user"]}@{p["host"]}: the old key stays in authorized_keys, a binding there still uses it')
+            continue
         try:
             _run(v, conn, nxt, p, drop_line(blob))
             steps.append(f'{p["user"]}@{p["host"]}: the old key is out of authorized_keys')
         except RotationError as exc:
             steps.append(f'the old key could not be taken off: {exc}. Remove the line ending in its fingerprint by hand')
-    v.remove_key(name)
-    conn.execute('UPDATE ssh_keys SET name = :n, rotated_at = :t WHERE key_id = :k', {'n': name, 't': int(time.time()), 'k': new_id})
-    steps.append(f'the old key is deleted from the vault, and the new one is called {name}')
-    return {'key': name, 'hosts': places, 'ok': True, 'steps': steps,
+    left = sorted({p['host'] for p in bad} | {p['host'] for p in good if not set(p.get('bindings', [])) <= move})
+    still = conn.scalar('SELECT count(*) FROM key_bindings WHERE key_id = :k', {'k': old_id})
+    if still:
+        # The old key is kept while any binding still uses it; the new one gets a name of its own until a later run finishes the job.
+        new_name = f'{name}.rotated-{int(time.time())}'
+        conn.execute('UPDATE ssh_keys SET name = :n, rotated_at = :t WHERE key_id = :k', {'n': new_name, 't': int(time.time()), 'k': new_id})
+        steps.append(f'the old key stays in the vault: {still} binding(s) still use it' + (f' (hosts left on it: {", ".join(left)})' if left else '')
+                     + f'. The new key is called {new_name}; run this again once those hosts take a new key')
+    else:
+        v.remove_key(name)
+        conn.execute('UPDATE ssh_keys SET name = :n, rotated_at = :t WHERE key_id = :k', {'n': name, 't': int(time.time()), 'k': new_id})
+        steps.append(f'the old key is deleted from the vault, and the new one is called {name}')
+    return {'key': name, 'hosts': places, 'ok': not still, 'left': left, 'steps': steps,
             'fingerprint': conn.scalar('SELECT fingerprint FROM ssh_keys WHERE key_id = :k', {'k': new_id})}
 
 
@@ -195,6 +223,8 @@ def plan(db, conn) -> dict:
 def apply(db, conn, actor: str, new_vault_secret: bytes | None = None, only: set | None = None) -> dict:
     """Do it. `only` limits the keys rotated to these names. A key no host uses is left alone and said so: deleting it is a person's choice."""
     from .vault import AuditLog
+    if new_vault_secret and len(new_vault_secret) < 32:       # before anything is rotated or ended, not after
+        raise VaultError('the new vault secret needs 32 characters or more')
     out = plan(db, conn)
     with Vault(db, conn).unlock() as v:
         audit = AuditLog(db, conn, v.audit_key)
@@ -218,8 +248,6 @@ def apply(db, conn, actor: str, new_vault_secret: bytes | None = None, only: set
         audit.append(actor, 'rotate.sessions', 'ok', None, None, {'ended': ended, 'invites_revoked': revoked})
         rewrapped = None
         if new_vault_secret:
-            if len(new_vault_secret) < 32:
-                raise VaultError('the new vault secret needs 32 characters or more')
             rewrapped = v.rotate_secret(new_vault_secret)
             audit.append(actor, 'vault.rotate-secret', 'ok', None, None, {'rewrapped': rewrapped})
     out.update({'results': results, 'sessions_ended': ended, 'invites_revoked': revoked, 'vault_rewrapped': rewrapped})

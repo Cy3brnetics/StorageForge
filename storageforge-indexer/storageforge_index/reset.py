@@ -104,9 +104,10 @@ def _new_secret(current: bytes) -> tuple[str, bool]:
     return secrets.token_urlsafe(48), True
 
 
-def _install_secret(path: Path, value: str) -> None:
-    """Replace the secret file. init-volumes.sh leaves its folder read-only, even to its owner."""
-    folder, mode = path.parent, path.stat().st_mode & 0o777
+def _stage_secret(path: Path, value: str) -> Path:
+    """Write the new secret beside the old one, not yet in place. Done before the old database goes, so a full volume or a folder that
+    refuses the write stops the reset while nothing is lost: the new secret may exist nowhere else."""
+    folder = path.parent
     was = folder.stat().st_mode & 0o777
     folder.chmod(was | 0o700)
     try:
@@ -114,6 +115,17 @@ def _install_secret(path: Path, value: str) -> None:
         fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, 'w') as f:
             f.write(value)
+        return part
+    finally:
+        folder.chmod(was)
+
+
+def _install_secret(path: Path, part: Path) -> None:
+    """Move the staged secret over the secret file. init-volumes.sh leaves its folder read-only, even to its owner."""
+    folder, mode = path.parent, path.stat().st_mode & 0o777
+    was = folder.stat().st_mode & 0o777
+    folder.chmod(was | 0o700)
+    try:
         part.chmod(mode)
         os.replace(part, path)
         # tells init-volumes.sh that a ./secrets/vault_secret differing from this one is the old client's
@@ -186,7 +198,8 @@ def _build(path: Path, new_name: str, secret: str, previous: str | None, actor: 
 
 
 def _old_files(target: Path, backups: Path) -> tuple[list[Path], list[Path]]:
-    kept = [p for p in (data_dir() / d for d in ('ssh', 'home')) if p.exists()] + sorted(
+    # console recordings hold what was typed, passwords too: they go into the archive and leave the new site with the rest
+    kept = [p for p in (data_dir() / d for d in ('ssh', 'home', 'console-recordings')) if p.exists()] + sorted(
         target.parent.glob(f'{target.name}.pre-restore-*'))
     return kept, sorted(backups.glob('storageforge-*'))
 
@@ -273,6 +286,7 @@ def run(db: Database, new_name: str, archive_root: str | None, abandon_deployed:
         if v.initialized:
             v.close()
 
+        staged = _stage_secret(Path(os.environ['STORAGEFORGE_VAULT_SECRET_FILE']), new_secret) if installs else None
         # the archive, whole, before anything goes
         _write_archive(db, part, current, old_backups, kept_data, left, old_name, old_id)
         conn.close()
@@ -287,8 +301,8 @@ def run(db: Database, new_name: str, archive_root: str | None, abandon_deployed:
         _remove(target.with_name(target.name + s) for s in ('', '-wal', '-shm'))
         os.replace(side, target)
         os.chmod(target, 0o600)
-        if installs:
-            _install_secret(Path(os.environ['STORAGEFORGE_VAULT_SECRET_FILE']), new_secret)
+        if staged:
+            _install_secret(Path(os.environ['STORAGEFORGE_VAULT_SECRET_FILE']), staged)
         _remove([*old_backups, *kept_data])
         if (data_dir() / 'tmp').is_dir():
             _remove(list((data_dir() / 'tmp').iterdir()))

@@ -82,10 +82,12 @@ fn unoctal(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// (mount point, filesystem type, major:minor) of each local filesystem in a mount table, once per filesystem.
-fn filesystems(mountinfo: &str) -> Vec<(String, String, String)> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
+/// (mount point, filesystem type, major:minor) of each local filesystem in a mount table, once per filesystem, and the mount
+/// points of the other btrfs subvolumes of that filesystem. They share one filesystem-wide mark, and an event in any of them must
+/// be traced back to the mount it was in.
+fn filesystems(mountinfo: &str) -> Vec<(String, String, String, Vec<String>)> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
     for line in mountinfo.lines() {
         let Some((left, right)) = line.split_once(" - ") else { continue };
         let (a, b): (Vec<&str>, Vec<&str>) = (left.split(' ').collect(), right.split(' ').collect());
@@ -94,16 +96,31 @@ fn filesystems(mountinfo: &str) -> Vec<(String, String, String)> {
         }
         // btrfs subvolumes share one filesystem and one mark; zfs datasets are each their own
         let key = if b[0] == "btrfs" { b.get(1).unwrap_or(&"").to_string() } else { a[2].to_string() };
-        if seen.insert(key) {
-            out.push((unoctal(a[4]), b[0].to_string(), a[2].to_string()));
+        match seen.get(&key) {
+            None => {
+                seen.insert(key, out.len());
+                out.push((unoctal(a[4]), b[0].to_string(), a[2].to_string(), Vec::new()));
+            }
+            Some(&i) if b[0] == "btrfs" => out[i].3.push(unoctal(a[4])),
+            Some(_) => {}
         }
     }
     out.truncate(256);
     out
 }
 
+/// Of the mount points a path lies under, the longest one: the mount that path belongs to.
+fn longest_mount<'a>(path: &str, mounts: &[&'a str]) -> Option<&'a str> {
+    mounts
+        .iter()
+        .copied()
+        .filter(|m| *m == "/" || path == *m || path.strip_prefix(*m).is_some_and(|r| r.starts_with('/')))
+        .max_by_key(|m| m.len())
+}
+
+/// A filesystem as the host mounts it: each mount point (every btrfs subvolume has one) opened once, to open a handle against.
 struct Fs {
-    mount_fd: libc::c_int,
+    mounts: Vec<(String, libc::c_int)>,
 }
 
 struct Watch {
@@ -111,8 +128,9 @@ struct Watch {
     /// Folders marked one by one, and the filesystems (by device) watched that way, where new folders are marked as they come.
     dir_marks: usize,
     by_folder: std::collections::BTreeSet<u64>,
-    /// By fsid, the filesystem's mount point opened once, to open a handle against.
-    by_fsid: HashMap<[i32; 2], Fs>,
+    /// The filesystems, and by fsid which of them an event is in (a btrfs subvolume has an fsid of its own, so several fsids can name one).
+    fses: Vec<Fs>,
+    by_fsid: HashMap<[i32; 2], usize>,
     dirs: HashMap<Vec<u8>, String>,
     proc: PathBuf,
     root: PathBuf,
@@ -133,7 +151,7 @@ fn fsid_of(path: &Path) -> Option<[i32; 2]> {
 impl Watch {
     fn mark_all(&mut self, host: &Path) -> (Vec<Value>, Vec<Value>) {
         let (mut marked, mut refused) = (Vec::new(), Vec::new());
-        for (target, fstype, _) in filesystems(&read(&self.proc.join("1/mountinfo"))) {
+        'filesystems: for (target, fstype, _, others) in filesystems(&read(&self.proc.join("1/mountinfo"))) {
             let path = self.root.join(target.trim_start_matches('/'));
             let Ok(c) = CString::new(path.as_os_str().as_bytes()) else { continue };
             let rc = unsafe { libc::fanotify_mark(self.fd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, MASK, libc::AT_FDCWD, c.as_ptr()) };
@@ -144,22 +162,51 @@ impl Watch {
                     refused.push(json!({"target": target, "fstype": fstype, "why": e.to_string()}));
                     continue;
                 }
-                // a btrfs subvolume: its folders are marked one by one, and new ones as they are made
-                match self.mark_tree(&path) {
-                    Ok((_, complete)) => how = if complete { "by folder" } else { "by folder, in part" },
-                    Err(why) => {
-                        refused.push(json!({"target": target, "fstype": fstype, "why": why}));
-                        continue;
+                // a btrfs subvolume: its folders are marked one by one, and new ones as they are made. Here each subvolume
+                // needs its own pass, because no mark covers the others.
+                let mut complete = true;
+                let tops = std::iter::once(&target).chain(others.iter());
+                for (i, top) in tops.enumerate() {
+                    match self.mark_tree(&self.root.join(top.trim_start_matches('/'))) {
+                        Ok((_, all)) => complete &= all,
+                        Err(why) if i == 0 => {
+                            refused.push(json!({"target": target, "fstype": fstype, "why": why}));
+                            continue 'filesystems;
+                        }
+                        Err(_) => complete = false,
                     }
                 }
+                how = if complete { "by folder" } else { "by folder, in part" };
             }
-            let mount_fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
-            match (fsid_of(&path), mount_fd >= 0) {
-                (Some(fsid), true) => {
-                    self.by_fsid.entry(fsid).or_insert(Fs { mount_fd });
-                    marked.push(json!({"target": target, "fstype": fstype, "how": how}));
+            // Every mount of the filesystem is opened, so a handle from any subvolume can be traced to the mount it is in.
+            let mut fs = Fs { mounts: Vec::new() };
+            let mut fsids = Vec::new();
+            for top in std::iter::once(&target).chain(others.iter()) {
+                let p = self.root.join(top.trim_start_matches('/'));
+                let Ok(pc) = CString::new(p.as_os_str().as_bytes()) else { continue };
+                let fd = unsafe { libc::open(pc.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+                match (fsid_of(&p), fd >= 0) {
+                    (Some(fsid), true) => {
+                        fsids.push(fsid);
+                        fs.mounts.push((top.clone(), fd));
+                    }
+                    (_, true) => unsafe {
+                        libc::close(fd);
+                    },
+                    _ => {}
                 }
-                _ => refused.push(json!({"target": target, "fstype": fstype, "why": "marked, but its changes cannot be traced back to their paths"})),
+            }
+            if fs.mounts.first().is_some_and(|(t, _)| *t == target) {
+                self.fses.push(fs);
+                for fsid in fsids {
+                    self.by_fsid.entry(fsid).or_insert(self.fses.len() - 1);
+                }
+                marked.push(json!({"target": target, "fstype": fstype, "how": how}));
+            } else {
+                for (_, fd) in fs.mounts {
+                    unsafe { libc::close(fd) };
+                }
+                refused.push(json!({"target": target, "fstype": fstype, "why": "marked, but its changes cannot be traced back to their paths"}));
             }
         }
         let _ = host;
@@ -217,18 +264,38 @@ impl Watch {
         if let Some(p) = self.dirs.get(&key) {
             return Some(p.clone());
         }
-        let fs = self.by_fsid.get(&fsid)?;
-        let fd = unsafe { libc::syscall(libc::SYS_open_by_handle_at, fs.mount_fd, handle.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) } as libc::c_int;
-        if fd < 0 {
-            return None;
-        }
-        let link = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
-        unsafe { libc::close(fd) };
-        let mut p = link?.to_string_lossy().into_owned();
-        // reached through the host's first process: the path as the host names it
+        let fs = self.fses.get(*self.by_fsid.get(&fsid)?)?;
         let root = self.root.to_string_lossy().into_owned();
-        if let Some(rest) = p.strip_prefix(&root) {
-            p = if rest.is_empty() { "/".into() } else { rest.to_string() };
+        // Tried against each mount of the filesystem (a btrfs subvolume's folders do not lie under another subvolume's
+        // mount): the path that lies under the longest mount point is the one that is right.
+        let mut found: Vec<(String, &str)> = Vec::new();
+        for (target, mount_fd) in &fs.mounts {
+            let fd = unsafe { libc::syscall(libc::SYS_open_by_handle_at, *mount_fd, handle.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) } as libc::c_int;
+            if fd < 0 {
+                continue;
+            }
+            let link = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
+            unsafe { libc::close(fd) };
+            let Some(link) = link else { continue };
+            // reached through the host's first process: the path as the host names it
+            let mut p = link.to_string_lossy().into_owned();
+            if let Some(rest) = p.strip_prefix(&root) {
+                p = if rest.is_empty() { "/".into() } else { rest.to_string() };
+            }
+            found.push((p, target));
+        }
+        let mut p = {
+            let mut best: Option<&(String, &str)> = None;
+            for f in &found {
+                if longest_mount(&f.0, &[f.1]).is_some() && best.is_none_or(|b| f.1.len() > b.1.len()) {
+                    best = Some(f);
+                }
+            }
+            // none under its own mount (a bind mount of a part of the filesystem): the first answer, as before
+            best.or(found.first())?.0.clone()
+        };
+        if p.is_empty() {
+            p = "/".into();
         }
         if self.dirs.len() >= MOST_DIRS {
             self.dirs.clear();
@@ -270,6 +337,11 @@ fn action(mask: u64) -> Option<&'static str> {
     } else {
         return None;
     })
+}
+
+/// Whether an event is a folder going away or changing place, which makes cached paths of what is under it wrong.
+fn changes_folder_paths(mask: u64) -> bool {
+    mask & FAN_ONDIR != 0 && mask & (FAN_MOVED_FROM | FAN_MOVED_TO | FAN_DELETE) != 0
 }
 
 fn folder_of(path: &str) -> String {
@@ -345,6 +417,10 @@ fn one_event(w: &mut Watch, win: &mut Window, mask: u64, pid: i32, info: &[u8]) 
     }
     let handle = &rec[12..20 + handle_bytes];
     let name = CStr::from_bytes_until_nul(&rec[20 + handle_bytes..]).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+    // A folder that was renamed, moved or deleted keeps its handle but not its path: forget every cached path.
+    if changes_folder_paths(mask) {
+        w.dirs.clear();
+    }
     let Some(dir) = w.dir_path(fsid, handle) else { return };
     let path = if name.is_empty() || name == "." { dir } else if dir == "/" { format!("/{name}") } else { format!("{dir}/{name}") };
     if mask & FAN_CLOSE_NOWRITE != 0 && mask & FAN_ONDIR == 0 {
@@ -354,7 +430,10 @@ fn one_event(w: &mut Watch, win: &mut Window, mask: u64, pid: i32, info: &[u8]) 
         if e.1.len() < 200 || e.1.contains_key(&folder_of(&path)) {
             *e.1.entry(folder_of(&path)).or_default() += 1;
         }
-        return;
+        // fanotify merges queued events of one process and name, so a read may carry a change with it
+        if action(mask).is_none() {
+            return;
+        }
     }
     let Some(act) = action(mask) else { return };
     let key = (path.clone(), act);
@@ -401,9 +480,10 @@ fn main() {
         return;
     }
     let me = (std::process::id(), unsafe { libc::getppid() } as u32);
-    let mut w = Watch { fd, dir_marks: 0, by_folder: Default::default(), by_fsid: HashMap::new(), dirs: HashMap::new(), root: proc.join("1/root"), proc, me };
+    let mut w = Watch { fd, dir_marks: 0, by_folder: Default::default(), fses: Vec::new(), by_fsid: HashMap::new(), dirs: HashMap::new(), root: proc.join("1/root"), proc, me };
     let (marked, refused) = w.mark_all(&host);
-    if !agent.data("watching", json!({"filesystems": marked, "refused": refused})) {
+    let first = json!({"filesystems": marked, "refused": refused});
+    if !agent.data("watching", first.clone()) {
         return;
     }
     let mut buf = vec![0u8; 256 << 10];
@@ -444,8 +524,10 @@ fn main() {
             last_reads = minute;
         }
         if last_watching.elapsed().as_secs() >= 600 {
-            let fss: Vec<Value> = filesystems(&read(&w.proc.join("1/mountinfo"))).into_iter().map(|(t, f, _)| json!({"target": t, "fstype": f})).collect();
-            if !agent.data("watching", json!({"filesystems": fss, "refused": [], "again": true})) {
+            // the same lists as the first report: what was marked and what was refused does not change until this plugin starts again
+            let mut again = first.clone();
+            again["again"] = json!(true);
+            if !agent.data("watching", again) {
                 return;
             }
             last_watching = Instant::now();
@@ -467,13 +549,25 @@ mod tests {
                   27 22 0:51 / /tank/a rw - zfs tank/a rw\n\
                   28 22 0:60 / /mnt/nfs rw - nfs4 server:/x rw\n\
                   29 22 0:61 / /run rw - tmpfs tmpfs rw\n";
-        let got: Vec<String> = filesystems(mi).into_iter().map(|(t, f, _)| format!("{t} {f}")).collect();
-        assert_eq!(got, ["/ ext4", "/home btrfs", "/tank zfs", "/tank/a zfs"]);
+        let got: Vec<String> = filesystems(mi).into_iter().map(|(t, f, _, o)| format!("{t} {f} {}", o.join(","))).collect();
+        assert_eq!(got, ["/ ext4 ", "/home btrfs /srv/my data", "/tank zfs ", "/tank/a zfs "]);
+        // an event in a subvolume belongs to the longest mount it lies under
+        let mounts = ["/", "/home", "/srv/my data"];
+        assert_eq!(longest_mount("/srv/my data/a/b", &mounts), Some("/srv/my data"));
+        assert_eq!(longest_mount("/home/u", &mounts), Some("/home"));
+        assert_eq!(longest_mount("/homework", &mounts), Some("/"));
+        assert_eq!(longest_mount("/home", &["/home/x"]), None);
         assert_eq!(unoctal("/srv/my\\040data"), "/srv/my data");
         assert_eq!(folder_of("/srv/share/projects/2026/a.txt"), "/srv/share/projects");
         assert_eq!(folder_of("/a.txt"), "/a.txt");
         assert_eq!(action(FAN_CLOSE_WRITE), Some("write"));
         assert_eq!(action(FAN_CREATE | FAN_ONDIR), Some("create"));
         assert_eq!(action(FAN_CLOSE_NOWRITE), None);
+        // a read merged with a delete is still a delete
+        assert_eq!(action(FAN_CLOSE_NOWRITE | FAN_DELETE), Some("delete"));
+        assert!(changes_folder_paths(FAN_ONDIR | FAN_MOVED_FROM));
+        assert!(changes_folder_paths(FAN_ONDIR | FAN_DELETE));
+        assert!(!changes_folder_paths(FAN_MOVED_FROM));
+        assert!(!changes_folder_paths(FAN_ONDIR | FAN_CREATE));
     }
 }

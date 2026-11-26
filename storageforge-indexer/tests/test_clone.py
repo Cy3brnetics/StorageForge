@@ -295,7 +295,9 @@ class MoveOptions(unittest.TestCase):
         from storageforge_index import jobscript
         body = Path(moves.__file__).read_text() + Path(jobscript.__file__).read_text()
         self.assertEqual(body.count("RS+=('--include=*/' '--exclude=*')"), 2)
-        self.assertEqual(body.count('RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")'), 2)
+        # the mirror's timer works the suffix date out when it runs (moves.install_step), so moves.py builds it apart
+        self.assertEqual(body.count('RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")'), 1)
+        self.assertEqual(body.count('RS+=("--suffix=.sf-replaced-$(date +%Y%m%d)")'), 1)
 
 
 class Api(Db):

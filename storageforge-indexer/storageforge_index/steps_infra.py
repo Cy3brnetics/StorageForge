@@ -276,7 +276,8 @@ drop_fences_if_empty() {
 
 # ── the rollback timer ──────────────────────────────────────────────
 arm() { # minutes: undoes what is in the journal, unless `confirm` stops it first
-  systemctl list-timers --all --no-legend 2>/dev/null | grep -q "$UNIT.timer" && return 0
+  # a timer a failed run left behind still counts: the marker lets the plan confirm it once this run succeeds
+  if systemctl list-timers --all --no-legend 2>/dev/null | grep -q "$UNIT.timer"; then echo "FW-ROLLBACK armed $1"; return 0; fi
   systemd-run --quiet --unit="$UNIT" --on-active="$1min" --timer-property=AccuracySec=5s "$0" revert >/dev/null
   echo "FW-ROLLBACK armed $1"
 }
@@ -715,8 +716,11 @@ t_wg_forward() { local iface=$1 cidr=$2 state=${3:-present}
   if [[ $state == absent ]]; then
     if [[ ! -e $sysfile ]]; then ok "hub forwarding for $iface is already absent"; return 0; fi
     act "remove hub forwarding for $iface" || return 0
+    # the value the host had before this step first set it, which the drop-in records; an older drop-in records none,
+    # and then the running value stays as it is, because forwarding may be wanted by something else
+    local before; before=$(sed -n 's/^# before: \([01]\)$/\1/p;T;q' "$sysfile" 2>/dev/null || :)
     rm -f -- "$sysfile"
-    command -v sysctl >/dev/null && try sysctl -w "$key=0" >/dev/null
+    if [[ -n $before ]] && command -v sysctl >/dev/null; then try sysctl -w "$key=$before" >/dev/null; fi
     ok "removed hub forwarding for $iface"
     return 0
   fi
@@ -724,10 +728,16 @@ t_wg_forward() { local iface=$1 cidr=$2 state=${3:-present}
   if [[ $cur == 1 && -s $sysfile ]]; then ok "hub forwarding on $iface ($key=1) is already set"; return 0; fi
   act "enable $key=1 in $sysfile for hub $iface" || return 0
   install -d -m 0755 "${sysfile%/*}"
-  (umask 022; printf "%s = 1\n" "$key" >"$sysfile.new" && mv -f "$sysfile.new" "$sysfile")
+  # the value before this step first changed it goes into the drop-in as a comment, for removal to restore; a drop-in
+  # that already has one keeps it, and one without (older) stays without
+  local before=
+  if [[ -e $sysfile ]]; then before=$(sed -n 's/^# before: \([01]\)$/\1/p;T;q' "$sysfile" 2>/dev/null || :)
+  elif command -v sysctl >/dev/null && [[ $cur == [01] ]]; then before=$cur; fi
+  (umask 022; { [[ -n $before ]] && printf "# before: %s\n" "$before"; printf "%s = 1\n" "$key"; } >"$sysfile.new" && mv -f "$sysfile.new" "$sysfile")
   durable "$sysfile"
   if command -v sysctl >/dev/null; then try sysctl -w "$key=1" >/dev/null || return 0; fi
-  tool=$(backend)
+  fw_tool
+  tool=$("$FW" backend)
   if [[ $tool == nftables ]] && command -v nft >/dev/null; then
     nft list table inet storageforge_hub >/dev/null 2>&1 || nft add table inet storageforge_hub >/dev/null 2>&1 || :
     nft list chain inet storageforge_hub forward >/dev/null 2>&1 || nft add chain inet storageforge_hub forward "{ type filter hook forward priority -5; policy accept; }" >/dev/null 2>&1 || :
@@ -840,7 +850,8 @@ t_zfs_rollback() { local dataset=$1 snapshot=$2
   local behind; behind=$(zfs list -H -t snapshot -S creation -o name "$dataset" | sed "/@$snapshot\$/q" | grep -cv "@$snapshot\$" || true)
   info "$behind newer snapshot(s) would go with it: zfs rollback -r destroys them"
   act "roll $dataset back to @$snapshot" || return 0
-  try zfs snapshot "$dataset@sf-before-rollback-$STAMP" || return 0
+  # no snapshot of the current state is taken here: rollback -r destroys every snapshot newer than the target, that one too.
+  # Keep a copy first (zfs send to another dataset) if what was written since may still be wanted
   try zfs rollback -r "$dataset@$snapshot" && ok "$dataset is back at @$snapshot"
 }
 """.replace('@FWRULES@', FWRULES).replace('@FWUNIT@', FWRULES_UNIT)
@@ -1210,7 +1221,8 @@ def _check_vm(conn, c, h, p, say):
 
 
 def _check_zfs_rollback(conn, c, h, p, say):
-    say('warn', 'destroys what was written since that snapshot, and any newer snapshots. A snapshot is taken first')
+    say('warn', 'destroys what was written since that snapshot, and every newer snapshot. Nothing of the current state is kept: '
+                'zfs rollback -r would destroy a snapshot taken now as well, so copy it elsewhere first (zfs send) if it may be wanted')
 
 
 # ── Ansible ─────────────────────────────────────────────────────────
@@ -1242,7 +1254,7 @@ def _ansible_fw_fence(t):
     ports = SERVICE_PORTS.get(p['service']) or p['ports']
     q = shlex.quote
     if p['state'] == 'absent':
-        body = f'[ -r /etc/storageforge/firewall/fences/{q(p["name"])} ] && storageforge-fwrules fence-del {q(p["name"])} && echo changed'
+        body = (f'if [ -r /etc/storageforge/firewall/fences/{q(p["name"])} ]; then storageforge-fwrules fence-del {q(p["name"])} && echo changed; fi')
     else:
         args = ' '.join(q(x) for x in (p['name'], ports, p['clients'], p['iface'] or '-'))
         body = f'if ! storageforge-fwrules fence-has {args}; then storageforge-fwrules fence-set {args} && echo changed; fi'
@@ -1256,9 +1268,15 @@ def _ansible_bash(fn: str, args: tuple):
         p = t['params']
         call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in args)
         body = re.search(rf'^{fn}\(\) \{{.*?^\}}$', BASH, re.M | re.S)[0]
-        return _shell(changes.title(t), ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
-                                         'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }; FW=/bin/true\n'
-                                         'fw_arm() { :; }; fw_tool() { :; }\n' + body + f'\n{fn} {call}\n'))
+        # the network steps lean on these helpers, and a missing one would only look like "command not found, return 0"
+        helpers = ''.join(re.search(pat, BASH, re.M | re.S)[0] + '\n' for pat in (r'^net_manager\(\) \{.*?^\}$', r'^net_is_ssh_path\(\) .*$', r'^net_guard\(\) \{.*?^\}$'))
+        # A rollback timer needs the storageforge-fwrules program: a playbook run refuses one instead of dropping it.
+        fw = 'fw_arm() { [[ -n $1 ]] || return 0; conflict "a rollback timer is not available from an Ansible export: leave the rollback empty"; }; fw_tool() { :; }'
+        fwprog = '/usr/local/sbin/storageforge-fwrules' if fn == 't_wg_forward' else '/bin/true'
+        task = _shell(changes.title(t), ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+                                         'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }; FW=' + fwprog + '\n'
+                                         + helpers + fw + '\n' + body + f'\n{fn} {call}\n'))
+        return _helper_tasks() + [task] if fn == 't_wg_forward' else task
     return render
 
 

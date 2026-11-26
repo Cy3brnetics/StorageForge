@@ -238,6 +238,19 @@ def register(web, ctx):
             raise ValueError('give host')
         return jsonify(mapdesign.migration_preview(conn(), host))
 
+    @web.put('/api/planner/infrastructure')
+    @login_required
+    def api_planner_infrastructure():
+        body = json_body()
+        host, design_id = body.get('host'), body.get('design_id')
+        if not isinstance(host, str) or type(design_id) is not int or not isinstance(body.get('revision'), str):
+            raise ValueError('provide a host, design id and revision')
+        with conn().tx():
+            if not mapdesign.edit_member(conn(), design_id, host, body['revision'], body.get('sections')):
+                return jsonify(error='The saved host design changed. Reopen the preview and review its current settings.'), 409
+            core.audit(conn(), actor(), 'planner.infrastructure.save', 'ok', host, {'design_id': design_id})
+        return jsonify(ok=True)
+
     @web.get('/api/map/designs')
     @login_required
     def api_map_designs():

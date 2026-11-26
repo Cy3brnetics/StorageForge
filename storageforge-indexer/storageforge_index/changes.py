@@ -203,6 +203,7 @@ CHECKS = {
     'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
     'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'unit': re.compile(r'[A-Za-z0-9:_.@-]{1,200}\.service'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
+    'zfs-snapshot': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}@[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'),
     'btrfs-device': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+|\d{1,5}|missing'), 'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
     'mkfs': re.compile(r'[a-z_]+=[A-Za-z0-9_.+:-]+(,[a-z_]+=[A-Za-z0-9_.+:-]+)*'),
     'spec': re.compile(r'(UUID|LABEL|PARTUUID|PARTLABEL)=[A-Za-z0-9_.-]+|/dev/[A-Za-z0-9/_.:+-]+|[A-Za-z0-9_.-]+:/[^\0\n ]*|//[^\0\n /]+/[^\0\n ]+'),
@@ -335,6 +336,10 @@ def normalize(body: dict) -> dict:
     out = {'name': name, 'notes': str(body.get('notes') or '')[:2000], 'tasks': tasks}
     if body.get('require_accept'):
         out['require_accept'] = [str(x)[:64] for x in body['require_accept'] if x]
+        # the risks someone named as accepted when the plan was made (clone.save): only ones the plan requires, and as plain ids
+        acc = [str(x)[:64] for x in body.get('accepted') or [] if x in out['require_accept'] and re.fullmatch(r'[A-Za-z0-9._:-]{1,64}', str(x))]
+        if acc:
+            out['accepted'] = acc
     return out
 
 
@@ -1055,6 +1060,9 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
             order.append(name)
     text = script(conn, plan, owner=owner)
     args = (['--apply'] + (['--destructive'] if destructive else [])) if mode == 'apply' else []
+    if mode == 'apply' and destructive:          # the risks accepted when the plan was made; any other still stops its step
+        for rid in plan.get('accepted') or []:
+            args += ['--accept', rid]
     before, after = receiving.items(db, conn, sends(conn, plan, owner), owner, mode, actor, plan['name'], one_off=True)
 
     def mark(host):
@@ -1064,8 +1072,8 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
                 done = deploy.run(db, host, CONFIRM_SCRIPT, [], kind='changes', ref=f'{plan["name"]}: confirm', mode='apply', actor=actor, timeout=60)
                 if 'FW-ROLLBACK confirmed' not in (done.get('output') or ''):
                     return                                 # the timer undoes the change: this plan did not finish
-            if 'destructive, skipped' in res['output']:
-                return
+            if 'destructive, skipped' in res['output'] or ' not accepted: rerun with --accept ' in res['output'] or res.get('status') == 'incomplete':
+                return                                     # steps were left undone: the plan has not run
             c = db.connect()
             try:
                 deploy.mark_deployed(c, host, 'changes', str(plan_id), digest, {'name': plan['name'], 'hosts': order}, actor)
@@ -1190,7 +1198,8 @@ need() { command -v "$1" >/dev/null && return 0
   if ((!APPLY)) && [[ " ${PLANNED_TOOLS:-} " == *" ${2:-$1} "* ]]; then later "$1 is installed by an earlier step (package ${2:-$1})"; return 1; fi
   conflict "$1 is not installed (package ${2:-$1})"; return 1; }
 esc() { local s=${1// /\\040}; printf '%s' "${s//$'\t'/\\011}"; }
-fstab_line() { awk -v t="$(esc "$1")" '!/^[[:space:]]*#/ && $2 == t' /etc/fstab; }
+# the escaped path goes in through the environment: awk -v would turn the \040 back into a space and match nothing
+fstab_line() { SF_T="$(esc "$1")" awk '!/^[[:space:]]*#/ && $2 == ENVIRON["SF_T"]' /etc/fstab; }
 fstab_backup() { FSTAB_BAK=/etc/fstab.storageforge-$STAMP; [[ -e $FSTAB_BAK ]] || cp -a /etc/fstab "$FSTAB_BAK"; }
 fstab_verify() {
   if findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then reload_systemd 2>/dev/null || true; return 0; fi
@@ -1494,7 +1503,7 @@ t_mount_options() { local tgt=$1 new=$2 have cur keep
   if [[ $cur == "$new" ]]; then ok "options $cur"; return 0; fi
   act "options of $tgt: $cur -> $new" || return 0
   fstab_backup
-  awk -v t="$(esc "$tgt")" -v o="$new" 'BEGIN {OFS="\t"} !/^[[:space:]]*#/ && $2 == t {$4 = o} {print}' /etc/fstab >"/etc/fstab.sf-new"
+  SF_T="$(esc "$tgt")" awk -v o="$new" 'BEGIN {OFS="\t"} !/^[[:space:]]*#/ && $2 == ENVIRON["SF_T"] {$4 = o} {print}' /etc/fstab >"/etc/fstab.sf-new"
   cat "/etc/fstab.sf-new" >/etc/fstab; rm -f "/etc/fstab.sf-new"
   fstab_verify || return 0
   ok "fstab updated"
@@ -1509,7 +1518,7 @@ t_unmount() { local tgt=$1 have inner
   if mountpoint -q -- "$tgt" && act "umount $tgt"; then try umount -- "$tgt" || return 0; ok "unmounted"; fi
   if [[ -n $have ]] && act "comment out the fstab line for $tgt"; then
     fstab_backup
-    awk -v t="$(esc "$tgt")" -v tag="# storageforge-disabled $TODAY: " '!/^[[:space:]]*#/ && $2 == t {print tag $0; next} {print}' \
+    SF_T="$(esc "$tgt")" awk -v tag="# storageforge-disabled $TODAY: " '!/^[[:space:]]*#/ && $2 == ENVIRON["SF_T"] {print tag $0; next} {print}' \
       /etc/fstab >"/etc/fstab.sf-new"; cat "/etc/fstab.sf-new" >/etc/fstab; rm -f "/etc/fstab.sf-new"
     fstab_verify && ok "fstab line commented out"
   fi
@@ -1977,7 +1986,8 @@ def _ansible_storage(t: dict, gate: dict, c: Host | None = None) -> dict:
     if k == 'lvm-vg-extend':
         return guarded(f'[ "$(pvs --noheadings -o vg_name -- {q(p["device"])} 2>/dev/null | tr -d " ")" = {q(p["vg"])} ]',
                        f'vgextend -y -- {q(p["vg"])} {q(p["device"])}', **gate)
-    lv = q(f'{p["vg"]}/{p["lv"]}')
+    # partition-add and drive-tune carry no vg or lv, so the name is only built for the LVM steps.
+    lv = q(f'{p["vg"]}/{p["lv"]}') if 'vg' in p and 'lv' in p else None
     if k == 'lvm-lv':
         fmt = f'\nmkfs.{p["fstype"]} {q("/dev/" + p["vg"] + "/" + p["lv"])}' if p['fstype'] else ''
         return guarded(f'lvs -- {lv} >/dev/null 2>&1', f'lvcreate -y -Wn -L {q(p["size"])} -n {q(p["lv"])} -- {q(p["vg"])}{fmt}')
@@ -2007,7 +2017,8 @@ def _ansible_storage(t: dict, gate: dict, c: Host | None = None) -> dict:
         run = f', RUN+=\\"$(command -v hdparm) {hd} /dev/%k\\"' if hd else ''
         return {'name': title(t), 'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': (
             f'set -euo pipefail\nserial=$(udevadm info -q property -n {q(p["device"])} | sed -n "s/^ID_SERIAL=//p" | head -n 1)\n'
-            f'match=${{serial:+ENV{{ID_SERIAL}}==\\"$serial\\"}}; match=${{match:-KERNEL==\\"{base}\\"}}\n'
+            # an if, not ${serial:+...}: the } of ENV{ID_SERIAL} would end that expansion early
+            f'if [ -n "$serial" ]; then match="ENV{{ID_SERIAL}}==\\"$serial\\""; else match="KERNEL==\\"{base}\\""; fi\n'
             f'body="ACTION==\\"add|change\\", SUBSYSTEM==\\"block\\", ENV{{DEVTYPE}}==\\"disk\\", $match{rule}{run}"\n'
             f'file=/etc/udev/rules.d/90-storageforge-{base}.rules\n'
             '[ "$(cat "$file" 2>/dev/null)" = "$body" ] && { echo unchanged; exit 0; }\n'

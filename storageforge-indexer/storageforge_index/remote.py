@@ -203,6 +203,9 @@ class Transport:
             err.join(5)
             proc.stdout.close()
             proc.stderr.close()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()           # a run that failed on the way (output over its cap) leaves no zombie
         if expired.is_set():
             raise subprocess.TimeoutExpired(self.argv(script), timeout)
         if rc == 255 and not self.local:

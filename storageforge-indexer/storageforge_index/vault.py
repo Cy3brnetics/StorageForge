@@ -51,6 +51,10 @@ GENESIS = '0' * 64
 
 
 POLICY_KEY = 'vault.policy'
+# Set while a rotation rewraps the rows, so that nothing is sealed under the KEK that is about to go. A mark older than this is a
+# rotation that died, and is ignored.
+ROTATING_KEY = 'vault.rotating_since'
+ROTATING_STALE = 3600
 
 
 class VaultError(RuntimeError):
@@ -184,13 +188,28 @@ def secret_from_env() -> bytes:
     s = os.environ.get('STORAGEFORGE_VAULT_SECRET')
     path = os.environ.get('STORAGEFORGE_VAULT_SECRET_FILE')
     if not s and path:
-        s = Path(path).read_text().strip()
+        s = Path(path).read_text()
+    # The enclave paths strip the secret, so this one does too: the same value must open the vault wherever it is given.
+    s = (s or '').strip()
     if not s:
         raise VaultLocked('Set STORAGEFORGE_VAULT_SECRET (or STORAGEFORGE_VAULT_SECRET_FILE) to unlock the vault')
     if len(s) < MIN_SECRET_LEN:
         raise VaultError(f'The vault secret must be at least {MIN_SECRET_LEN} characters. '
                          'Generate one with: openssl rand -base64 48')
     return s.encode()
+
+
+def _unstripped_from_env() -> bytes | None:
+    """The environment's secret as it was written, when that differs from the stripped one: a vault initialised before the
+    secret was stripped may have been sealed with the whitespace in it."""
+    s = os.environ.get('STORAGEFORGE_VAULT_SECRET')
+    path = os.environ.get('STORAGEFORGE_VAULT_SECRET_FILE')
+    if not s and path:
+        try:
+            s = Path(path).read_text()
+        except OSError:
+            return None
+    return s.encode() if s and s != s.strip() else None
 
 
 def fingerprint(public_line: str) -> str:
@@ -442,14 +461,23 @@ class Vault:
             raise VaultLocked('The vault is not initialised. Run: storageforge-index vault init')
         with _enclave.Enclave(address) as e:
             if _asked(e.status)['state'] != 'unlocked':
-                if secret is None:
+                from_env = secret is None
+                if from_env:
                     try:
                         secret = secret_from_env()
                     except VaultLocked:
                         raise VaultLocked('The key enclave is locked, and there is no vault secret here to unlock it with: the starter or a person unlocks it') from None
                 from . import enclave_stepup
                 # the step-up records there are go with it, so the enclave knows step-up is on: it is not told so, it sees one open
-                _asked(e.unlock, secret, self._meta(), records=enclave_stepup.records(self.conn), stepup=enclave_stepup.wanted(), proof=proof)
+                args = dict(records=enclave_stepup.records(self.conn), stepup=enclave_stepup.wanted(), proof=proof)
+                try:
+                    _asked(e.unlock, secret, self._meta(), **args)
+                except VaultLocked:
+                    # a secret from the environment is tried stripped, and once more as written (a vault initialised with whitespace in it)
+                    raw = _unstripped_from_env() if from_env else None
+                    if raw is None:
+                        raise
+                    _asked(e.unlock, raw, self._meta(), **args)
         self.enclave, self.audit_key = address, EnclaveMacKey(address)
         return self
 
@@ -474,7 +502,8 @@ class Vault:
         return self._unlock_here()
 
     def _unlock_here(self) -> 'Vault':
-        if self._secret is None:
+        from_env = self._secret is None
+        if from_env:
             self._secret = secret_from_env()
         row = self.conn.all("""SELECT kdf_salt, kdf_time_cost, kdf_memory_kib, kdf_lanes, verifier_nonce, verifier,
                                       audit_key_nonce, audit_key_wrapped FROM vault_meta WHERE id = 1""")
@@ -483,17 +512,24 @@ class Vault:
         salt, t, m, l, vn, v, an, ak = row[0]
         lock = self.second_lock()
         share = lock2.read_share(lock) if lock else None          # before the costly part: without the share nothing here opens
-        kek = derive_kek(self._secret, self._blob(salt), {'time_cost': t, 'memory_kib': m, 'lanes': l})
-        if share:
-            kek.buf[:32] = lock2.mix(kek.view(), share)
-        try:
-            with open_into(kek.view(), self._blob(vn), self._blob(v), b'storageforge:verifier') as check:
-                if not hmac.compare_digest(bytes(check.view()), VERIFIER):
-                    raise VaultError('verifier mismatch')
-            self.audit_key = open_into(kek.view(), self._blob(an), self._blob(ak), b'storageforge:audit-key')
-        except VaultError:
-            kek.wipe()
-            raise VaultLocked('Wrong vault secret: the stored verifier did not authenticate' + (', or the host share is not this vault\'s' if share else '')) from None
+        # A secret from the environment is tried stripped, and once more as written if that does not open the vault.
+        tries = [self._secret] + ([_unstripped_from_env()] if from_env and _unstripped_from_env() else [])
+        for i, secret in enumerate(tries):
+            kek = derive_kek(secret, self._blob(salt), {'time_cost': t, 'memory_kib': m, 'lanes': l})
+            if share:
+                kek.buf[:32] = lock2.mix(kek.view(), share)
+            try:
+                with open_into(kek.view(), self._blob(vn), self._blob(v), b'storageforge:verifier') as check:
+                    if not hmac.compare_digest(bytes(check.view()), VERIFIER):
+                        raise VaultError('verifier mismatch')
+                self.audit_key = open_into(kek.view(), self._blob(an), self._blob(ak), b'storageforge:audit-key')
+                self._secret = secret
+                break
+            except VaultError:
+                kek.wipe()
+                if i + 1 < len(tries):
+                    continue
+                raise VaultLocked('Wrong vault secret: the stored verifier did not authenticate' + (', or the host share is not this vault\'s' if share else '')) from None
         self._kek = kek
         return self
 
@@ -509,6 +545,31 @@ class Vault:
     def _aad(uuid: str, purpose: str) -> bytes:
         return f'storageforge:{purpose}:{uuid}'.encode()
 
+    def _rotating(self) -> bool:
+        """True while a rotation is rewrapping the rows. A mark older than an hour is a rotation that died."""
+        v = self.conn.scalar('SELECT value_json FROM settings WHERE key = :k', {'k': ROTATING_KEY})
+        try:
+            since = json.loads(v) if v else None
+        except ValueError:
+            return False
+        return isinstance(since, (int, float)) and time.time() - since < ROTATING_STALE
+
+    def _not_rotating(self):
+        """Every path that seals something under the KEK asks first: a row sealed during a rotation would stay under the old KEK."""
+        if self._rotating():
+            raise VaultError('a vault rotation is under way: try again in a moment')
+
+    def _mark_rotating(self):
+        # Committed on its own, before the rows are read, so that every other process sees it.
+        self._not_rotating()
+        with self.conn.tx():
+            self.conn.execute('DELETE FROM settings WHERE key = :k', {'k': ROTATING_KEY})
+            self.conn.execute('INSERT INTO settings (key, value_json, updated_at, updated_by) VALUES (:k, :v, :t, :a)',
+                              {'k': ROTATING_KEY, 'v': json.dumps(int(time.time())), 't': int(time.time()), 'a': actor_name('vault')})
+
+    def _unmark_rotating(self):
+        self.conn.execute('DELETE FROM settings WHERE key = :k', {'k': ROTATING_KEY})
+
     def key_policy(self) -> str:
         """'generate-only': this site's keys are made in this vault and never leave it, so none can be shared with
         another client. 'open' takes imports too."""
@@ -523,6 +584,7 @@ class Vault:
 
     def _store_key(self, name: str, private_bytes: bytes, passphrase: bytes | None, comment: str | None, origin: str) -> dict:
         kek = None if self.enclave else self._need_kek()
+        self._not_rotating()
         try:
             key = serialization.load_ssh_private_key(private_bytes, passphrase)
         except ValueError:
@@ -557,6 +619,7 @@ class Vault:
                 dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
                 kn, ct = seal(dek.view(), pem, self._aad(uuid, 'key'))
         del pem
+        self._not_rotating()          # again, after the sealing: a rotation may have begun meanwhile
         self.conn.execute("""INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, comment,
                                  dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at, origin)
                              VALUES (:u, :n, :t, :p, :f, :c, :dn, :wd, :kn, :ct, :now, :o)""",
@@ -567,11 +630,13 @@ class Vault:
     def generate_key(self, name: str, kind: str = 'ed25519', comment: str | None = None) -> dict:
         if self.enclave and kind == 'ed25519':
             # made inside: the private half is never in this process, not even once. (An RSA key is made here and imported.)
+            self._not_rotating()
             uuid, comment = secrets.token_hex(16), comment or f'storageforge:{name}'
             with _enclave.Enclave(self.enclave) as e:
                 made = self._guarded(e, e.generate, uuid, 'ed25519', comment)
             public_line = made['public_key']
             fp = fingerprint(public_line)
+            self._not_rotating()
             self.conn.execute("""INSERT INTO ssh_keys (key_uuid, name, key_type, public_key, fingerprint, comment,
                                      dek_nonce, wrapped_dek, key_nonce, ciphertext, created_at, origin)
                                  VALUES (:u, :n, :t, :p, :f, :c, :dn, :wd, :kn, :ct, :now, 'generated')""",
@@ -624,14 +689,15 @@ class Vault:
             raise VaultError('a credential name is letters, digits, dot, dash and underscore')
         if not password:
             raise VaultError('a credential needs a password')
+        self._not_rotating()
         uuid = secrets.token_hex(16)
         body = json.dumps({'password': password, 'enable': enable_password}).encode()
         text = policy_text(policy)
         if self.enclave:
             with _enclave.Enclave(self.enclave) as e:
-                made = _asked(e.seal, uuid, body, 'credential', json.loads(text) if text else None)
-            dn, wdek, n, ct = made['dek_nonce'], made['wrapped_dek'], made['nonce'], made['ciphertext']
-            if made['policy'] != text:
+                sealed = _asked(e.seal, uuid, body, 'credential', json.loads(text) if text else None)
+            dn, wdek, n, ct = sealed['dek_nonce'], sealed['wrapped_dek'], sealed['nonce'], sealed['ciphertext']
+            if sealed['policy'] != text:
                 raise VaultError('the key enclave wrote the policy another way than this program does: nothing was stored')
         else:
             with SecretBuffer(32) as dek:
@@ -640,6 +706,7 @@ class Vault:
                 dn, wdek = seal(kek, dek.view(), self._aad(uuid, 'dek'))
                 n, ct = seal(dek.view(), body, self._aad(uuid, 'credential') + (b':' + text.encode() if text else b''))
         with self.conn.tx():
+            self._not_rotating()          # again, after the sealing: a rotation may have begun meanwhile
             self.conn.execute('DELETE FROM device_credentials WHERE name = :n', {'n': name})
             made = made or {}
             self.conn.execute("""INSERT INTO device_credentials (cred_uuid, name, username, dek_nonce, wrapped_dek, nonce, ciphertext, created_at, policy_json,
@@ -699,12 +766,13 @@ class Vault:
             return (lock2.read_share(lock), json.dumps(lock, sort_keys=True, separators=(',', ':'))) if lock else (None, None)
         return second_lock or (None, None)
 
-    def rotate_secret(self, new_secret: bytes | None, second_lock=lock2.KEEP) -> int:
-        """Rewrap every DEK, the audit key and the verifier under a KEK derived from new_secret. second_lock: left as it is unless
+    def rotate_secret(self, new_secret: bytes | None, second_lock=lock2.KEEP, current: bytes | None = None) -> int:
+        """Rewrap every DEK, the audit key and the verifier under a KEK derived from new_secret. current: the secret in force, which the enclave
+        checks before it takes a new one (from the environment when not given). second_lock: left as it is unless
         said otherwise (None turns it off, (share, marker) turns it on: lock2.py). new_secret None, with the enclave: the same
         secret under a new salt, from what the enclave holds: a scheduled rewrap, which needs nobody to hand the secret over."""
         if self.enclave:
-            return self._rotate_in_enclave(new_secret, second_lock)
+            return self._rotate_in_enclave(new_secret, second_lock, current)
         if new_secret is None:
             raise VaultError('the vault secret is needed to derive the KEK again')
         kek = self._need_kek()
@@ -714,9 +782,13 @@ class Vault:
         new = derive_kek(new_secret, salt, p)
         if share:
             new.buf[:32] = lock2.mix(new.view(), share)
+        marked = False
         try:
-            rows = self.conn.all('SELECT key_id, key_uuid, dek_nonce, wrapped_dek FROM ssh_keys')
+            self._mark_rotating()
+            marked = True
             with self.conn.tx():
+                # read inside the transaction, with writers held off by the mark, so no row is left under the old KEK
+                rows = self.conn.all('SELECT key_id, key_uuid, dek_nonce, wrapped_dek FROM ssh_keys')
                 for kid, uuid, dn, wd in rows:
                     with open_into(kek, self._blob(dn), self._blob(wd), self._aad(uuid, 'dek')) as dek:
                         n2, w2 = seal(new.view(), dek.view(), self._aad(uuid, 'dek'))
@@ -741,11 +813,14 @@ class Vault:
         except BaseException:
             new.wipe()
             raise
+        finally:
+            if marked:
+                self._unmark_rotating()
         self._kek.wipe()
         self._kek, self._secret = new, new_secret
         return len(rows)
 
-    def _rotate_in_enclave(self, new_secret: bytes | None, second_lock=lock2.KEEP) -> int:
+    def _rotate_in_enclave(self, new_secret: bytes | None, second_lock=lock2.KEEP, current: bytes | None = None) -> int:
         """The same rotation with the KEKs inside: the enclave derives the new one, rewraps each DEK without letting it out, and
         switches only when every row is written. If the transaction fails it is told to forget the new KEK, and nothing changed."""
         share, marker = self._next_lock(second_lock) if new_secret is not None else (None, self.conn.scalar('SELECT second_lock FROM vault_meta WHERE id = 1'))
@@ -756,10 +831,15 @@ class Vault:
             if new_secret is None:          # the secret and the share it holds, under a new salt: no step-up, and nothing new for anyone
                 meta = _asked(e.rotate_begin, None, salt, p['time_cost'], p['memory_kib'], p['lanes'])
             else:
-                meta = self._guarded(e, lambda *a, token=None: e.rotate_begin(*a, token=token, share=share), new_secret, salt, p['time_cost'], p['memory_kib'], p['lanes'])
+                # the enclave takes a new secret only from whoever has the one in force: given, held here, or in the environment
+                current = current or self._secret or secret_from_env()
+                meta = self._guarded(e, lambda *a, token=None: e.rotate_begin(*a, token=token, share=share, current=current), new_secret, salt, p['time_cost'], p['memory_kib'], p['lanes'])
+            marked = False
             try:
-                rows = self.conn.all('SELECT key_id, key_uuid, dek_nonce, wrapped_dek FROM ssh_keys')
+                self._mark_rotating()
+                marked = True
                 with self.conn.tx():
+                    rows = self.conn.all('SELECT key_id, key_uuid, dek_nonce, wrapped_dek FROM ssh_keys')
                     for kid, uuid, dn, wd in rows:
                         n2, w2 = _asked(e.rewrap, uuid, self._blob(dn), self._blob(wd))
                         self.conn.execute('UPDATE ssh_keys SET dek_nonce = :n, wrapped_dek = :w, rotated_at = :t WHERE key_id = :k', {'n': n2, 'w': w2, 't': now, 'k': kid})
@@ -774,6 +854,8 @@ class Vault:
                                       {'s': salt, 't': p['time_cost'], 'm': p['memory_kib'], 'l': p['lanes'], 'vn': meta['verifier_nonce'], 'v': meta['verifier'],
                                        'an': meta['audit_key_nonce'], 'ak': meta['audit_key_wrapped'], 'now': now, 'sl': marker})
             except BaseException:
+                if marked:
+                    self._unmark_rotating()
                 try:
                     e.close()
                     e.rotate_abort()
@@ -781,7 +863,10 @@ class Vault:
                     pass                    # it is gone or locked: it holds no new KEK either way
                 raise
             # The rows are written. An enclave that stops before this line comes back locked, and unlocks with the new secret.
-            _asked(e.rotate_commit)
+            try:
+                _asked(e.rotate_commit)
+            finally:
+                self._unmark_rotating()          # only now: until the enclave switches, a new seal would still go under the old KEK
         return len(rows)
 
     # host bindings

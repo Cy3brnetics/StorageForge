@@ -164,6 +164,33 @@ class Kernel(unittest.TestCase):
             self.assertIn(f'"{name}"', m.group(1))
         self.assertNotIn('"kernel.js"', m.group(1), 'the kernel only goes to a signed-in page')
 
+    def test_no_page_injects_generic_cli_host_operations_forms(self):
+        for page in PAGES + SIGN_IN_PAGES:
+            self.assertNotIn('/commandforms.js', (STATIC / page).read_text(), f'{page} should use native workspace controls, not commandforms.js')
+
+    def test_controller_ips_prefers_stored_ip_and_bounds_mdns_lookup(self):
+        import tempfile, time
+        from storageforge_index import security
+        from storageforge_index.db import Database
+        security._CTRL_IP_CACHE.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(f'sqlite:///{tmp}/idx.db')
+            conn = db.connect()
+            db.migrate(conn)
+            conn.execute("INSERT INTO hosts (hostname, ssh_host, ip_address) VALUES ('thinkingrock01.local', 'thinkingrock01.local', '10.0.0.42')")
+            t0 = time.monotonic()
+            ips = security._controller_ips(conn, 'thinkingrock01.local')
+            self.assertLess(time.monotonic() - t0, 0.2)
+            self.assertIsInstance(ips, list)
+            conn.execute("INSERT INTO hosts (hostname, ssh_host) VALUES ('unresolvable-box.local', 'unresolvable-box.local')")
+            t1 = time.monotonic()
+            security._controller_ips(conn, 'unresolvable-box.local')
+            self.assertLess(time.monotonic() - t1, 0.8)
+            t2 = time.monotonic()
+            security._controller_ips(conn, 'unresolvable-box.local')
+            self.assertLess(time.monotonic() - t2, 0.05)
+            conn.close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -65,12 +65,12 @@ async function startDeploy(kind, ref, mode, title, extra = {}) {
 
 async function cancelGroup(gid, force = false) {
   try {
-    DP.cancelRequested = true;
+    DP.cancelRequested = gid;      // the group it was asked for, so another deploy on screen is not shown as stopping
     renderGroup();
     const r = await (await postJSON(`/api/deploy/groups/${gid}/cancel`, { force })).json();
     toast(force ? 'Deploy force stopped' : 'Cancel requested; stopping remaining hosts');
     pollGroup();
-  } catch (err) { notify(err.message, 'error'); }
+  } catch (err) { DP.cancelRequested = false; renderGroup(); notify(err.message, 'error'); }
 }
 
 async function retryGroup(gid) {
@@ -220,14 +220,15 @@ function renderGroup() {
   }
   const totals = [totOk ? `${totOk} ok` : '', totMiss ? `${totMiss} missing` : '', totCrit ? `${totCrit} conflict` : '', totDid ? `${totDid} did` : ''].filter(Boolean).join(' · ');
 
-  const statusLabel = g.starting ? 'starting…' : g.done ? (g.error ? (g.stale ? 'plan changed' : g.gid ? 'lost contact' : 'could not start') : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : (DP.cancelRequested ? 'stopping…' : 'running…');
+  const cancelling = Boolean(g.gid) && DP.cancelRequested === g.gid;
+  const statusLabel = g.starting ? 'starting…' : g.done ? (g.error ? (g.stale ? 'plan changed' : g.gid ? 'lost contact' : 'could not start') : failed.length ? `${failed.length} host(s) failed` : unfinished.length ? `${unfinished.length} host(s) not finished` : 'finished') : (cancelling ? 'stopping…' : 'running…');
   const statusClass = g.done ? (g.error || failed.length ? 'st-failed' : unfinished.length ? 'st-running' : 'st-ok') : 'st-running';
   const retry = g.done && g.gid && (failed.length || unfinished.length || ['failed', 'incomplete', 'cancelled', 'interrupted'].includes(g.state));
 
-  redraw(head, JSON.stringify([statusLabel, totals, Boolean(retry), DP.cancelRequested, g.done, g.error, g.starting]), () => {
+  redraw(head, JSON.stringify([statusLabel, totals, Boolean(retry), cancelling, g.done, g.error, g.starting]), () => {
     const tools = el('span', { class: 'row tools' });
     if (!g.done && g.gid) {
-      if (!DP.cancelRequested) {
+      if (!cancelling) {
         tools.append(button('Cancel', () => cancelGroup(g.gid, false), 'btn ghost sm danger'));
       } else {
         tools.append(button('Force stop', () => cancelGroup(g.gid, true), 'btn sm danger'));

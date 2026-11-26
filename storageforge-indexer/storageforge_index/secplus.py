@@ -20,7 +20,7 @@ import shlex
 import time
 import uuid
 
-from . import alerts, changes, deploy, secscripts as sx, security
+from . import alerts, changes, deploy, errlog, secscripts as sx, security
 from .db import Conn, loads
 from .scriptkit import HELPERS, PACKAGES, need_line
 
@@ -223,7 +223,7 @@ def _evaluate_threats(conn: Conn, host: str, data: dict, at: int):
                 parts.append(f'{len(sus_deleted)} deleted suspicious binary(ies)')
             summary = f'Live threat signs on {host}: ' + '; '.join(parts)
             top = (tmp_exe or sus_deleted)[0] if (tmp_exe or sus_deleted) else None
-            detail = f'path_b64={sx.b64(top["path"])};pid={top["pid"]};comm={top["comm"]}' if top else ';'.join(preload[:2] + uid0[:2])
+            detail = f'path_b64={sx.b64(top["path"])};pid={top["pid"]};comm={top["comm"].replace(";", "_").replace("=", "_")}' if top else ';'.join(preload[:2] + uid0[:2])
             recent = conn.scalar(
                 "SELECT 1 FROM security_events WHERE lower(host) = lower(:h) AND kind = 'rootkit_suspect' AND acknowledged_at IS NULL AND summary = :s AND occurred_at > :t LIMIT 1",
                 {'h': host, 's': security.clean_text(summary), 't': at - 3600},
@@ -627,7 +627,16 @@ while IFS=$'\t' read -r user shares clients subnets; do
       emit identity_off_hours "$day:off:$user" "$user is connected to $shares share(s) off hours, from $clients"
     fi
   fi
-done < <(awk -F'\t' -v t="$((now - 300))" '$1 >= t { s[$2 FS $4] = 1; c[$2 FS $3] = 1; split($3, o, "."); n[$2 FS o[1] "." o[2] "." o[3]] = 1 }
+done < <(awk -F'\t' -v t="$((now - 300))" '
+  function net(a,  h, n, i, k) { # the network of an address: its /24 for IPv4, its /64 for IPv6
+    sub(/^ipv[46]:/, "", a); sub(/^::ffff:/, "", a)
+    if (a !~ /:/) { split(a, h, "."); return h[1] "." h[2] "." h[3] }
+    n = index(a, "::"); if (n) a = substr(a, 1, n - 1)
+    n = split(tolower(a), h, ":"); k = ""
+    for (i = 1; i <= n && i <= 4; i++) k = k (i > 1 ? ":" : "") h[i]
+    return k
+  }
+  $1 >= t { s[$2 FS $4] = 1; c[$2 FS $3] = 1; n[$2 FS net($3)] = 1 }
   END { for (k in s) { split(k, a, FS); sh[a[1]]++ } for (k in c) { split(k, a, FS); cl[a[1]] = cl[a[1]] (cl[a[1]] ? "," : "") a[2] } for (k in n) { split(k, a, FS); ne[a[1]]++ }
         for (u in sh) print u "\t" sh[u] "\t" cl[u] "\t" ne[u] }' "$LOG" 2>/dev/null)
 """
@@ -1304,9 +1313,19 @@ def clean_room_sweep(db, conn: Conn, body: dict, actor: str) -> dict:
         return security._result(res, 'report', 'the sweep did not finish: see the output', host=host)
     hits = re.findall(r'^HIT (\w+) (.*)$', output, re.M)
     files = re.search(r'^FILES (\d+)$', output, re.M)
-    ran = [t for t in ('clam', 'yara') if re.search(rf'^{t.upper()} rc=', output, re.M)]
-    return {'ok': True, 'host': host, 'mount': mount, 'files': int(files[1]) if files else None, 'hits': [{'tool': a, 'what': b} for a, b in hits[:200]], 'ran': ran, 'clean': not hits and bool(ran),
-            'message': ('Found nothing with ' + ' and '.join(ran)) if not hits and ran else None, 'run_id': res.get('run_id')}
+    # A scanner that printed an exit code did not necessarily scan: clamscan exits 0 clean or 1 infected and anything else
+    # is an error, yara exits 0 and anything else is an error (its stderr is discarded), so an error is never "clean".
+    ran, failed = [], []
+    for t, fine in (('clam', (0, 1)), ('yara', (0,))):
+        m = re.search(rf'^{t.upper()} rc=(\d+)$', output, re.M)
+        if m:
+            (ran if int(m[1]) in fine else failed).append(t)
+    clean = not hits and bool(ran) and not failed
+    message = ('Found nothing with ' + ' and '.join(ran)) if clean else None
+    if failed and not hits:
+        message = f'{" and ".join(failed)} failed to scan, so this is not a clean result: run it by hand on the host to see why'
+    return {'ok': True, 'host': host, 'mount': mount, 'files': int(files[1]) if files else None, 'hits': [{'tool': a, 'what': b} for a, b in hits[:200]], 'ran': ran, 'failed': failed, 'clean': clean,
+            'message': message, 'run_id': res.get('run_id')}
 
 
 # ── playbooks: if this happens, do that ──────────────────────────────
@@ -1367,11 +1386,15 @@ def save_playbook(conn: Conn, body: dict, actor: str) -> dict:
         raise ValueError('a playbook has to do something')
     c = body.get('conditions') or {}
     conditions = {k: security.clean_text(c[k], 200).strip() for k in ('host', 'path') if c.get(k)}
-    # it starts by saying what it would do. Turning that off is a choice, made after watching it
+    # it starts by saying what it would do. Turning that off is a choice, made after watching it: a missing mode is the safe one,
+    # and a value that is none of the known ones (null, a typo) is refused rather than taken for 'do it by itself'
+    mode = body.get('mode') or 'dry_run'
+    if mode not in ('dry_run', 'confirm', 'live', 'auto'):
+        raise ValueError("mode is one of dry_run, confirm, live")
     conn.execute("""INSERT INTO security_playbooks (name, trigger_kind, conditions_json, actions_json, enabled, dry_run, created_by, updated_at) VALUES (:n, :k, :c, :a, :e, :d, :b, :t)
                     ON CONFLICT (name) DO UPDATE SET trigger_kind = excluded.trigger_kind, conditions_json = excluded.conditions_json, actions_json = excluded.actions_json, enabled = excluded.enabled, dry_run = excluded.dry_run, updated_at = excluded.updated_at""",
-                 {'n': name, 'k': trigger, 'c': json.dumps(conditions), 'a': json.dumps(actions), 'e': int(body.get('enabled') is not False), 'd': int(body.get('mode', 'dry_run') == 'dry_run'), 'b': actor, 't': NOW()})
-    if body.get('mode') == 'confirm':
+                 {'n': name, 'k': trigger, 'c': json.dumps(conditions), 'a': json.dumps(actions), 'e': int(body.get('enabled') is not False), 'd': int(mode == 'dry_run'), 'b': actor, 't': NOW()})
+    if mode == 'confirm':
         conn.execute("UPDATE security_playbooks SET conditions_json = :c WHERE name = :n", {'c': json.dumps({**conditions, 'confirm': True}), 'n': name})
     return {'ok': True, 'name': name}
 
@@ -1381,11 +1404,23 @@ def delete_playbook(conn: Conn, playbook_id: int):
 
 
 def event_fields(detail: str) -> dict:
-    out = {}
+    """The k=v;k=v fields of an event's detail. Playbooks act on them (ban a client, kill a pid), so a value the host observed
+    (a file name, a process name) must not be able to add a field: a JSON detail (Falco) has none, the first of a key stands,
+    and a client or pid that is not an address or a number is dropped."""
+    out: dict = {}
+    if (detail or '').lstrip().startswith('{'):
+        return out
     for part in (detail or '').split(';'):
         k, _, v = part.partition('=')
-        if k in ('path_b64', 'client', 'pid', 'event', 'comm', 'sig', 'severity', 'dest', 'signature_id'):
+        if k in ('path_b64', 'client', 'pid', 'event', 'comm', 'sig', 'severity', 'dest', 'signature_id') and k not in out:
             out[k] = v
+    if out.get('pid') and not out['pid'].isdigit():
+        del out['pid']
+    if out.get('client'):
+        try:
+            ipaddress.ip_address(out['client'])
+        except ValueError:
+            del out['client']
     if out.get('path_b64'):
         out['path'] = security._b64text(out['path_b64']) or ''
     return out
@@ -1423,6 +1458,12 @@ def run_actions(db, conn: Conn, pb: dict, host: str, event: dict, fields: dict) 
     brake = [BRAKE[a] for a in actions if a in BRAKE]
     if brake:
         client = _client_of(conn, host, event['id'], fields)
+        if client:
+            try:
+                security.clean_target(conn, host, client)
+            except ValueError as exc:       # an exempt, controller or odd address: the other brake steps still run, only the ban is left out
+                steps.append({'step': 'drop', 'status': 'skipped', 'detail': str(exc)[:200]})
+                client = ''
         out = security.brake(db, conn, {'host': host, 'path': fields.get('path') or '', 'client_ip': client, 'actions': brake, 'mode': 'apply', 'reason': f'{pb["name"]}: {event["summary"]}'[:200], 'minutes': ban_minutes(conn, 2)}, actor)
         steps += out.get('steps') or []
         if out.get('error'):
@@ -1531,11 +1572,18 @@ def process_events(db, conn: Conn) -> int:
         return 0
     if newest <= cursor:
         return 0
-    alerts.set_setting(conn, PLAYBOOK_CURSOR, newest, 'system')
+    rows = conn.all('SELECT event_id, host, kind, summary, detail FROM security_events WHERE event_id > :c ORDER BY event_id LIMIT 500', {'c': cursor})
+    if not rows:
+        return 0
+    # The cursor stops at the last event read, not at the newest: past a full batch the rest is read on the next look.
+    alerts.set_setting(conn, PLAYBOOK_CURSOR, rows[-1][0], 'system')
     done = 0
-    for eid, host, kind, summary, detail in conn.all('SELECT event_id, host, kind, summary, detail FROM security_events WHERE event_id > :c ORDER BY event_id LIMIT 500', {'c': cursor}):
+    for eid, host, kind, summary, detail in rows:
         if kind in TRIGGERS:
-            done += len(fire(db, conn, kind, host, {'id': eid, 'summary': summary, 'detail': detail}))
+            try:
+                done += len(fire(db, conn, kind, host, {'id': eid, 'summary': summary, 'detail': detail}))
+            except Exception:           # the cursor has moved: one event that cannot be acted on must not cost the rest of the batch
+                errlog.trace()
     return done
 
 

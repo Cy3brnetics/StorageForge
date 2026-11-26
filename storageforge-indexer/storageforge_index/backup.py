@@ -214,7 +214,18 @@ def prune(dest: Path, kind: str, keep: int) -> list[str]:
 
 def restore(db: Database, source: str) -> dict:
     """Replace the database with a backup. The current one is kept beside it as index.db.pre-restore-<time>.
-    Stop the server first: restoring under a running server would be overwritten by its next write."""
+    Stop the server first: restoring under a running server would be overwritten by its next write, so the server
+    lock that reset takes is taken here too, and a running server makes this refuse."""
+    from .reset import hold_server_lock      # reset imports this module, so it is imported here
+    lock = hold_server_lock(db)
+    try:
+        return _restore(db, source)
+    finally:
+        if lock:
+            lock.close()
+
+
+def _restore(db: Database, source: str) -> dict:
     src, target = Path(source), Path(_sqlite_path(db))
     with open(src, 'rb') as f:
         sealed = f.read(len(ENC_MAGIC)) == ENC_MAGIC
@@ -224,7 +235,7 @@ def restore(db: Database, source: str) -> dict:
         with tempfile.TemporaryDirectory(dir=target.parent, prefix='.restore-') as folder:
             plain = Path(folder) / 'backup.db'
             decrypt_file(str(src), str(plain), secret_from_env())
-            return restore(db, str(plain))
+            return _restore(db, str(plain))
     con = sqlite3.connect(f'file:{src}?mode=ro', uri=True)
     try:
         try:

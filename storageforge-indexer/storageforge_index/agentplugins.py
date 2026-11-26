@@ -21,6 +21,12 @@ def _sentinel_events(conn, host: str, body: dict, at: int) -> int:
     return ingest_events(conn, host, '\n'.join(lines), 'agent')
 
 
+def _no_address_drop(target: str):
+    """No part of the controller can drop a client address yet, so an agreed drop is recorded as failed rather than done:
+    the audit row must not claim an action was carried out when nothing happened."""
+    raise RuntimeError(f'no address-drop performer is configured, {target} was not dropped')
+
+
 def take_tripwire(conn, host: str, body: dict, at: int) -> int:
     """Shadow-copy tripwire readings pushed from a Windows agent (sections 11.2 & 11.4).
     Records the alarm under the key's host as an agent claim and routes any wider drop through agentaction.tripwire_drop
@@ -34,7 +40,7 @@ def take_tripwire(conn, host: str, body: dict, at: int) -> int:
     detail = f'reason={reason}; command={cmd}' if cmd else f'reason={reason}'
     record_event(conn, host, 'shadow_copy_tripwire', summary, detail, via='agent', occurred=at)
     fp = conn.scalar('SELECT fingerprint FROM agents WHERE host = :h', {'h': host})
-    agentaction.tripwire_drop(conn, host, fp, body, now=at)
+    agentaction.tripwire_drop(conn, host, fp, body, perform=_no_address_drop, now=at)
     return 1
 
 
@@ -81,7 +87,7 @@ def take(db: Database, now: float | None = None) -> dict:
             try:
                 taker(conn, host, body, int(received_at or now))
                 out[plugin] = out.get(plugin, 0) + 1
-            except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            except Exception:     # any reading that cannot be taken (2**70 fits no INTEGER, on either database) is dropped, never retried
                 errlog.trace()        # a reading of a form nothing here reads: dropped, the rest go on
         for i in range(0, len(done), 200):
             part = done[i:i + 200]

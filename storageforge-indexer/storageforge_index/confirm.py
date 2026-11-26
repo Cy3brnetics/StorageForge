@@ -79,8 +79,11 @@ def ingest_runs(conn: Conn, host: str, text: str) -> list[dict]:
             continue
         nonce = str(r['nonce'])
         seen_nonces.add(nonce)
-        rc = int(r.get('rc', 0))
-        fin = int(r.get('finished') or now)
+        try:
+            rc = int(r.get('rc', 0))
+            fin = int(r.get('finished') or now)
+        except (TypeError, ValueError):
+            continue  # one bad line must not stop a scan
 
         row = conn.all("""SELECT run_id, status, exit_code, confirmed_at, output, mode FROM deploy_runs
                           WHERE nonce = :n AND lower(host) = lower(:h)""", {'n': nonce, 'h': host})
@@ -101,11 +104,12 @@ def ingest_runs(conn: Conn, host: str, text: str) -> list[dict]:
                      {'rc': rc, 'now': now, 'st': new_status, 'fin': fin, 'note': note, 'rid': rid})
         confirmed.append({'run_id': rid, 'nonce': nonce, 'rc': rc, 'status': new_status})
 
-    # For runs that started > 10 minutes ago, are still running/queued, but not in seen_nonces
-    stale_cutoff = now - 600
+    # Runs still running/queued that the host's log does not know, once they are 10 minutes past their own time limit
+    # (10 minutes after the start when none was stored): a long deploy must not be called absent while it may still work.
     rows = conn.all("""SELECT run_id, nonce FROM deploy_runs
-                       WHERE lower(host) = lower(:h) AND status IN ('running', 'queued') AND started_at < :cutoff""",
-                    {'h': host, 'cutoff': stale_cutoff})
+                       WHERE lower(host) = lower(:h) AND status IN ('running', 'queued')
+                         AND started_at < CAST(:now AS BIGINT) - 600 - COALESCE(timeout_s, 0)""",
+                    {'h': host, 'now': now})
     for rid, nonce in rows:
         if nonce and nonce not in seen_nonces and not deploy.is_running(nonce):
             note = f"\n[scan at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}: no record of this run on host; marked absent]\n"

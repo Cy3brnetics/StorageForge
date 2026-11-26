@@ -47,6 +47,8 @@ from .changes import F
 # Alpine's image starts from a BIOS boot sector and has no EFI partition
 IMAGES = {k: v for k, v in steps_vm.IMAGES.items() if not k.startswith('alpine')}
 LABEL = 'sf-'                       # the boot entry and the partition names start with this, then the system's name
+# A GPT partition name holds 36 characters, and the longest is LABEL, the name and -root: a longer name is cut and never found again
+NAME_MAX = 36 - len(LABEL) - len('-root')
 SCRATCH_GIB = 6                     # the image, and its raw form while it is copied
 
 INSTALL_FIELDS = [
@@ -69,7 +71,7 @@ INSTALL_ARGS = ('name', 'image', 'image_url', 'image_sha', 'disk', 'size_gb', 'u
 BASH = r"""
 sf_os_part() { [[ $1 =~ [0-9]$ ]] && printf '%sp%s\n' "$1" "$2" || printf '%s%s\n' "$1" "$2"; }      # /dev/nvme0n1 + 3 -> /dev/nvme0n1p3
 sf_os_entry() { efibootmgr 2>/dev/null | sed -n "s/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} @LABEL@$1\([[:space:]].*\)\{0,1\}$/\1/p" | head -n 1 || :; }
-sf_os_parts() { lsblk -rno PATH,PARTLABEL 2>/dev/null | awk -v p="@LABEL@$1-" 'index($2, p) == 1 {print $1}' || :; }
+sf_os_parts() { lsblk -rno PATH,PARTLABEL 2>/dev/null | awk -v p="@LABEL@$1-" 'index($2, p) == 1 && substr($2, length(p) + 1) ~ /^(root|[0-9]+)$/ {print $1}' || :; }   # nas is not nas-old
 sf_os_json() { awk 'BEGIN {printf "\""} {gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); printf "%s\\n", $0} END {printf "\""}' "$@"; }
 # Tell the kernel about a changed table. On a disk with a mounted partition the whole table cannot be read again, and
 # `partx -u` alone adds nothing new there (found in the lab on 2026-11-18): -a adds what is new and complains about the rest.
@@ -203,6 +205,7 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
   local c='' sums='' base='' raw='' have='' dump='' root='' big=0 p='' n='' s='' z='' t='' u='' esp='' num='' made=() m='' free=0 need=0 loader='' order='' new='' seed='' fs='' var='' line=''
   local BIOS=21686148-6449-6E6F-744E-656564454649 ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
   local sb='' trust=''
+  ((${#name} <= @NAMEMAX@)) || { conflict "the name $name is longer than @NAMEMAX@ characters: a partition name holds 36, so the system could not be found again"; return 0; }
   sf_os_uefi || { sf_os_bios "a second system beside the first needs the boot entries of UEFI, and is not installed here"; return 0; }
   for c in qemu-img sgdisk sfdisk efibootmgr curl blkid wipefs sha256sum sha512sum; do
     command -v "$c" >/dev/null || { later "$c is not installed (packages qemu-utils or qemu-img, gdisk, efibootmgr, curl)"; return 0; }
@@ -435,7 +438,7 @@ t_os_remove() { local name=$1 e='' parts='' p='' disk='' n='' root=''
 
 
 def bash() -> str:
-    return BASH.replace('@LABEL@', LABEL).replace('@SCRATCH@', str(SCRATCH_GIB))
+    return BASH.replace('@LABEL@', LABEL).replace('@NAMEMAX@', str(NAME_MAX)).replace('@SCRATCH@', str(SCRATCH_GIB))
 
 
 def _check_install(conn, c, h, p, say):
@@ -443,6 +446,8 @@ def _check_install(conn, c, h, p, say):
         say('crit', 'a custom image needs its URL and its checksum')
     if p.get('size_gb') and not 3 <= int(p['size_gb']) <= 65536:
         say('crit', 'the root is between 3 GiB and 64 TiB')
+    if len(p['name']) > NAME_MAX:
+        say('crit', f'the name is at most {NAME_MAX} characters: the partitions are named for it, and a partition name holds 36')
     if p['user'] in ('root', '0'):
         say('crit', 'the login account is not root: cloud images do not let root in over SSH')
     if p.get('host_keys', 'same') == 'same':

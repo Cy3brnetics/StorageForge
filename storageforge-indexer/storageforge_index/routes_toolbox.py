@@ -326,7 +326,7 @@ def register(web, ctx):
             else:
                 entries_to_check = entries or []
             for tid in entries_to_check:
-                row = toolbox.find(conn(), str(tid))
+                row = toolbox.find(conn(), str(tid).strip())   # as order_entries reads it: ' x' is x
                 if row and row['source'] == 'custom' and 'hosts.command' not in current_user.permissions:
                     abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
             got = tbbundles.stage_bundle(conn(), host, bid, actor(), entries=entries, params=b.get('params'),
@@ -385,8 +385,20 @@ def register(web, ctx):
     @login_required
     def api_toolbox_host_profile_stage(host):
         b = json_body()
+        accept = bool(b.get('accept_unsigned'))
+        if accept:              # the same bar as staging a tool or a bundle: an unsigned entry is code nobody signed
+            if 'hosts.command' not in current_user.permissions:
+                abort(403, description='accepting an unsigned entry takes hosts.command')
+            stale = password_stale()
+            if stale:
+                return stale
         try:
-            got = tbbundles.stage_host_profile(conn(), host, actor(), params=b.get('params'), accept_unsigned=bool(b.get('accept_unsigned')))
+            hp = tbbundles.host_profile(conn(), host)
+            for tid in (hp or {}).get('tools') or []:
+                row = toolbox.find(conn(), str(tid).strip())   # as order_entries reads it: ' x' is x
+                if row and row['source'] == 'custom' and 'hosts.command' not in current_user.permissions:
+                    abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
+            got = tbbundles.stage_host_profile(conn(), host, actor(), params=b.get('params'), accept_unsigned=accept)
         except LookupError as exc:
             return bad(exc, 404)
         except (toolbox.CatalogError, ValueError) as exc:

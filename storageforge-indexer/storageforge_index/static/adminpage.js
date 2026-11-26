@@ -42,6 +42,7 @@ function adOpen(sec, push = true) {
   if (sec === 'keys' || sec === 'enclave' || sec === 'secrets') loadKeys();
   if (sec === 'users') loadUsers();
   if (sec === 'audit') loadAudit();
+  if (sec === 'maintenance' && typeof loadMaintenance === 'function') loadMaintenance();
 }
 
 document.querySelectorAll('#adnav button').forEach((b) => b.addEventListener('click', () => adOpen(b.dataset.sec)));
@@ -57,7 +58,7 @@ sfPaletteSource(() => {
 
 (async function boot() {
   try {
-    const me = await getJSON('/api/me');
+    const me = await sfMe();
     setMe(me);
     if (me.site) document.title = `${me.site} · Admin & Vault · StorageForge`;
     document.querySelectorAll('#adnav button').forEach((b) => { b.hidden = !adAllowed(b.dataset.sec); });

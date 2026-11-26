@@ -259,6 +259,7 @@ def run(conn: Conn, body: dict) -> dict:
     after = reach.Fleet(copy.deepcopy(before.hosts))
     fleet_addrs = {ip: h for ip, (h, _) in before.by_addr.items()}
     touched: dict[str, dict] = {}
+    named = []              # the tasks with their host written as stored: a task may name it by another case, its short name or its ssh_host
     for t in plan['tasks']:
         h = find_host(hs, t['host'])
         if not h:
@@ -266,6 +267,7 @@ def run(conn: Conn, body: dict) -> dict:
             continue
         name = h['name']
         touched[name] = h
+        named.append({**t, 'host': name})
         facts = after.hosts.setdefault(name, {'net': None, 'infra': None, 'containers': []})
         note = _apply_task(t, facts, ghost, conflicts, name, fleet_addrs)
         if note:
@@ -278,10 +280,10 @@ def run(conn: Conn, body: dict) -> dict:
         b = exposure.host_report(now.get('net'), now.get('infra'), now.get('containers') or [], name)
         report.append({'host': name, 'firewall_read': b.get('firewall_read'), 'changes': _exposure_diff(a, b)})
         conflicts += _ssh_path(before, after, conn, name, h)
-        conflicts += _ssh_iface(plan['tasks'], was, name, h)
+        conflicts += _ssh_iface(named, was, name, h)
         if not (now.get('infra') or {}).get('firewall'):
             blind.append(f'{name}: no firewall reading, so reachability there is unknown')
-    rolled = {t['host'] for t in plan['tasks'] if t['params'].get('rollback')}
+    rolled = {t['host'] for t in named if t['params'].get('rollback')}
     for c in conflicts:
         if c.get('blocks_ssh') and c.get('host') in rolled:
             c['level'] = 'warn'

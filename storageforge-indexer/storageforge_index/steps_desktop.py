@@ -75,7 +75,7 @@ t_desktop_profile() { local profile=$1 user=$2 compositor=$3 body=$4 home='' dir
   esac
   dir=$home/.config/$dir; file=$dir/$name; group=$(id -gn "$user")
   new=$(mktemp); printf '%s' "$body" | base64 -d >"$new" || { rm -f "$new"; conflict "the profile did not arrive whole"; return 0; }
-  [[ -L $dir || -L $file || -L $dir/$main ]] && { rm -f "$new"; conflict "$dir or a file in it is a link: this writes only into the folder itself"; return 0; }
+  [[ -L $dir || -L $file || -L $dir/$main || -L $file.before || -L $dir/$main.before-storageforge ]] && { rm -f "$new"; conflict "$dir or a file in it is a link: this writes only into the folder itself"; return 0; }
   if [[ -f $file ]] && cmp -s "$new" "$file" && grep -qxF "$line" "$dir/$main" 2>/dev/null; then rm -f "$new"; ok "$user has the profile $profile for $compositor"; return 0; fi
   [[ -f $dir/$main ]] || { rm -f "$new"; later "$user has no $dir/$main yet: the compositor, or Dux, writes it first"; return 0; }
   if ! act "write the profile $profile for $user ($compositor): $file, and one line in $main"; then rm -f "$new"; return 0; fi

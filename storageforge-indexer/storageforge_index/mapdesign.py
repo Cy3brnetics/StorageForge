@@ -14,6 +14,7 @@ are for the operator's own pipeline; StorageForge never runs them, and their fil
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -94,7 +95,8 @@ def _rule_there(rules: list, r: dict) -> bool:
         if action != want or (x.get('proto') and r['proto'] not in str(x['proto']).split(',')):
             continue
         have = x.get('orig_dports') or x.get('dports') or []
-        if not all(isinstance(p, int) and port_matches(have, p) for p in ports):
+        # a designed range is there when one scanned entry covers all of it
+        if not all(port_matches(have, p) if isinstance(p, int) else any(h[0] <= p[0] and p[1] <= h[1] for h in have if not isinstance(h, int)) or (p[0] == p[1] and port_matches(have, p[0])) for p in ports):
             continue
         if (x.get('saddr') or '') == r['source']:
             return True
@@ -280,9 +282,42 @@ def migration_preview(conn: Conn, host: str) -> dict:
         document = {'apiVersion': 'storageforge/v2', 'kind': 'HostDesign',
                     'metadata': {'host': host, 'planned': member.get('planned', False)}, 'sections': sections}
         source = None if design_id is None else {'design_id': design_id, 'name': name, 'owner': owner,
-                                                 'updated_at': updated, 'notes': notes}
+                                                 'updated_at': updated, 'notes': notes, 'revision': member_revision(member)}
         versions.append({'document': document, 'source': source})
     return {'current': versions[0], 'versions': versions[1:]}
+
+
+def member_revision(member: dict) -> str:
+    return hashlib.sha256(json.dumps(member, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def edit_member(conn: Conn, design_id: int, host: str, revision: str, sections: dict) -> bool:
+    """Replace the three infrastructure sections of one named member. Keep the fleet's migration priority."""
+    keys = {'networks', 'workloads', 'firewall'}
+    if not isinstance(sections, dict) or set(sections) != keys:
+        raise ValueError('provide networks, workloads and firewall')
+    if not all(isinstance(rows, list) and all(isinstance(row, dict) for row in rows) for rows in sections.values()):
+        raise ValueError('each infrastructure section must be a list of objects')
+    with conn.tx():
+        lock = ' FOR UPDATE' if conn.dialect == 'postgres' else ''
+        raw = conn.scalar('SELECT graph_json FROM map_designs WHERE id = :id' + lock, {'id': design_id})
+        if raw is None:
+            raise LookupError('this map design was removed')
+        current = conn.scalar('SELECT design_id FROM host_design_inputs WHERE hostname = :h AND position = 1', {'h': host})
+        if current != design_id:
+            return False
+        fleet = loads(raw)
+        matches = [m for m in fleet['hosts'] if m['name'] == host]
+        if len(matches) != 1 or member_revision(matches[0]) != revision:
+            return False
+        member = matches[0]
+        checked = normalize({'hosts': [{**member, **sections}]})['hosts'][0]
+        member.update({key: checked[key] for key in keys})
+        text = json.dumps(fleet)
+        if len(text) > LIMIT:
+            raise ValueError('that design is too large to save')
+        conn.execute('UPDATE map_designs SET graph_json = :doc WHERE id = :id', {'doc': text, 'id': design_id})
+    return True
 
 
 def list_designs(conn: Conn) -> list[dict]:

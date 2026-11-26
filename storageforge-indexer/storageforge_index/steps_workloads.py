@@ -284,6 +284,8 @@ wl_wait() { # runtime seconds ids...: 0 once all are healthy (or running and not
   local rt=$1 secs=$2 id st rc hs t=0 all; shift 2
   local -A rc0=()
   WL_WHY=
+  # no container at all is not a healthy one: the loops below would pass with nothing to look at
+  (($#)) || { WL_WHY="no container of it is here"; return 1; }
   for id; do read -r st rc hs < <(wl_health "$rt" "$id"); rc0[$id]=${rc:-0}; done
   while :; do
     all=1
@@ -574,6 +576,9 @@ def _published_check(conn, h, ports: list[dict], allow: str, say, how: str):
             say('crit', f'something already listens on {p["published"]} on {h["name"]}')
         if not _loopback(p['bind']):
             open_.append(f'{p["published"]}/{p["proto"]}')
+            # fenced_ports skips a port that is not a plain number, so the fence would leave it open to everyone
+            if allow and not re.fullmatch(r'\d{1,5}(-\d{1,5})?', p['published']):
+                say('crit', f'{p["published"]} is not a plain port number, so the firewall cannot fence it to {allow}: write the number in the compose file')
     if open_ and not allow:
         say('warn', f'publishes {", ".join(open_)} to every network {h["name"]} is on: give the addresses allowed to reach it, or bind it to 127.0.0.1')
     elif open_:

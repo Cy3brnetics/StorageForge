@@ -632,7 +632,8 @@ def parse_nfs_exports(text: str) -> list[dict]:
         if line.startswith('"'):
             path, _, rest = line[1:].partition('"')
         else:
-            path, _, rest = line.partition(' ') if ' ' in line else line.partition('\t')
+            # the path may be separated from the clients by a space or a tab, whichever comes first
+            path, rest = (line.split(None, 1) + [''])[:2]
         path = _unoctal(path.strip())
         clients = [c for c in rest.split() if c]
         e = out.setdefault(path, {'protocol': 'NFS', 'name': path, 'path': path, 'clients': [], 'options': '', 'rules': {}})

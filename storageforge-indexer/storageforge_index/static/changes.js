@@ -73,7 +73,33 @@ function taskTitle(t) {
     'vm-send': () => `Send VM ${p.name} to ${p.dest_host}:${p.dest}${p.live ? ' (live)' : ''}`, 'vm-define': () => `Define VM ${p.name} on ${p.folder}`,
     'managed-workload-remove': () => `Remove managed ${p.runtime} ${p.runtime === 'lxc' ? 'container' : 'stack'} ${p.name}`,
     'workload-action': () => `${(p.action || '').replace('-', ' ').replace(/^./, (c) => c.toUpperCase())} ${p.runtime} ${p.name}`, 'workload-remove': () => `Remove ${p.runtime} ${p.name}`,
-  }[t.type] || (() => t.type))();
+    'mac-setup': () => `Set up ${p.framework === 'selinux' ? 'SELinux (permissive)' : p.framework === 'enforce' ? 'SELinux enforcing' : 'AppArmor'}`,
+    'selinux-boolean': () => `SELinux boolean ${p.name} → ${p.value}`,
+    'selinux-relabel': () => `SELinux label ${p.path} as ${p.type}`,
+    'apparmor-local': () => `AppArmor local rules for ${p.profile}`,
+    'apparmor-mode': () => `AppArmor ${p.profile} → ${p.mode}`,
+    'vm-mac': () => `Allow VM storage access on ${p.path}`,
+    'fw-rule': () => `${p.state === 'absent' ? 'Remove firewall rule' : 'Firewall ' + (p.action || 'allow')} ${p.proto || ''}${p.port ? '/' + p.port : ''}${p.source ? ' from ' + p.source : ''}`,
+    'fw-fence': () => `Fence ${p.service || p.name} to ${p.clients || 'selected subnets'}`,
+    'ips-decision': () => `${p.state === 'lifted' ? 'Unban' : 'Ban'} ${p.ip} in ${p.tool}`,
+    'unit-state': () => `Set service ${p.unit} → ${p.state}`,
+    'tool-install': () => `Install Toolbox entry ${p.tool}`,
+    'tool-remove': () => `Remove Toolbox entry ${p.tool} (keep data)`,
+    'tool-data-remove': () => `Remove data of Toolbox entry ${p.tool}`,
+    'runtime-install': () => `Install runtime ${p.runtime}`,
+    'secret-file': () => `Write secret ${p.secret} to ${p.path}`,
+    stack: () => `Deploy compose stack ${p.name} at ${p.folder || p.path || ''}`,
+    lxc: () => `Configure LXC container ${p.name}`,
+    incus: () => `Configure Incus instance ${p.name}`,
+    'vm-iso': () => `Create VM ${p.name} from ISO`,
+    netconsole: () => `${p.state === 'absent' ? 'Disable' : 'Configure'} netconsole`,
+    'wg-interface': () => `${p.state === 'absent' ? 'Remove' : 'Configure'} WireGuard ${p.interface || 'sf0'}`,
+    'wg-peer': () => `${p.state === 'absent' ? 'Remove' : 'Configure'} WireGuard peer on ${p.interface || 'sf0'}`,
+    'wg-forward': () => `${p.state === 'absent' ? 'Disable' : 'Enable'} WireGuard hub forwarding on ${p.interface || 'sf0'}`,
+    'wg-rotate': () => `Rotate WireGuard key (${p.phase || 'prepare'})`,
+    'ssh-ca-trust': () => `${p.state === 'absent' ? 'Remove' : 'Configure'} SSH CA trust`,
+    'ssh-ca-krl': () => `Update SSH CA revoked keys list`,
+  }[t.type] || (() => CH.types?.[t.type]?.label || t.type))();
 }
 const tasksOn = (host) => (CH.plan.ran_at && !CH.dirty) ? [] : CH.plan.tasks.filter((t) => t.host === host);
 function mountFor(host, path) {      // the mount a path is on, from the topology (the path itself when unknown)
@@ -91,7 +117,7 @@ async function openTask(type, host, preset = {}, edit = null) {
   const inputs = {};
   const controls = {};
   const fields = spec.fields.map((f) => {
-    const v = edit ? edit.params[f.name] : preset[f.name] ?? f.default ?? '';
+    const v = (edit ? edit.params[f.name] : preset[f.name]) ?? f.default ?? '';
     let input;
     if (f.kind === 'bool') {
       input = el('input', { type: 'checkbox' }); input.checked = !!v;
@@ -104,7 +130,7 @@ async function openTask(type, host, preset = {}, edit = null) {
       input = el('select', {}, ...f.options.map((o) => new Option(o || '(none)', o))); input.value = v || f.options[0];
     } else {
       const defPh = f.kind === 'confirm' ? (preset[spec.confirm_of || 'device'] || preset.device || preset.disk || preset.partition || preset.path || 'e.g. /dev/sdc') : '';
-      input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'name', 'size', 'host', 'spec', 'options', 'confirm', 'vmname', 'url', 'sha', 'sizes', 'pubkey', 'names'].includes(f.kind) ? 'mono' : '',
+      input = el('input', { type: 'text', class: ['path', 'device', 'devices', 'dataset', 'zfs-snapshot', 'name', 'size', 'host', 'spec', 'options', 'confirm', 'vmname', 'url', 'sha', 'sizes', 'pubkey', 'names'].includes(f.kind) ? 'mono' : '',
                             placeholder: f.placeholder || defPh, autocomplete: 'off', spellcheck: 'false' });
       input.value = v;
     }
@@ -362,7 +388,7 @@ async function loadChanges(selectId) {
 async function chApplied(id) {
   try { CH.plans = (await getJSON('/api/changes')).plans; } catch { return; }
   const ran = CH.plans.find((x) => String(x.id) === String(id))?.ran_at;
-  if (ran && (String(CH.plan.id) === String(id) || !CH.plan.id)) {
+  if (ran && String(CH.plan.id) === String(id) && !CH.dirty) {
     CH.plan = { name: '', tasks: [] };
     CH.dirty = false;
     CH.result = null;

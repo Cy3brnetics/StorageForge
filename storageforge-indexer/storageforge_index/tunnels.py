@@ -6,9 +6,9 @@ reader takes the text of a configuration file a host sent and returns one shape:
 
     {'tool': 'cloudflared', 'server': …, 'published': [{'public': 'https://app.example.com', 'local': 'localhost:8080', 'protocol': 'http'}]}
 
-These files hold the tunnel's credentials. The collector on the host removes those lines before anything is sent (`SECRET_LINE`,
-which it applies with grep), and the readers never copy a key they were not written to copy, so a token that gets past the first is
-dropped by the second. A reader never raises: what it cannot read is `{'tool': …, 'error': …}`.
+These files hold the tunnel's credentials. The collector on the host blanks the value of those lines before anything is sent
+(`SECRET_LINE` picks the lines, `TUNNEL_AWK` blanks them), and the readers never copy a key they were not written to copy, so a token
+that gets past the first is dropped by the second. The line itself stays, so a hostname next to a credential word is still read. A reader never raises: what it cannot read is `{'tool': …, 'error': …}`.
 """
 from __future__ import annotations
 
@@ -20,19 +20,30 @@ import yaml
 
 MAX_INPUT, MAX_PUBLISHED, MAX_TEXT = 256 * 1024, 500, 255
 
-# A line of a configuration file that holds a credential, in any of the three tools' spellings. The host-side collector drops
-# these lines with `grep -viE`, so this is written as an extended regular expression grep also takes.
+# A line of a configuration file that holds a credential, in any of the three tools' spellings. The host-side collector blanks the
+# value of these lines with awk, so this is written as an extended regular expression awk also takes.
 SECRET_LINE = r'(token|secret|password|passwd|credential|authtoken|api_?key|priv(ate)?_?key|oidc|cert_?pem)'
 _SECRET = re.compile(SECRET_LINE, re.IGNORECASE)
 
+# The same rule for the host, in awk: a credential line keeps what is before its first `:` or `=` and its value becomes "***". The mask
+# is quoted because a bare `*` is a YAML alias and a bare word is not a TOML value, so the file still parses. A line with no `:` or `=`
+# has no name to keep and goes.
+TUNNEL_AWK = 'tolower($0) ~ re { if (match($0, /[:=]/)) print substr($0, 1, RSTART) " \\"***\\""; next } { print }'
+
 
 def scrub(text: str) -> str:
-    """The file without its credential lines, for when the text itself is kept or shown."""
-    return '\n'.join(line for line in text.splitlines() if not _SECRET.search(line))
+    """The file with the value of each credential line blanked, for when the text itself is kept or shown."""
+    out = []
+    for line in text.splitlines():
+        if not _SECRET.search(line):
+            out.append(line)
+        elif (m := re.search(r'[:=]', line)):
+            out.append(line[:m.end()] + ' "***"')
+    return '\n'.join(out)
 
 
 def _text(v) -> str | None:
-    return str(v)[:MAX_TEXT] if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v) else None
+    return str(v)[:MAX_TEXT] if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v) not in ('', '***') else None      # *** is a blanked credential
 
 
 def _input(tool: str, text):
@@ -84,7 +95,7 @@ def _frp_proxy(name, p: dict, server: str | None) -> list[dict]:
     out = []
     if kind in ('http', 'https', 'tcpmux'):
         domains = p.get('customDomains') or p.get('custom_domains') or []
-        domains = [d.strip() for d in domains.split(',')] if isinstance(domains, str) else domains
+        domains = [d.strip() for d in domains.split(',')] if isinstance(domains, str) else domains if isinstance(domains, list) else []
         sub = _text(p.get('subdomain'))
         for d in [d for d in domains if isinstance(d, str) and d][:16] + ([f'{sub}.(the server\'s domain)'] if sub else []):
             out.append({'public': f'{"https" if kind == "https" else "http"}://{d[:MAX_TEXT]}', 'local': local, 'protocol': kind, 'name': _text(name)})

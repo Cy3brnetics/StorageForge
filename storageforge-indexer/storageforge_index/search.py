@@ -190,9 +190,10 @@ def build_search(db: Database, q: SearchQuery) -> tuple[str, dict]:
         where.append(f'f.extension IN ({", ".join(names)})')
     if q.hosts:
         ors = []
+        esc = " ESCAPE '\\'" if sqlite else ''        # PostgreSQL's own escape is the backslash
         for i, h in enumerate(q.hosts):
-            p[f'h{i}'], p[f'hd{i}'] = h, h + '.%'
-            ors.append(f'(h.hostname = :h{i} OR h.hostname LIKE :hd{i} OR h.ip_address = :h{i} OR h.ssh_host = :h{i})')
+            p[f'h{i}'], p[f'hd{i}'] = h, like_escape(h) + '.%'
+            ors.append(f'(h.hostname = :h{i} OR h.hostname LIKE :hd{i}{esc} OR h.ip_address = :h{i} OR h.ssh_host = :h{i})')
         where.append('(' + ' OR '.join(ors) + ')')
     if q.size_gt is not None:
         where.append('f.file_size_bytes > :sgt')
@@ -219,10 +220,10 @@ def build_search(db: Database, q: SearchQuery) -> tuple[str, dict]:
             p.update(u=u, ul=like_escape(u) + '/%')
     if q.path_contains:
         if sqlite:
-            where.append('d.path LIKE :pc')
+            where.append("d.path LIKE :pc ESCAPE '\\'")
         else:
             where.append('d.path ILIKE :pc')
-        p['pc'] = '%' + q.path_contains + '%'
+        p['pc'] = '%' + like_escape(q.path_contains) + '%'
     now = int(time.time())
     if q.newer_than:
         where.append(f'f.modified_at >= {db.ts(":nt")}')

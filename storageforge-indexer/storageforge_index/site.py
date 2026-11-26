@@ -11,6 +11,7 @@ import sqlite3
 import uuid
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote
 
 from .alerts import get_setting, set_setting
 from .db import Conn
@@ -137,7 +138,7 @@ def read_file(path) -> dict | None:
     """What a SQLite file says about its site, without changing it. None when it cannot be read as a database."""
     con = None
     try:
-        con = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        con = sqlite3.connect(f'file:{quote(str(path))}?mode=ro', uri=True)
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         found = dict(con.execute('SELECT key, value_json FROM settings')) if 'settings' in tables else {}
 

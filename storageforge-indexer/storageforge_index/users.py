@@ -258,6 +258,8 @@ def enroll(conn: Conn, token: str, username: str, password: str) -> dict:
     try:
         if invite['reset_user']:
             set_password(conn, username, password)
+            # whoever made the link now holds the account: it waits out the cool-off again before it can approve anything
+            _update(conn, username, 'trusted_since = :t', {'t': int(time.time())})
             end_all_sessions(conn, username)
         else:
             create(conn, username, password, invite['role'])
@@ -293,7 +295,10 @@ def keep_an_admin(conn: Conn, username: str):
 
 def set_role(conn: Conn, username: str, role: str) -> None:
     _check_role(conn, role)
-    _update(conn, username, 'role = :r, session_version = session_version + 1', {'r': role})
+    was = role_of(conn, username)
+    # becoming an admin restarts the cool-off before the account counts toward the dual-admin quorum (security.established_admins)
+    sets = 'role = :r, session_version = session_version + 1' + (', trusted_since = :t' if role == 'admin' and was != 'admin' else '')
+    _update(conn, username, sets, {'r': role, 't': int(time.time())})
 
 
 def role_of(conn: Conn, username: str) -> str | None:
@@ -322,8 +327,8 @@ def set_password(conn: Conn, username: str, password: str) -> None:
 
 
 def set_disabled(conn: Conn, username: str, disabled: bool) -> None:
-    _update(conn, username, 'disabled_at = :d, session_version = session_version + 1',
-            {'d': int(time.time()) if disabled else None})
+    _update(conn, username, 'disabled_at = :d, session_version = session_version + 1' + ('' if disabled else ', trusted_since = CASE WHEN disabled_at IS NULL THEN trusted_since ELSE :t END'),
+            {'d': int(time.time()) if disabled else None, 't': int(time.time())})
 
 
 def remove(conn: Conn, username: str) -> None:
@@ -331,6 +336,8 @@ def remove(conn: Conn, username: str) -> None:
                  {'t': int(time.time()), 'n': username})     # SQLite can give the next account this one's id
     conn.execute('DELETE FROM web_sessions WHERE user_id IN (SELECT user_id FROM users WHERE lower(username) = lower(:n))',
                  {'n': username})
+    # its security keys go with it: a later account of the same name must not sign in with the old one's key
+    conn.execute('DELETE FROM security_webauthn WHERE lower(username) = lower(:n)', {'n': username})
     if not conn.execute('DELETE FROM users WHERE lower(username) = lower(:n)', {'n': username}).rowcount:
         raise UserError(f'no user {username!r}')
 

@@ -292,8 +292,10 @@ def mount_of(host: dict, path: str):
 def _subtree_sql(path: str, mount_target: str) -> tuple[str, dict]:
     if path == mount_target:
         return 'f.mount_id = :m', {}
-    return ('f.dir_id IN (SELECT dir_id FROM directories WHERE mount_id = :m AND (path = :p OR (path >= :lo AND path < :hi)))',
-            {'p': path, 'lo': path + '/', 'hi': path + '0'})          # '0' sorts right after '/'
+    # A prefix test, not a range: PostgreSQL orders text by the database collation, where '/' and '0' do not sort
+    # the way bytes do, so a path >= lo AND path < hi range would leave descendants out.
+    return ('f.dir_id IN (SELECT dir_id FROM directories WHERE mount_id = :m AND (path = :p OR substr(path, 1, :n) = :lo))',
+            {'p': path, 'lo': path + '/', 'n': len(path) + 1})
 
 
 def indexed_file(conn: Conn, mount: dict, path: str):
@@ -856,7 +858,9 @@ rsync_args() { # step [extra...] -> RS array
   local x; while IFS= read -r x; do [[ -n $x ]] && RS+=(--exclude="$x"); done <<<"${S_EXCLUDES[$i]}"
   while IFS= read -r x; do [[ -n $x ]] && RS+=("$x"); done <<<"${S_ONLY[$i]}"
   has "$i" dirsonly && RS+=('--include=*/' '--exclude=*')
-  has "$i" keepold && RS+=(--backup "--suffix=.sf-replaced-$(date +%Y%m%d)")
+  if has "$i" keepold; then   # a timer works the date out when it runs (install_step), not on the day it was installed
+    RS+=(--backup); ((${TIMER_BUILD:-0})) || RS+=("--suffix=.sf-replaced-$(date +%Y%m%d)")
+  fi
   local target="${S_DST[$i]%/}/"
   if has "$i" singlefile; then
     target=${S_DST[$i]}
@@ -884,7 +888,7 @@ if [[ $EUID -eq 0 ]]; then mkdir -p /etc/storageforge; [[ -e $GIT_SAFE ]] || pri
 else GIT_SAFE=$(mktemp); printf '[safe]\n\tdirectory = *\n' >"$GIT_SAFE"; trap 'rm -f "$GIT_SAFE"' EXIT; fi
 export GIT_CONFIG_GLOBAL=$GIT_SAFE
 GIT=(git)
-git_refs() { sort | awk '$2 != "HEAD"' ; }
+git_refs() { sort | awk '$2 != "HEAD" && $2 !~ /\^\{\}$/' ; }   # peeled tag lines (^{}) only ls-remote prints
 git_step() { # step mode
   local i=$1 url refs; url=$(git_url "$i")
   command -v git >/dev/null || { conflict "git is not installed on $(uname -n)"; return 1; }
@@ -1154,8 +1158,9 @@ install_step() {
   case ${S_METHOD[$i]} in
     mirror)
       root_key_ok "$i" || return 1
-      rsync_args "$i" --info=stats2
-      local fileguard=
+      TIMER_BUILD=1 rsync_args "$i" --info=stats2
+      local fileguard= execline; execline=$(sd_words "${RS[@]}")
+      has "$i" keepold && execline=$(sd_words /bin/bash -c 'exec "$0" "--suffix=.sf-replaced-$(date +%Y%m%d)" "$@"' "${RS[@]}")
       if has "$i" singlefile; then
         fileguard="ExecStartPre=$(sd_words /bin/bash -c '[[ ! -L $1 && ( ! -e $1 || -f $1 ) ]]' -- "${S_DST[$i]}")"
       fi
@@ -1170,7 +1175,7 @@ Type=oneshot
 Nice=10
 IOSchedulingClass=idle
 $fileguard
-ExecStart=$(sd_words "${RS[@]}")"
+ExecStart=$execline"
       write_new "/etc/systemd/system/$u.timer" "[Unit]
 Description=StorageForge mirror timer: ${S_DESC[$i]}
 

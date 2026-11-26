@@ -47,6 +47,7 @@ function fmShowStructure() { if (fmActive()) fmSetSub('structure'); }
 /* ── data ────────────────────────────────────────────────────────── */
 async function fmLoad() {
   const seq = ++FM.seq;
+  FM.listed.clear();                       // folder listings are from before this load (a scan may have changed them, or one failed): ask again when opened
   const qs = new URLSearchParams({ min_size: FM.minSize });
   if (S.host) qs.set('host', S.host);
   if (FM.system) qs.set('system', '1');
@@ -274,7 +275,7 @@ function fmKids(n) {
   const listed = n.listed || [];           // read from the index when a whole-folder copy was opened
   const dupes = fmFilesOf(n).sort(cmp), known = new Set([...dirs, ...dupes].map((k) => k.path));
   const q = FM.find.toLowerCase();
-  const rest = listed.filter((x) => !known.has(x.path) && !fmHidden(x.host, x.path, x.name) && (!q || x.name.toLowerCase().includes(q) || x.lazy));
+  const rest = listed.filter((x) => x.note || (!known.has(x.path) && !fmHidden(x.host, x.path, x.name) && (!q || x.name.toLowerCase().includes(q) || x.lazy)));   // the "N more files" row has no path
   for (const x of rest) x.folder = FM.folderBy.get(fmKeyOf(x.host, x.path));
   return [...dirs, ...dupes, ...rest];
 }
@@ -632,7 +633,7 @@ function fmLinks() {         // everything that joins two places, each end as ho
   });
   if (FM.scope === 'all') {
     for (const r of FM.data.relations || []) if (r.dst.host) out.push(r);
-    for (const st of MV.plan?.steps || []) if (st.src?.path && st.dst?.path) out.push({ kind: 'plan', src: st.src, dst: st.dst, label: `${st.method}, not run yet` });
+    for (const st of MV.plan?.steps || []) if (st.src?.path?.startsWith('/') && st.dst?.path?.startsWith('/')) out.push({ kind: 'plan', src: st.src, dst: st.dst, label: `${st.method}, not run yet` });
     FM.tree.querySelectorAll('.fmrow').forEach((r) => {    // symlinks in the folders opened so far
       const n = r._node;
       if (n?.linkTo) out.push({ kind: 'link', src: { host: n.host, path: n.path }, dst: { host: n.host, path: n.linkTo.startsWith('/') ? n.linkTo : joinPath(dirOf(n.path), n.linkTo) } });
@@ -650,7 +651,7 @@ function fmMark() {         // the lines. Each end lands on the deepest card sho
     for (let p = start; ; p = dirOf(p)) {
       const id = fmId('f', host, p);
       if (FM.pos.has(id)) return id;
-      if (p === '/' || !p) return null;
+      if (p === '/' || !p || !p.startsWith('/') || dirOf(p) === p) return null;
     }
   };
   const lines = new Map();
@@ -702,7 +703,7 @@ function fmOpenTo(host, path) {            // opens every card on the way down t
   for (let p = dirOf(path); ; p = dirOf(p)) {
     const id = fmId('f', host, p);
     FM.open.add(id); FM.closed.delete(id);
-    if (p === '/') break;
+    if (p === '/' || !p.startsWith('/') || dirOf(p) === p) break;
   }
 }
 function fmFollow(e) {                     // a line with one link opens both ends; a gathered one lists what is in it

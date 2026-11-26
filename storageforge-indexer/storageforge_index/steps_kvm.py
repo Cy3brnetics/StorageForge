@@ -146,6 +146,7 @@ t_vm_edit() { local name=$1 vcpus=$2 mem=$3 auto=$4 add=$5 label=${6:-extra} gro
   if [[ -n $add ]]; then
     f=$(vm_disks "$name" | head -n 1 | cut -f2); dir=${f%/*}
     [[ -n $f && -d $dir ]] || { conflict "$name has no disk in a folder to put a new one beside"; return 0; }
+    [[ $dir != /dev && $dir != /dev/* ]] || { conflict "the first disk of $name is a block device ($f): name a storage pool or folder for the new disk by hand, a file in /dev lives in memory"; return 0; }
     f=$dir/$name-$label.qcow2
     if vm_disks "$name" | cut -f2 | grep -Fxc -- "$f" >/dev/null; then ok "$f is attached"
     elif [[ -e $f ]]; then conflict "$f is there and is not a disk of $name: this step does not reuse a file"; return 0

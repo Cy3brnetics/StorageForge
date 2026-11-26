@@ -307,8 +307,11 @@ class Imported(unittest.TestCase):
 
     def test_restore_lands_beside_the_original(self):
         rs = jobs.get(self.conn, snapjobs.import_job(self.conn, 'pi', 'rsnapshot', CONF, 't'))
-        spec = {**rs['spec'], 'backups': [{'src': '/home/', 'dst': 'localhost/'}, {'src': 'pi@nas:/data/', 'dst': 'nas/'}]}
+        # the layout is recorded at import (here the config sets no rsync_long_args, so rsnapshot's --relative is in force):
+        # a copy without --relative keeps the source's content directly under dst
+        spec = {**rs['spec'], 'relative': False, 'backups': [{'src': '/home/', 'dst': 'localhost/'}, {'src': 'pi@nas:/data/', 'dst': 'nas/'}]}
         self.assertEqual(snapjobs.original_of(spec, 'localhost/a/b.txt'), '/home/a/b.txt')
+        self.assertEqual(snapjobs.original_of({**spec, 'relative': None}, 'localhost/a/b.txt'), '/home/a/b.txt')     # imported before: the guess
         with self.assertRaisesRegex(ValueError, 'another host'):
             snapjobs.original_of(spec, 'nas/x')
         with self.assertRaisesRegex(ValueError, 'not inside'):

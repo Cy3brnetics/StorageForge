@@ -3,9 +3,14 @@
    from what hosts report, and drawn with SVG and DOM APIs only. Dashed means inferred. Colour on a listener is who can reach it,
    per configuration. Positions, layers and the filter can be saved as a view; the facts always come from the index. */
 
-const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual', 'scan']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', layout: 'grid', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(),
+const MP = { layers: new Set(['network', 'services', 'workloads', 'firewall', 'access', 'manual', 'scan']), redact: false, filter: '', graph: null, sel: null, hover: null, mode: 'custom', at: null, group: 'host', layout: 'grid', scope: 'all', ghost: null, notes: [], coverage: null, trace: new Set(), collapsed: new Set(), expanded: new Set(), shutNow: new Set(),   // expanded: frames opened by hand on a large fleet, where they start shut
              view: { x: 0, y: 0, k: 1 }, positions: {}, styleRules: [], defaultApplied: false, exposed: false, loopback: false, neighbours: false, bridges: false, fitted: false, drag: null, rects: new Map(),
              open: {} };      // which cut lists are showing all their rows (see mapMore)
+// Open a shut host frame, or shut an open one. On a large fleet frames start shut, so opening one is remembered in MP.expanded.
+function mapToggleFrame(h) {
+  const shut = MP.shutNow.has(h);
+  if (shut) { MP.collapsed.delete(h); MP.expanded.add(h); } else { MP.collapsed.add(h); MP.expanded.delete(h); }
+}
 const MP_LAYERS = [['storage', 'Storage'], ['network', 'Network'], ['services', 'Services'], ['firewall', 'Firewall'], ['workloads', 'Workloads'], ['access', 'Access'], ['scan', 'Scanned'], ['manual', 'Placed by hand']];
 const MP_MODES = { network: { label: 'Network', layers: ['network', 'manual'] }, flow: { label: 'Flow', layers: ['network', 'services', 'firewall', 'access'] }, workloads: { label: 'Workloads', layers: ['workloads', 'services'] }, storage: { label: 'Storage only', layers: ['storage'] },
                    security: { label: 'Security', layers: ['services', 'firewall', 'workloads', 'storage'], exposed: true }, custom: { label: 'Custom', layers: null } };
@@ -114,12 +119,13 @@ function mapShell(box) {
   scope.addEventListener('change', () => { MP.scope = scope.value; MP.fitted = false; mapDraw(); });
   bar.append(group, layoutSel, scope);
   const search = el('input', { type: 'search', placeholder: 'Filter by name, address or port', 'aria-label': 'Filter the map', id: 'mpfilter' });
+  search.value = MP.filter || '';           // the shell is rebuilt when the mode or a view changes: show what MP still holds
   search.addEventListener('input', () => { MP.filter = search.value.trim().toLowerCase(); mapDraw(); routeSync(true); });
   const exposed = el('input', { type: 'checkbox' }); exposed.checked = MP.exposed;
   exposed.addEventListener('change', () => { MP.exposed = exposed.checked; mapDraw(); });
-  const redact = el('input', { type: 'checkbox' });
+  const redact = el('input', { type: 'checkbox' }); redact.checked = !!MP.redact;
   redact.addEventListener('change', () => { MP.redact = redact.checked; loadMap(); });
-  const toggle = (key, label) => { const c = el('input', { type: 'checkbox' }); c.addEventListener('change', () => { MP[key] = c.checked; MP.fitted = false; mapDraw(); }); return el('label', { class: 'small' }, c, label); };
+  const toggle = (key, label) => { const c = el('input', { type: 'checkbox' }); c.checked = !!MP[key]; c.addEventListener('change', () => { MP[key] = c.checked; MP.fitted = false; mapDraw(); }); return el('label', { class: 'small' }, c, label); };
   bar.append(search, toggle('loopback', ' This-machine-only ports'), toggle('bridges', ' Container networks'), toggle('neighbours', ' Devices nearby'), el('label', { class: 'small' }, exposed, ' Only what others can reach'), el('label', { class: 'small' }, redact, ' Hide names and addresses'));
   const fmts = el('select', { 'aria-label': 'Export as' }, new Option('Export…', ''), ...['json', 'mermaid', 'dot', 'svg', 'drawio', 'canvas', 'netbox', 'grafana'].map((f) => new Option(f.toUpperCase(), f)), new Option('PNG, as drawn', 'png'), new Option('SVG, as drawn', 'drawn'), new Option('PDF: print this', 'pdf'));
   fmts.addEventListener('change', () => {
@@ -217,7 +223,8 @@ function mapLayout(g) {
     const y = fpos.has(host) ? fpos.get(host).y : heights[col];
     const hostNode = hosts.find((n) => n.label === host);
     const pin = MP.positions[`frame:${host}`];
-    const shut = MP.collapsed.has(host) || (largeFleet && !MP.expanded?.has?.(host));
+    const shut = MP.collapsed.has(host) || (largeFleet && !MP.expanded.has(host));
+    if (shut) MP.shutNow.add(host); else MP.shutNow.delete(host);       // what Enter or a double click does to it (mapToggleFrame)
     const fx = pin ? pin.x : x, fy = pin ? pin.y : y;
     const frame = { x: fx, y: fy, w: MP_W, h: shut ? 44 : 44 + items.length * MP_ROW + 8, host, node: hostNode, count: items.length, shut };
     // semantic zoom: far out, or shut by hand (or large-fleet auto-collapse), a host is one box, and lines to what is inside it go to the box
@@ -327,7 +334,7 @@ function mapDraw() {
   }
   const svg = sv('svg', { id: 'mpsvg', class: 'mpsvg', role: 'group', 'aria-label': `Infrastructure map, ${loose.length + frames.length} items` }, root);
   canvas.replaceChildren(svg, mapTools(), mapLegend());
-  svg.addEventListener('dblclick', (ev) => { const f = ev.target.closest('[data-frame]'); if (f) { const h = f.dataset.frame; if (MP.collapsed.has(h)) MP.collapsed.delete(h); else MP.collapsed.add(h); mapDraw(); } });
+  svg.addEventListener('dblclick', (ev) => { const f = ev.target.closest('[data-frame]'); if (f) { mapToggleFrame(f.dataset.frame); mapDraw(); } });
   svg.addEventListener('click', (ev) => { if (MP.cv.quiet() || Date.now() - (MP.quiet || 0) < 250) return; const t = ev.target.closest('[data-id]'); MP.sel = t ? t.dataset.id : null; mapDetail(); mapHighlight(MP.sel); });
   svg.addEventListener('keydown', (ev) => {      // the map's own keys, on the map: Enter on a node, Enter or Space on a host's header, as a click and a double click are
     if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && MP_ZOOM_KEYS[ev.key]) { ev.preventDefault(); MP_ZOOM_KEYS[ev.key](); return; }      // + - 0 and F, as the buttons are
@@ -338,7 +345,7 @@ function mapDraw() {
     if (t && (ev.key === 'Enter' ? !f : true)) { MP.sel = t.dataset.id; mapDetail(); mapHighlight(MP.sel); announce(`${t.getAttribute('aria-label')} selected: its details are in the panel beside the map`); }
     if (f && ev.key === 'Enter') {
       const h = f.dataset.frame;
-      if (MP.collapsed.has(h)) MP.collapsed.delete(h); else MP.collapsed.add(h);
+      mapToggleFrame(h);
       mapDraw();
       document.querySelector(`#mpsvg [data-frame="${CSS.escape(h)}"]`)?.focus();
     }
@@ -548,6 +555,10 @@ async function mapViews() {
         MP.group = def.body.group || 'host';
         MP.layout = def.body.layout || 'grid';
         MP.styleRules = def.body.style_rules || def.body.rules || [];
+        MP.fitted = false;
+        $('#mapview').replaceChildren();      // the first request went out with the old layers: draw again, with the controls to match
+        loadMap();
+        return;
       }
     }
     const rows = [text('h4', 'Saved views')];

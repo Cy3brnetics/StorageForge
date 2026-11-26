@@ -15,6 +15,7 @@ setup script run by hand. See deployments-design.md.
 from __future__ import annotations
 
 import base64
+import collections
 import hashlib
 import json
 import re
@@ -429,19 +430,27 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
     sha = hashlib.sha256(script.encode()).hexdigest()[:16]
     nonce = secrets.token_hex(16)
     if run_id:
-        conn.execute("UPDATE deploy_runs SET status = 'running', script_sha = :sha, started_at = :t, nonce = :n WHERE run_id = :r",
-                     {'sha': sha, 't': started, 'r': run_id, 'n': nonce})
+        conn.execute("""UPDATE deploy_runs SET status = 'running', script_sha = :sha, started_at = :t, nonce = :n, timeout_s = :to
+                        WHERE run_id = :r""",
+                     {'sha': sha, 't': started, 'r': run_id, 'n': nonce, 'to': timeout})
     else:
-        run_id = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, script_sha, actor, started_at, nonce)
-                                VALUES (:g, :h, :k, :r, :m, 'running', :sha, :a, :t, :n) RETURNING run_id""",
-                             {'g': group_id, 'h': host, 'k': kind, 'r': ref, 'm': mode, 'a': actor, 't': started, 'sha': sha, 'n': nonce})
+        run_id = conn.scalar("""INSERT INTO deploy_runs (group_id, host, kind, ref, mode, status, script_sha, actor, started_at, nonce, timeout_s)
+                                VALUES (:g, :h, :k, :r, :m, 'running', :sha, :a, :t, :n, :to) RETURNING run_id""",
+                             {'g': group_id, 'h': host, 'k': kind, 'r': ref, 'm': mode, 'a': actor, 't': started, 'sha': sha, 'n': nonce,
+                              'to': timeout})
     if run_id_box is not None:
         run_id_box.append(run_id)
     out: list[str] = []
     size = [0]
+    tail: collections.deque = collections.deque(maxlen=4000)    # what comes after the head the output keeps in full
+    unfinished = [False]                                         # a "missing" line seen anywhere, kept or not
 
     def save(status: str | None = None, rc: int | None = None):
-        text = ''.join(out)
+        try:
+            late = list(tail)
+        except RuntimeError:         # the reader added a line meanwhile; the next save has it
+            late = []
+        text = ''.join(out) + (('\n… (output cut) …\n' + ''.join(late)) if late else '')
         if len(text) > MAX_OUTPUT:
             text = text[:MAX_OUTPUT // 4] + '\n… (output cut) …\n' + text[-MAX_OUTPUT * 3 // 4:]
         conn.execute('UPDATE deploy_runs SET output = :o' + (', status = :s, exit_code = :c, finished_at = :f' if status else '')
@@ -493,8 +502,12 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
                         for line in iter(p.stdout.readline, b''):
                             s = line.decode('utf-8', 'replace')
                             size[0] += len(s)
+                            if UNFINISHED.search(s):
+                                unfinished[0] = True
                             if size[0] < MAX_OUTPUT * 4:
                                 out.append(s)
+                            else:
+                                tail.append(s)
                     reader = threading.Thread(target=drain, daemon=True)
                     reader.start()
                     deadline, last = time.time() + timeout, 0.0
@@ -506,12 +519,17 @@ def run(db: Database, host: str, script: str, args=(), *, kind: str, ref: str | 
                             p.kill(); out.append(f'\nstopped after {timeout} s\n')
                             break
                     rc = p.wait(30)
+                    reader.join(5)
+                    if tail:
+                        out.append('\n… (output cut) …\n')
+                        out.extend(tail)
+                        tail.clear()
             finally:
                 if live:
                     live.detach(run_id)
                 if t:
                     t.close()
-            status = run_status(rc, mode, ''.join(out))
+            status = run_status(rc, mode, ''.join(out) + ('\n  missing (in the output that was cut)\n' if unfinished[0] else ''))
             if live and live.cancelled == 'force' and status == 'failed':
                 status = 'cancelled'
                 out.append(f'\nstopped: cancelled by {live.by}\n')

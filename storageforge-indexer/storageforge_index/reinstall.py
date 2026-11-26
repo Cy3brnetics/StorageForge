@@ -98,10 +98,13 @@ restore_file() { # path base64 replaceable(1: a package wrote it this run, so it
 
 service_on() { # unit... (the first this host has)
   if ! command -v systemctl >/dev/null; then info "no systemd: start ${1} yourself and enable it at boot"; return; fi
-  local u found=; for u; do systemctl cat "$u.service" >/dev/null 2>&1 && { found=$u; break; }; done
+  local u out found=; for u; do systemctl cat "$u.service" >/dev/null 2>&1 && { found=$u; break; }; done
   if [[ -z $found ]]; then ((APPLY)) && conflict "no service found among: $*" || missing "service $1"; return; fi
   if systemctl is-active -q "$found" && systemctl is-enabled -q "$found" 2>/dev/null; then ok "$found running and enabled"; return; fi
-  if ((APPLY)); then doing "systemctl enable --now $found"; systemctl enable --now "$found" 2>&1 | tail -n 2 || conflict "$found did not start"; else missing "$found not running and enabled"; fi
+  if ((APPLY)); then doing "systemctl enable --now $found"
+    # the command is tested itself: in a pipeline into tail its failure would be lost
+    if out=$(systemctl enable --now "$found" 2>&1); then [[ -z $out ]] || tail -n 2 <<<"$out"; else tail -n 2 <<<"$out"; conflict "$found did not start"; fi
+  else missing "$found not running and enabled"; fi
 }
 
 open_luks() { # name spec keyfile

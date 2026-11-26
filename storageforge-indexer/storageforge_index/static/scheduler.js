@@ -284,6 +284,7 @@ function renderScheduler() {
     new Option('Change Plan (folders/mounts/drives)', 'change'),
     new Option('Move Plan (rsync data move)', 'move'),
     new Option('Shares (NFS / SMB design)', 'shares'),
+    new Option('Host scan', 'scan'),
     new Option('Command (shell script/command)', 'command')
   );
   typeSel.value = cur.task_type || 'task';
@@ -503,7 +504,7 @@ function renderScheduler() {
       )
     ),
     el('div', { class: 'row end' },
-      button(cur.schedule_id ? 'Save Changes' : 'Create Schedule', null, 'btn pri')
+      el('button', { type: 'submit', class: 'btn pri' }, cur.schedule_id ? 'Save Changes' : 'Create Schedule')
     ),
     el('datalist', { id: 'sch-hosts-dl' }, ...SCH.hosts.map((h) => new Option(h, h)))
   );

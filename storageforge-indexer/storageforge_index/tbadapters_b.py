@@ -278,9 +278,11 @@ def read_scans(lines: list[str]) -> list[dict]:
             vid = f[1] if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{2,60}', f[1]) else None
             if not vid:
                 continue
-            sev = f[5].strip().upper() if f[5].strip().upper() in SEVERITIES else 'UNKNOWN'
-            if sev == 'NEGLIGIBLE':
+            sev = f[5].strip().upper()
+            if sev == 'NEGLIGIBLE':       # grype's lowest
                 sev = 'LOW'
+            if sev not in SEVERITIES:
+                sev = 'UNKNOWN'
             fixed = _word(f[4], 120)
             cur['counts'][sev] += 1
             if fixed:

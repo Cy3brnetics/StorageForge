@@ -149,6 +149,9 @@ def query(fleet: Fleet, src: str, dst: str, port: int, proto: str = 'tcp') -> di
     if not src_host and not src_ip:
         return {**out, 'verdict': 'unknown', 'blind_spots': [f'{src} is not a scanned host or an address']}
 
+    if dst_host and not dst_ip:
+        return {**out, 'verdict': 'unknown', 'blind_spots': [*blind, f'the addresses of {dst_host} have not been read']}
+
     # out of A
     if src_host:
         h = fleet.hosts[src_host]

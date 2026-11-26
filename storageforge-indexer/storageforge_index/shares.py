@@ -466,6 +466,8 @@ def normalize_export(body: dict) -> dict:
         raise ValueError('the share name is too long')
     rules = [{'clients': ' '.join(str(r.get('clients') or '').split()), 'options': str(r.get('options') or '').replace(' ', '')}
              for r in body.get('rules') or [] if str(r.get('clients') or '').strip()]
+    if not rules and str(body.get('clients') or '').strip():      # one rule, as designs had before rules (design_exports reads them so too)
+        rules = [{'clients': ' '.join(str(body['clients']).split()), 'options': str(body.get('options') or '').replace(' ', '')}]
     mounts = []
     for m in body.get('mounts') or []:
         if not str(m.get('host') or '').strip():
@@ -666,22 +668,42 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str) -> list[dict]
     prev = next((d['detail'].get('clients') or [] for d in deploy.deployed(conn, host=srv, kind='shares') if d['ref'] == srv), [])
     clients = sorted({ch['name'] for ch in (find_host(hs, mt['host']) for e in c['exports'] for mt in e['mounts'])
                       if ch and ch['name'] != srv})
+    if mode == 'apply':     # an /etc/exports line with no host is every host, and the firewall step would open to any source
+        bare = [e['path'] for e in c['exports'] if e['proto'] == 'NFS' and not e['clients']]
+        if bare:
+            raise ValueError(f'the NFS share(s) {", ".join(bare)} name no clients: add the hosts or subnets that mount them, or "*" for every host')
     text = script(conn, srv, prev)
     digest = design_hash(conn, srv)
 
-    def done(res):
-        if res['status'] != 'ok':       # steps left: the next apply must still see this design as not deployed
-            return
-        c2 = db.connect()
-        try:
-            deploy.mark_deployed(c2, srv, 'shares', srv, digest, {'clients': clients}, actor)
-        finally:
-            c2.close()
+    peers = sorted(set(clients) | (set(prev) - {srv}))     # the clients need the server, not each other
+    sha = hashlib.sha256(text.encode()).hexdigest()[:16]   # as deploy.run records it: every host gets this same script
+    # The design counts as deployed only once the server and every client have run this script to the end: a client that failed,
+    # or a dropped client whose cleanup failed, keeps it pending so the next apply runs them again. Asked of the runs themselves, so
+    # a retry that runs only the hosts left still completes it.
+
+    def done_for(who: str | None):
+        def done(res):
+            if res['status'] != 'ok':       # steps left: the next apply must still see this design as not deployed
+                return
+            c2 = db.connect()
+            try:
+                for h in [srv, *peers]:
+                    if h == (who or srv):
+                        continue
+                    last = c2.all("""SELECT status FROM deploy_runs WHERE host = :h AND kind = 'shares' AND ref = :r AND mode = 'apply'
+                                     AND script_sha = :sha ORDER BY run_id DESC LIMIT 1""", {'h': h, 'r': srv, 'sha': sha})
+                    if not last or last[0][0] != 'ok':
+                        return
+                deploy.mark_deployed(c2, srv, 'shares', srv, digest, {'clients': clients}, actor)
+            finally:
+                c2.close()
+        return done
     args = ['--apply'] if mode == 'apply' else []
     items = [{'host': srv, 'script': text, 'args': args + ['--only', 'server'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 0,
-              **({'on_ok': done} if mode == 'apply' else {})}]
-    for h in sorted(set(clients) | (set(prev) - {srv})):     # the clients need the server, not each other
-        items.append({'host': h, 'script': text, 'args': args + ['--only', 'clients'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 1})
+              **({'on_ok': done_for(None)} if mode == 'apply' else {})}]
+    for h in peers:
+        items.append({'host': h, 'script': text, 'args': args + ['--only', 'clients'], 'kind': 'shares', 'ref': srv, 'mode': mode, 'phase': 1,
+                      **({'on_ok': done_for(h)} if mode == 'apply' else {})})
     return items
 
 

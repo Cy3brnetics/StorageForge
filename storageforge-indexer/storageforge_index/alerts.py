@@ -246,13 +246,15 @@ PAGERDUTY_URL = 'https://events.pagerduty.com/v2/enqueue'
 CHANNELS = ('ntfy', 'gotify', 'webhook', 'pagerduty', 'sms')
 
 
-def routed(cfg: dict, level: str, ref) -> set | None:
+def routed(cfg: dict, level: str, ref, host: str | None = None) -> set | None:
     """Which channels this goes to. None: all of them. With routes set and none matching it still goes everywhere, because an alert
     nobody receives is worse than one too many."""
     routes = cfg.get('routes') or []
     if not routes:
         return None
-    hits = [r for r in routes if r.get('level') in ('any', level) and fnmatch.fnmatch(str(ref or ''), r.get('host') or '*')]
+    # A route's host pattern is about a host, and a reference is mostly 'host:thing', so match the host (or the reference's head) and not the whole text.
+    subject = host or str(ref or '').split(':', 1)[0]
+    hits = [r for r in routes if r.get('level') in ('any', level) and fnmatch.fnmatch(subject, r.get('host') or '*')]
     return {c for r in hits for c in r.get('channels') or []} or None
 
 
@@ -261,7 +263,7 @@ def send(cfg: dict, title: str, message: str, level: str = 'warn', extra: dict |
     out = []
     prio = {'crit': 5, 'warn': 4, 'ok': 2}.get(level, 3)
     n, g, w, pd, sm = cfg.get('ntfy') or {}, cfg.get('gotify') or {}, cfg.get('webhook') or {}, cfg.get('pagerduty') or {}, cfg.get('sms') or {}
-    chosen = routed(cfg, level, (extra or {}).get('ref'))
+    chosen = routed(cfg, level, (extra or {}).get('ref'), (extra or {}).get('host'))
     if chosen is not None:
         n, g, w, pd, sm = (x if name in chosen else {} for x, name in ((n, 'ntfy'), (g, 'gotify'), (w, 'webhook'), (pd, 'pagerduty'), (sm, 'sms')))
     if pd.get('routing_key') and level != 'ok':
@@ -332,8 +334,9 @@ def drift(conn: Conn) -> list[dict]:
             if line.startswith('## '):
                 section = line[3:].strip()
             elif line.startswith('TIMER '):
-                _, name, *state = line.split()
-                timers[name] = state[0] if state else 'unknown'
+                _, *rest = line.split()
+                if rest:                  # a bare 'TIMER ' line from a host must not stop alerting for every other one
+                    timers[rest[0]] = rest[1] if len(rest) > 1 else 'unknown'
             elif line.startswith('LINE-MISSING '):
                 out.append({'host': host, 'ref': section, 'kind': 'changed', 'text': f'fstab line gone: {line[13:]}'})
             elif re.search(r': FAILED$', line) and 'open or read' not in line:
@@ -634,7 +637,7 @@ def evaluate(db) -> dict:
                                  {'t': now_t, 'm': message[:2000], 'l': level, 'h': host, 'k': key})
                     if level == 'crit' and was != 'crit':        # it got worse: said again, and a snooze it had no longer holds
                         notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'escalated', at=now_t)
-                        to_send.append((None, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref}))
+                        to_send.append((None, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref, 'host': host}))
                     continue
                 conn.execute('DELETE FROM alerts WHERE alert_key = :k', {'k': key})
                 conn.execute("""INSERT INTO alerts (alert_key, kind, ref, title, message, state, first_at, last_at, level, host)
@@ -644,14 +647,14 @@ def evaluate(db) -> dict:
                 if quiet(kind, host, notifications.level_of(level)):
                     sent.append((key, ['muted']))
                     continue
-                to_send.append((key, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref}))
+                to_send.append((key, title, message or title, level, {'state': 'open', 'kind': kind, 'ref': ref, 'host': host}))
             for key, (_k, title, _m, level, kind, host, snoozed) in open_.items():
                 if key not in current:
                     conn.execute("UPDATE alerts SET state = 'resolved', resolved_at = :t WHERE alert_key = :k",
                                  {'t': now_t, 'k': key})
                     notifications.record(conn, key, kind, host, notifications.level_of(level), title, 'resolved', at=now_t)
                     if cfg.get('notify_resolved', True) and not quiet(kind, host, notifications.level_of(level), snoozed):
-                        to_send.append((None, f'Resolved: {title}', f'Resolved: {title}', 'ok', {'state': 'resolved', 'key': key}))
+                        to_send.append((None, f'Resolved: {title}', f'Resolved: {title}', 'ok', {'state': 'resolved', 'key': key, 'host': host}))
             for key, title, body, level, extra in to_send:
                 res = send(cfg, title, body, level, extra)
                 if key is not None:

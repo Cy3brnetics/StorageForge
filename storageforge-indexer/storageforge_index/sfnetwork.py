@@ -142,7 +142,21 @@ def observe(conn: Conn, actor: str = 'reading') -> list[str]:
     network = load(conn)
     if network is None or not any(m['state'] == 'pending' or m.get('rotation') or m.get('next_public_key') for m in network['members']):
         return []
-    took, readings = [], seen(conn, network)
+    readings = seen(conn, network)
+    if not _take(network, readings):
+        return []
+    with conn.tx():
+        # Read again inside the transaction: a join, leave or rotation committed since the first read must not be saved over.
+        network = load(conn)
+        took = _take(network, readings) if network is not None else []
+        if took:
+            _save(conn, network, actor)
+    return took
+
+
+def _take(network: dict, readings: dict) -> list[str]:
+    """Apply what the readings may change to this network, and return the hosts something was taken for."""
+    took = []
     for m in network['members']:
         iface = sfnet._seen(readings.get(m['host'])) if m['state'] != 'revoked' else None
         if not iface or not iface.get('public_key'):
@@ -159,9 +173,6 @@ def observe(conn: Conn, actor: str = 'reading') -> list[str]:
             took.append(m['host'])
         except sfnet.NetworkError:
             pass                      # a key another member already has: nothing is taken, and status() says why
-    if took:
-        with conn.tx():
-            _save(conn, network, actor)
     return took
 
 
@@ -294,6 +305,12 @@ def status(conn: Conn) -> dict:
             'label': overlays.label('storageforge')}
 
 
+def _forwarding(conn: Conn, host: str):
+    """1 or 0 as the host's last infra reading says net.ipv4.ip_forward is, None when there is no reading or it did not say."""
+    reading = security.measurement(conn, host, 'infra')
+    return ((reading or {}).get('access') or {}).get('ip_forward')
+
+
 def tasks(conn: Conn) -> list[dict]:
     """The steps of the plan, host by host: the interface where a host has none yet, the half of a rotation that is due, then its
     peers. A host that is ready to switch to its next key does so first, and its peers move its address to that key in the same
@@ -316,6 +333,11 @@ def tasks(conn: Conn) -> list[dict]:
             continue
         if iface is None:
             out.append({'type': 'wg-interface', 'host': host, 'params': {**interface, 'state': 'present'}})
+        elif m['state'] == 'pending' and iface.get('public_key'):
+            # observe() did not take this key, so another record holds it: a host that left and joined again before its old interface
+            # was removed. The interface is made again, with a new key.
+            out.append({'type': 'wg-interface', 'host': host, 'params': {**interface, 'state': 'absent'}})
+            out.append({'type': 'wg-interface', 'host': host, 'params': {**interface, 'state': 'present'}})
         elif m['state'] == 'active':
             waits = iface.get('next_public_key')
             if host in ready and iface.get('public_key') != m['next_public_key']:
@@ -326,7 +348,8 @@ def tasks(conn: Conn) -> list[dict]:
                 out.append({'type': 'wg-rotate', 'host': host, 'params': {'iface': sfnet.INTERFACE, 'phase': 'cancel'}})
         # a member with no key yet has no peers and is nobody's peer: its peers are written by the plan after the reading that takes its key
         out += [{'type': s['kind'], 'host': host, 'params': {k: v for k, v in s['params'].items() if v != ''}} for s in sfnet.steps(then, host, readings.get(host))]
-        if m['state'] == 'active' and network.get('topology') == 'hub' and m.get('hub'):
+        # only where the reading says forwarding is off or unknown: the step also writes a drop-in, so a host that already forwards has nothing to plan
+        if m['state'] == 'active' and network.get('topology') == 'hub' and m.get('hub') and _forwarding(conn, host) != 1:
             out.append({'type': 'wg-forward', 'host': host, 'params': {'iface': sfnet.INTERFACE, 'range': network['range'], 'state': 'present'}})
     return first + out
 

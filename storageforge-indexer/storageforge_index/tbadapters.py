@@ -368,6 +368,18 @@ def status_rows(conn: Conn, host: str | None = None) -> list[dict]:
     return out
 
 
+def _host_port(e: dict, method: str | None, ports: dict, port: int) -> int:
+    """The host port the entry's own number becomes under the host's overrides. Overrides are keyed by container port,
+    and the entry's health URL and link name the host port, so the container port behind it comes first."""
+    for m in e.get('methods') or []:
+        if method and m['kind'] != method:
+            continue
+        for p in m.get('ports') or []:
+            if p['host'] == port and p['container'] in ports:
+                return ports[p['container']]
+    return port
+
+
 def health_checks(conn: Conn, host: str) -> list[tuple[str, str]]:
     """(tool, loopback URL) for each tool installed or staged on the host whose entry has a health check, with its port as overridden."""
     from . import toolbox
@@ -381,8 +393,8 @@ def health_checks(conn: Conn, host: str) -> list[tuple[str, str]]:
         m = HEALTH_URL.fullmatch(url)
         ovr_row = toolbox.override_row(conn, host, i['tool'])
         ports = (toolbox.load_override(ovr_row['text'])[0].get('ports') if ovr_row else None) or {}
-        if m and int(m[2]) in ports:
-            url = f'{m[1]}://127.0.0.1:{ports[int(m[2])]}{m[3] or ""}'
+        if m and (now := _host_port(e, i['method'], ports, int(m[2]))) != int(m[2]):
+            url = f'{m[1]}://127.0.0.1:{now}{m[3] or ""}'
         out.append((i['tool'], url))
     return out
 
@@ -399,7 +411,7 @@ def links(conn: Conn, host: str, e: dict, inst: dict | None) -> list[dict]:
     port = native.get('port')
     ovr_row = toolbox.override_row(conn, host, e['id'])
     ports = (toolbox.load_override(ovr_row['text'])[0].get('ports') if ovr_row else None) or {}
-    port = ports.get(port, port)
+    port = _host_port(e, (inst or {}).get('method'), ports, port) if port else port
     addr = conn.scalar('SELECT COALESCE(ip_address, ssh_host, hostname) FROM hosts WHERE hostname = :h', {'h': host}) or host
     if exposure == 'management':
         addr = next((p.split(':')[0] for p in made.get('ports') or [] if p.count(':') >= 2), addr)

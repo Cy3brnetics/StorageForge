@@ -365,11 +365,11 @@ class Pomerium(unittest.TestCase):
     def test_as_the_file_is_written(self):
         by = self.check(accessproxies.pomerium(POMERIUM))
         self.assertEqual((by['https://db.example.com']['access'], by['https://db.example.com']['address']), ('by policy: 2 domain(s)', None),
-                         'the line with a password in it is dropped whole, and with it where that route goes')
+                         'the value with a password in it is blanked, and with it where that route goes')
 
     def test_as_the_collector_sends_it(self):
         sent = pomerium_as_collected(POMERIUM)
-        for word in ('SECRET', 'gabe', 'mallory', 'admin:', 'Authorization', 'idp_client_secret', 'LS0t'):
+        for word in ('SECRET', 'gabe', 'mallory', 'admin:', 'Authorization', 'LS0t'):
             self.assertNotIn(word, sent)
         self.assertIn('is: someone', sent, 'an address in a policy is replaced on the host')
         self.assertIn('allow_public_unauthenticated_access: true', sent)

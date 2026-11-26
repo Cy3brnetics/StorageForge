@@ -87,6 +87,10 @@ class PlannerVersions(unittest.TestCase):
         doc = json.loads(self.page.locator('#pv-result pre').first.inner_text())
         self.assertEqual(doc['metadata'], {'host': 'future-nas', 'planned': True})
         self.assertIsNone(doc['sections']['storage'])
+        self.page.get_by_role('button', name='Edit infrastructure').click()
+        self.page.get_by_label('networks', exact=True).fill('[{"kind":"bridge","name":"br-lab"}]')
+        self.page.get_by_role('button', name='Save infrastructure').click()
+        self.page.wait_for_function("() => document.querySelector('#pv-result pre')?.textContent.includes('br-lab')")
         self.assertEqual(self.errors, [])
 
     def test_preview_saved_unified_design(self):

@@ -175,7 +175,7 @@ class Rewrap(Base):
         self.old()
         self.assertEqual(rotate_keys.tick(self.db), {'kek': 1}, 'it gives nobody anything: the vault opens with the same secret after')
         with self.assertRaises(vault.StepUpNeeded):
-            self.v.rotate_secret(b'n' * 48)
+            self.v.rotate_secret(b'n' * 48, current=SECRET)
         self.assertTrue(enclave_stepup.check(self.conn, self.address, 'gabe', password=PW)['token'], 'the step-up record was rewrapped with the rest')
 
     def test_a_locked_enclave_makes_the_rewrap_fail_and_say_so(self):

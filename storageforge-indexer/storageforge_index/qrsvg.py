@@ -1,4 +1,4 @@
-"""Minimal pure-Python ISO/IEC 18004 QR Code SVG generator (Byte mode, EC Level L, versions 1..10).
+"""Minimal pure-Python ISO/IEC 18004 QR Code SVG generator (Byte mode, EC Level L, versions 1..14).
 
 Used by the WireGuard Toolbox peer manager to render scannable peer configuration QR codes as inline SVG without external dependencies.
 """
@@ -16,11 +16,16 @@ _VERSIONS = {
     8: (194, 24, 2),
     9: (232, 30, 2),
     10: (274, 18, 4),
+    11: (324, 20, 4),
+    12: (370, 24, 4),
+    13: (428, 26, 4),
+    14: (461, 30, 4),
 }
 
 _ALIGN = {
     1: (), 2: (6, 18), 3: (6, 22), 4: (6, 26), 5: (6, 30),
     6: (6, 34), 7: (6, 22, 38), 8: (6, 24, 42), 9: (6, 26, 46), 10: (6, 28, 50),
+    11: (6, 30, 54), 12: (6, 32, 58), 13: (6, 34, 62), 14: (6, 26, 46, 66),
 }
 
 # GF(256) with primitive polynomial 0x11d
@@ -68,10 +73,8 @@ def _rs_rem(data: list[int], degree: int) -> list[int]:
 def _encode_codewords(payload: bytes) -> tuple[int, list[int]]:
     n = len(payload)
     ver = next((v for v, (cap, _, _) in _VERSIONS.items() if n + (2 if v < 10 else 3) <= cap), None)
-    if ver is None:
-        payload = payload[:270]
-        n = len(payload)
-        ver = 10
+    if ver is None:     # a code with the end cut off would scan as a wrong answer, so there is no code at all
+        raise ValueError('text is too long for a QR code of this generator')
     cap, ec_len, blocks = _VERSIONS[ver]
     bits: list[int] = [0, 1, 0, 0]  # Byte mode (0100)
     cc_bits = 8 if ver < 10 else 16
@@ -219,7 +222,10 @@ def _build_matrix(ver: int, codewords: list[int], mask: int = 0) -> list[list[in
 
 def svg(text: str, border: int = 2) -> str:
     """Renders text as a self-contained QR Code SVG string."""
-    ver, codewords = _encode_codewords((text or '').encode('utf-8'))
+    try:
+        ver, codewords = _encode_codewords((text or '').encode('utf-8'))
+    except ValueError:
+        return ''
     matrix = _build_matrix(ver, codewords, mask=0)
     size = len(matrix)
     dim = size + 2 * border

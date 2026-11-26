@@ -265,6 +265,7 @@ sf_wipe_file() { local f=$1 method=$2 passes=${3:-1} sz
 }
 
 t_secure_delete() { local p=$1 method=${2:-random-zero} passes=${3:-1}
+  p=$(realpath -m -s -- "$p" 2>/dev/null) || { conflict "cannot work out the path $1"; return 0; }   # //etc, /etc/ and /./etc are /etc
   case $p in
     /|/bin|/boot|/boot/efi|/boot/firmware|/dev|/efi|/etc|/home|/lib|/lib64|/proc|/root|/run|/sbin|/sys|/usr|/var)
       conflict "refusing to delete system path $p"; return 0 ;;
@@ -376,7 +377,7 @@ def _check_drive_wipe(conn: Conn, c: changes.Host, h: dict, p: dict, say):
 
 
 def _check_secure_delete(conn: Conn, c: changes.Host, h: dict, p: dict, say):
-    path = posixpath.normpath(p['path'])
+    path = '/' + posixpath.normpath(p['path']).lstrip('/')         # normpath keeps a leading //, which is / to the kernel
     if path in OS_SYSTEM_PATHS:
         say('crit', f'refusing to delete protected system directory {path}')
         return
@@ -426,6 +427,13 @@ def _ansible_edit(t: dict) -> dict:
     }
 
 
+def _ansible_guards() -> str:
+    """The host-side refusals of the script (device in use, holds RAID/LVM/LUKS), so a playbook run keeps them too."""
+    head = next(v for v in vars(changes).values() if isinstance(v, str) and 'dev_guard()' in v)
+    guard = head[head.index('dev_guard()'):].split('\n}\n')[0] + '\n}\n'
+    return ('APPLY=1; conflict() { echo "conflict: $*" >&2; exit 1; }; later() { conflict "$*"; }\n' + guard)
+
+
 def _ansible_wipe_snippet(dev_expr: str, method: str, passes: str) -> str:
     if method == 'discard':
         return f'blkdiscard -f -- {dev_expr}\nwipefs -aq -- {dev_expr}'
@@ -449,7 +457,7 @@ def _ansible_part_delete(t: dict) -> dict:
     return {
         'name': changes.title(t),
         'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': (
-            f'set -euo pipefail\n[ -b {part} ] || {{ echo unchanged; exit 0; }}\n'
+            f'set -euo pipefail\n[ -b {part} ] || {{ echo unchanged; exit 0; }}\n{_ansible_guards()}dev_guard {part}\n'
             f'b=$(basename {part}); num=$(cat /sys/class/block/$b/partition 2>/dev/null || lsblk -nro PARTN -- {part} | head -n 1)\n'
             f'{wipe_line}parted -s -- {disk} rm "$num"\npartprobe -- {disk} || true\nudevadm settle || true')},
         'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout",
@@ -465,7 +473,7 @@ def _ansible_drive_wipe(t: dict) -> dict:
     wipe = _ansible_wipe_snippet(dev, p.get('method') or 'zero', p.get('passes') or '1')
     return {
         'name': changes.title(t),
-        'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': f'set -euo pipefail\n{zap}{wipe}\npartprobe -- {dev} || true\nudevadm settle || true'},
+        'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': f'set -euo pipefail\n{_ansible_guards()}dev_guard {dev}\n{zap}{wipe}\npartprobe -- {dev} || true\nudevadm settle || true'},
         'tags': ['destructive'], 'when': 'storageforge_destructive | default(false) | bool',
     }
 
@@ -473,7 +481,16 @@ def _ansible_drive_wipe(t: dict) -> dict:
 def _ansible_secure_delete(t: dict) -> dict:
     p = t['params']
     q = shlex.quote
-    target, method, passes = q(p['path']), p.get('method') or 'random-zero', p.get('passes') or '1'
+    target, method, passes = '"$t"', p.get('method') or 'random-zero', p.get('passes') or '1'
+    # the same refusals as t_secure_delete: a system path, a link, a mount point, a filesystem mounted inside
+    guard = (f't=$(realpath -m -s -- {q(p["path"])}) || {{ echo "conflict: cannot work out the path" >&2; exit 1; }}\n'
+             'case $t in\n  /|/bin|/boot|/boot/efi|/boot/firmware|/dev|/efi|/etc|/home|/lib|/lib64|/proc|/root|/run|/sbin|/sys|/usr|/var)\n'
+             '    echo "conflict: refusing to delete system path $t" >&2; exit 1 ;;\nesac\n'
+             'if [ -e "$t" ] || [ -L "$t" ]; then\n'
+             '  [ ! -L "$t" ] || { echo "conflict: $t is a symbolic link" >&2; exit 1; }\n'
+             '  ! mountpoint -q -- "$t" || { echo "conflict: $t is a mount point" >&2; exit 1; }\n'
+             '  if [ -d "$t" ] && findmnt -rn -o TARGET | awk -v a="${t%/}/" \'index($0 "/", a) == 1 { f = 1 } END { exit !f }\'; then\n'
+             '    echo "conflict: a filesystem is mounted inside $t" >&2; exit 1\n  fi\nfi\n')
     if method == 'unlink':
         cmd = f'rm -rf -- {target}'
     elif method == 'zero':
@@ -484,7 +501,7 @@ def _ansible_secure_delete(t: dict) -> dict:
         cmd = f'if [ -f {target} ]; then shred -u -n {passes} -z -- {target}; else find {target} -xdev -type f -exec shred -u -n {passes} -z -- {{}} +; rm -rf -- {target}; fi'
     return {
         'name': changes.title(t),
-        'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': f'set -euo pipefail\n[ ! -e {target} ] && [ ! -L {target} ] && {{ echo unchanged; exit 0; }}\n{cmd}'},
+        'ansible.builtin.shell': {'executable': '/bin/bash', 'cmd': f'set -euo pipefail\n{guard}[ ! -e {target} ] && [ ! -L {target} ] && {{ echo unchanged; exit 0; }}\n{cmd}'},
         'register': 'sf_out', 'changed_when': "'unchanged' not in sf_out.stdout",
         'tags': ['destructive'], 'when': 'storageforge_destructive | default(false) | bool',
     }

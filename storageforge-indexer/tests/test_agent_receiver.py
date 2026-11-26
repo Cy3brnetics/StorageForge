@@ -195,9 +195,9 @@ class Counted(Base):
         a.open()
         a.hello()
         a.send(a.body())
-        a.seq += 4                      # four records it never sent
-        a.send(a.body(dropped=2))
-        self.assertEqual(self.peer(a.fp)['lost'], 6)
+        a.seq += 4                      # four records it never sent: the outbox numbers what it drops, so the gap and `dropped` are one loss
+        a.send(a.body(dropped=4))
+        self.assertEqual(self.peer(a.fp)['lost'], 4)
 
     def test_a_batch_not_signed_by_its_key_is_refused_and_five_end_the_session(self):
         a = Agent(self, 'nas')

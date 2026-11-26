@@ -449,7 +449,7 @@ async function loadRepoHistory(host, path) {
     const res = await postJSON('/api/git/history', { host, path, max: 50 });
     const history = await res.json();
     if (GITD.repo && GITD.repo.host === host && GITD.repo.path.replace(/\/+$/, '') === path.replace(/\/+$/, '')) {
-      GITD.history = history;
+      GITD.history = { ...history, host, path };   // an error result carries neither: stamp it so it counts as this repo's
       if (GITD.tab === 'commits') renderDrawerCommits();
       if (GITD.tab === 'changelog') renderDrawerChangelog();
     }
@@ -657,9 +657,9 @@ async function syncRepo(host, path, action = 'sync') {
         term.textContent += `==> Error: ${result.error || 'Failed'}\n`;
       }
     }
-    if (result.status) {
+    if (result.status && GITD.repo && GITD.repo.host === host && GITD.repo.path.replace(/\/+$/, '') === path.replace(/\/+$/, '')) {
       GITD.status = result.status;
-      if (GITD.repo) Object.assign(GITD.repo, result.status);
+      Object.assign(GITD.repo, result.status);
       updateDrawerRepoInfo();
     }
   } catch (err) {

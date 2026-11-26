@@ -26,7 +26,7 @@ LABELS = {'openziti': 'OpenZiti', 'teleport': 'Teleport', 'boundary': 'Boundary'
 
 
 def _text(v, limit: int = MAX_TEXT) -> str | None:
-    return str(v)[:limit] if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v) else None
+    return str(v)[:limit] if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v) not in ('', '***') else None      # *** is a blanked credential
 
 
 def _target(name, address=None, port=None, kind=None, access=None, **more) -> dict:
@@ -234,6 +234,9 @@ def _who(route: dict) -> tuple[str, bool]:
     denies = any(isinstance(p, dict) and 'deny' in p for p in (route.get('policy') if isinstance(route.get('policy'), list) else [route.get('policy')]))
     if route.get('allow_public_unauthenticated_access') is True or ('accept' in asks and not denies):
         return 'public: anyone, without signing in', True
+    if 'accept' in asks and denies:
+        # not called public, since the deny rules may keep most people out; but "by policy" alone would hide that everyone is let in first
+        return 'everyone is allowed, except what the deny rules exclude', False
     if route.get('allow_any_authenticated_user') is True or asks == {'authenticated_user'}:
         return 'anyone who can sign in', False
     counts = [f'{len(route[k])} {word}' for k, word in (('allowed_users', 'user(s)'), ('allowed_domains', 'domain(s)'), ('allowed_idp_claims', 'claim(s)')) if isinstance(route.get(k), (list, dict)) and route[k]]
@@ -258,6 +261,7 @@ def pomerium(text: str) -> dict:
         if not isinstance(r, dict) or not _text(r.get('from')):
             continue
         to = r.get('to')[0] if isinstance(r.get('to'), list) and r.get('to') else r.get('to')
+        to = None if to == '***' else to                   # blanked on the host: it held a password
         host, port = _host_port(to)
         who, public = _who(r)
         kind = 'redirect' if isinstance(r.get('redirect'), dict) else 'fixed answer' if isinstance(r.get('response'), dict) else (re.match(r'[a-z][a-z0-9+.-]*(?=://)', str(r['from'])) or [None])[0]

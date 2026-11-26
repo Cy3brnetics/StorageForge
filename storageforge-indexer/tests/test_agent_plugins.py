@@ -26,7 +26,9 @@ REMOTE = '/usr/lib/systemd/systemd-journal-remote'
 def line(n, message, priority=6, at=None, skipped=0, **more):
     at = at if at is not None else time.time()
     return {'MESSAGE': message, 'PRIORITY': str(priority), '__SEQNUM': str(n), '__SEQNUM_ID': SEQ, '__REALTIME_TIMESTAMP': str(int(at * 1e6)),
-            '__CURSOR': f's={SEQ};i={n:x};b=b;m=1;t=1;x=1', '_COMM': more.pop('comm', 'kernel'), 'skipped': skipped, **more}
+            '__CURSOR': f's={SEQ};i={n:x};b=b;m=1;t=1;x=1', 'skipped': skipped,
+            # a kernel line, as journald writes one: no _COMM (it stamps that only on what a process wrote) unless one is given
+            **({'_COMM': more.pop('comm')} if 'comm' in more else {'SYSLOG_IDENTIFIER': 'kernel'}), **more}
 
 
 class ReceiverResume(test_agent_receiver.Base):

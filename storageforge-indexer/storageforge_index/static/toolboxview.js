@@ -360,9 +360,9 @@ async function loadToolbox() {
     const signers = await tbSigners();
     if (!fresh()) return;
     if (signers) parts.push(signers);
-    const open = [...box.querySelectorAll('details[open]')].map((d) => d.id);
+    const open = [...box.querySelectorAll('details[open]')].map((d) => d.id).filter(Boolean);
     box.replaceChildren(...parts);
-    for (const id of open) { const d = box.querySelector(`#${id}`); if (d) d.open = true; }
+    for (const id of open) { const d = document.getElementById(id); if (d) d.open = true; }
   } catch (err) { if (fresh()) tbMsg(err.message, false); }
 }
 

@@ -115,16 +115,18 @@ function secOpen(panel) {
 async function secRender() {
   const box = $('#sec-content'), fresh = latest('security');      // a slow panel must not land on top of the one clicked after it
   box.replaceChildren(text('p', 'Loading…', 'muted'));
-  await secBanner();
-  if (!fresh()) return;
   if (SEC_NEEDS_HOST.has(SEC.panel) && !S.host) {
+    await secBanner();
+    if (!fresh()) return;
     const rank = { critical: 3, warning: 2, unknown: 1, secure: 0 };
     const worst = [...(SEC.posture?.hosts || [])].sort((a, b) => (rank[b.state] - rank[a.state]) || (b.critical.length + b.warnings.length) - (a.critical.length + a.warnings.length))[0];
     needHost(box, 'This panel', secRender, worst?.host);                  // it opens on the host with the most to look at
     return;
   }
+  const bannerTask = secBanner();
   try {
-    const built = await ({ overview: secOverview, worm: secWorm, decoys: secDecoys, mac: secMac, firewall: secFirewall, behavior: secBehavior, integrity: secIntegrity, compliance: secCompliance, ...SEC_MORE })[SEC.panel]();
+    const handlers = { overview: () => secOverview(bannerTask), worm: secWorm, decoys: secDecoys, mac: secMac, firewall: secFirewall, behavior: secBehavior, integrity: secIntegrity, compliance: secCompliance, ...SEC_MORE };
+    const built = await handlers[SEC.panel]();
     if (fresh()) box.replaceChildren(built);
   } catch (err) {
     if (fresh()) box.replaceChildren(text('p', err.message, 'st-failed'));
@@ -138,9 +140,11 @@ async function secBanner() {
     SEC.posture = p;
     b.className = `sec-banner sec-${p.state}`;
     b.replaceChildren(text('b', { secure: 'Nothing wrong found', warning: 'Needs a look', critical: 'Incident', unknown: 'Not known' }[p.state]), text('span', p.banner));
+    return p;
   } catch (err) {
     b.className = 'sec-banner sec-unknown';
     b.replaceChildren(text('span', err.message, 'st-failed'));
+    return null;
   }
 }
 
@@ -149,8 +153,8 @@ function secMeasureButton(host, out) {
 }
 
 /* ── overview ─────────────────────────────────────────────────────── */
-async function secOverview() {
-  const p = SEC.posture || await getJSON(`/api/security/posture${secQ(S.host)}`);
+async function secOverview(bannerTask = null) {
+  const p = (bannerTask && await bannerTask) || SEC.posture || await getJSON(`/api/security/posture${secQ(S.host)}`);
   const out = el('div', { class: 'stack' });
   const rows = p.hosts.map((h) => {
     const why = el('div', { class: 'small' });
@@ -339,7 +343,7 @@ async function secFirewall() {
     if (b.vip_conflicts?.length) {
       reconcileBtns.push(button('Stage lift VIP bans', async () => {
         const r = await secPost('/api/security/firewall/reconcile', { host, action: 'unban_vips' }, out);
-        if (r?.plan_id && window.SEC_MORE) out.prepend(text('p', `Plan #${r.plan_id} staged (${r.tasks} step(s)): open Changes.`, 'st-ok'));
+        if (r?.plan_id && typeof SEC_MORE !== 'undefined') out.prepend(text('p', `Plan #${r.plan_id} staged (${r.tasks} step(s)): open Changes.`, 'st-ok'));
       }, 'btn sm danger'));
     }
     if (b.unsynced_quarantine?.length) {
@@ -402,7 +406,7 @@ async function secBehavior() {
       text('p', 'Compressed data looks just like ciphertext, so archives, images and video are skipped, and a known file header clears a file. What is left is a reason to look, not proof.', 'muted small'),
       secCan('security.manage') ? el('div', { class: 'row wrap sec-acts' }, button('Sample changed files', async () => { if (await secPost('/api/security/behavior/entropy', { host }, out)) secRender(); }, 'btn sm'), button('ClamAV on changed files', async () => { const r = await secPost('/api/security/behavior/diff-scan', { host }, out); if (r) out.prepend(text('p', `Scanned ${r.scanned} changed files in ${r.seconds} s: ${r.found} new detections. They are in the Malware panel.`, r.found ? 'st-failed' : 'st-ok')); }, 'btn sm')) : ''),
     secCard('Falco', text('p', d.measured_at ? (d.falco?.installed ? `Installed, ${d.falco.active ? 'running' : 'not running'}.` : 'Not installed.') : `${NOT_MEASURED}.`, 'muted'), button('Rules, alerts and YARA', () => secOpen('detect'), 'btn sm')),
-    window.SEC_MORE?.threatsCard ? SEC_MORE.threatsCard(host, d, out) : '',
+    typeof SEC_MORE !== 'undefined' && SEC_MORE.threatsCard ? SEC_MORE.threatsCard(host, d, out) : '',
     out);
 }
 
@@ -419,7 +423,7 @@ async function secIntegrity() {
       text('h4', 'Check files'), run('aide-check', 'Run a check'), text('h4', 'Make a new baseline'), text('p', 'After an upgrade you trust. Anything already changed becomes the new normal.', 'muted small'), run('aide-init', 'Make the baseline')),
     secCard('Lynis', l ? el('div', { class: 'stack' }, el('div', { class: 'stat-row' }, secStat('Hardening index', secVal(l.hardening_index)), secStat('Audited', secWhen(l.at)), secStat('Warnings', l.warnings.length), secStat('Suggestions', l.suggestions.length)),
       l.warnings.length ? secTable(['Warning', ''], l.warnings.map((w) => [w.id, w.text])) : '', l.suggestions.length ? secTable(['Suggestion', ''], l.suggestions.map((w) => [w.id, w.text]), 20) : '') : text('p', 'No audit has run.', 'muted'), run('lynis', 'Run an audit')),
-    text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', window.SEC_MORE?.threatsCard ? SEC_MORE.threatsCard(host, d, out) : '', out, await SEC_MORE.integrityExtra(host));
+    text('p', 'These run in the background on the host. Measure again when they are done.', 'muted small'), secCan('security.manage') ? secMeasureButton(host, out) : '', typeof SEC_MORE !== 'undefined' && SEC_MORE.threatsCard ? SEC_MORE.threatsCard(host, d, out) : '', out, await SEC_MORE.integrityExtra(host));
 }
 
 /* ── compliance ───────────────────────────────────────────────────── */

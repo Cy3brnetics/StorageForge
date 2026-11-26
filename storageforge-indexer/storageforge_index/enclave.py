@@ -55,6 +55,14 @@ class EnclaveError(RuntimeError):
         self.code = code
 
 
+def _fits(what: str, data: bytes, most: int) -> bytes:
+    """The enclave counts a value over its bound as a bad request, and five of those lock it down. Something a person typed that is too
+    long is refused here, where it costs nothing."""
+    if len(data) > most:
+        raise EnclaveError('bad-request', f'{what} is longer than the enclave takes ({most} bytes)')
+    return data
+
+
 def published_address() -> str | None:
     """Where the server said its enclave is (enclave_start.publish): one line in the run folder, for a starter or a command beside it."""
     try:
@@ -349,8 +357,12 @@ class Enclave:
     def _proof(self, user: str, record: dict, password: str | None = None, fido: dict | None = None) -> dict:
         out = {'user': user, 'record': self._sealed(record)}
         if password is not None:
-            out['password'] = _b64(password.encode())
+            out['password'] = _b64(_fits('the password', password.encode(), 1024))
         if fido is not None:
+            if isinstance(fido, dict):
+                for field, most in (('authenticator_data', 1024), ('client_data', 4096), ('signature', 80)):
+                    if isinstance(fido.get(field), str):
+                        _fits(f'the security key\'s {field}', fido[field].encode(), most * 4 // 3 + 4)
             out['fido'] = fido
         return out
 
@@ -376,7 +388,7 @@ class Enclave:
         more = {'token': token} if token else {}
         if secret is not None:
             more.update(self._kdf(secret, meta))
-        got = self.request('stepup-enroll', uuid=uuid, user=user, password=_b64(password.encode()), fido=fido or [], rp=rp, origin=origin, **more)
+        got = self.request('stepup-enroll', uuid=uuid, user=user, password=_b64(_fits('the password', password.encode(), 1024)), fido=fido or [], rp=rp, origin=origin, **more)
         return {'uuid': uuid, **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'nonce', 'ciphertext')}}
 
     def stepup(self, user: str, record: dict, password: str | None = None, fido: dict | None = None) -> dict:
@@ -406,6 +418,8 @@ class Enclave:
 
     def generate(self, uuid: str, kind: str = 'ed25519', comment: str = '', token: str | None = None) -> dict:
         """A key made inside. Back come its public line and the ciphertexts for an ssh_keys row, as bytes."""
+        if len(comment.encode()) > 200 or any(ord(c) < 0x20 or ord(c) == 0x7f for c in comment):
+            raise EnclaveError('bad-request', 'a key comment is at most 200 printable characters')
         got = self.request('generate', uuid=uuid, kind=kind, comment=comment, **({'token': token} if token else {}))
         return {'public_key': got['public_key'], **{k: base64.b64decode(got[k]) for k in ('dek_nonce', 'wrapped_dek', 'key_nonce', 'ciphertext')}}
 
@@ -431,11 +445,14 @@ class Enclave:
                            **{'for': {k: v for k, v in named.items() if v}}, **more)
         return base64.b64decode(got['plaintext']), got['audit']
 
-    def rotate_begin(self, new_secret: bytes | None, salt: bytes, time_cost: int, memory_kib: int, lanes: int, token: str | None = None, share: bytes | None = None) -> dict:
+    def rotate_begin(self, new_secret: bytes | None, salt: bytes, time_cost: int, memory_kib: int, lanes: int, token: str | None = None, share: bytes | None = None,
+                     current: bytes | None = None) -> dict:
         """The KEK of a new vault secret, held beside the current one. Back come the verifier and audit key wrapped under it.
         share: the host's share to mix in, for a vault with a second lock. new_secret None: the same secret and share under this
         new salt, from what the enclave holds, which takes no step-up (a scheduled rewrap)."""
-        how = {'rekey': True} if new_secret is None else {'secret': _b64(new_secret), **({'share': _b64(share)} if share else {})}
+        # current: the vault secret in force, which the enclave checks before it takes a new one (nobody else may turn the vault over)
+        how = {'rekey': True} if new_secret is None else {'secret': _b64(new_secret), **({'share': _b64(share)} if share else {}),
+                                                          **({'current': _b64(current)} if current else {})}
         got = self.request('rotate-begin', salt=_b64(salt), time_cost=time_cost, memory_kib=memory_kib, lanes=lanes, **how, **({'token': token} if token else {}))
         return {k: base64.b64decode(got[k]) for k in ('verifier_nonce', 'verifier', 'audit_key_nonce', 'audit_key_wrapped')}
 
@@ -571,6 +588,11 @@ def problems() -> dict:
         return {'security-enclave': ('security-enclave', 'enclave', 'The key enclave has locked itself down',
                                      f'It was sent {status.get("bad_requests")} requests no honest client sends, and wiped its keys. Find what sent them before unlocking it again with the vault secret.', 'crit')}
     out = {}
+    if status.get('foreign_unlocks'):
+        out['security-enclave-foreign'] = ('security-enclave-foreign', 'enclave', 'The key enclave refused an unlock for another vault',
+                                           f'{status["foreign_unlocks"]} unlock(s) since it started came with a secret and verifier of some other vault. Only something that can '
+                                           'reach the enclave\'s socket sends one: find it. If this installation\'s own starter is refused, the enclave was unlocked by '
+                                           'someone else first: restart the enclave and let the starter unlock it.', 'crit')
     if status.get('state') != 'unlocked':
         out['security-enclave'] = ('security-enclave', 'enclave', 'The key enclave is locked',
                                    'It holds no key, as after a restart. The starter unlocks it, or a person on the Keys page with the vault secret.', 'warn')

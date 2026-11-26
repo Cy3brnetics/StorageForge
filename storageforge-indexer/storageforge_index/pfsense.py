@@ -198,6 +198,12 @@ def _mvc_rules(root, ifaces: dict, table: dict, own: set) -> list:
     return out
 
 
+def _nat_proto(value) -> str | None:
+    """A forward's protocol the way filter rules carry it: lower case, and TCP/UDP as the pair."""
+    proto = (value or '').lower() or None
+    return 'tcp,udp' if proto == 'tcp/udp' else proto
+
+
 def firewall(root, ifaces: dict) -> dict:
     """pf reads top to bottom with the last match winning unless `quick`, and the GUI writes every rule quick. Interface tabs hold rules for what comes in on that
     interface. What no rule passes is blocked by pfSense's default deny."""
@@ -251,7 +257,7 @@ def firewall(root, ifaces: dict) -> dict:
         value = table.get(port or '', port)
         target, local = _t(r, 'target'), _t(r, 'local-port')
         name = _t(r, 'interface')
-        rule = _rule('pf', 'nat', 'dstnat', i * 10, action='dnat', proto=_t(r, 'protocol'), dports=_ports(value) or [] if value else [], iif=(ifaces.get(name) or {}).get('if'), comment=_t(r, 'descr'),
+        rule = _rule('pf', 'nat', 'dstnat', i * 10, action='dnat', proto=_nat_proto(_t(r, 'protocol')), dports=_ports(value) or [] if value else [], iif=(ifaces.get(name) or {}).get('if'), comment=_t(r, 'descr'),
                      to_addr=table.get(target or '', target), to_port=int(local) if str(local or '').isdigit() else None)
         out['nat'].append(rule)
     for i, r in enumerate(root.findall('nat/onetoone'), 1):

@@ -205,6 +205,8 @@ RENDER = {'compose': compose, 'quadlet': quadlet, 'libvirt': libvirt, 'incus': i
 
 def render(w: dict, fmt: str | None = None) -> tuple[str, str]:
     """(format, text) for one workload record of workloads.listing."""
+    if w.get('detail') is False:       # a failed details pass, or a domain XML that could not be read: a capture would pass for complete
+        raise ValueError(f'{w.get("name")} could not be read in full on {w.get("host")}: scan the host again before capturing it')
     allowed = FORMATS.get(w['runtime'])
     if not allowed:
         raise ValueError(f'a {w["runtime"]} workload cannot be captured here: {", ".join(FORMATS)} can')

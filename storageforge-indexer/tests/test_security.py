@@ -1723,16 +1723,23 @@ class Section9Depth(unittest.TestCase):
         webauthn.add_key(self.conn, 'root', {'credential_id': cred_id, 'public_key': webauthn.b64u(pub), 'sign_count': 1}, 'YubiKey')
 
         c = self.web.test_client()
-        b = c.post('/api/login/webauthn/begin', json={'username': 'root'})
-        self.assertEqual(b.status_code, 200)
-        opts = b.get_json()
-        cdj = json.dumps({'type': 'webauthn.get', 'challenge': opts['challenge'], 'origin': 'http://localhost'}).encode()
-        auth_data = __import__('hashlib').sha256(b'localhost').digest() + bytes([1]) + (2).to_bytes(4, 'big')
-        sig = sk.sign(auth_data + __import__('hashlib').sha256(cdj).digest(), ec.ECDSA(hashes.SHA256()))
-        f = c.post('/api/login/webauthn/finish', json={'id': cred_id, 'clientDataJSON': webauthn.b64u(cdj),
-                                                       'authenticatorData': webauthn.b64u(auth_data), 'signature': webauthn.b64u(sig)})
+
+        def sign_in(flags, counter):
+            b = c.post('/api/login/webauthn/begin', json={'username': 'root'})
+            self.assertEqual(b.status_code, 200)
+            opts = b.get_json()
+            self.assertEqual(opts['userVerification'], 'required')          # a key alone signs in only with its PIN or fingerprint
+            cdj = json.dumps({'type': 'webauthn.get', 'challenge': opts['challenge'], 'origin': 'http://localhost'}).encode()
+            auth_data = __import__('hashlib').sha256(b'localhost').digest() + bytes([flags]) + counter.to_bytes(4, 'big')
+            sig = sk.sign(auth_data + __import__('hashlib').sha256(cdj).digest(), ec.ECDSA(hashes.SHA256()))
+            return c.post('/api/login/webauthn/finish', json={'id': cred_id, 'clientDataJSON': webauthn.b64u(cdj),
+                                                              'authenticatorData': webauthn.b64u(auth_data), 'signature': webauthn.b64u(sig)})
+        self.assertEqual(sign_in(0x01, 2).status_code, 403, 'a touch with no PIN check is one factor')
+        f = sign_in(0x05, 3)
         self.assertEqual((f.status_code, f.get_json()['username']), (200, 'root'))
         self.assertEqual(c.get('/api/me').status_code, 200)
+        r = c.put('/api/me', json={'session_minutes': 60})
+        self.assertEqual((r.status_code, r.get_json().get('reauth')), (403, True), 'signed in by key, not a fresh password')
 
         # SMS alert channel validation and delivery
         with mock.patch.object(alerts, '_check_target'):

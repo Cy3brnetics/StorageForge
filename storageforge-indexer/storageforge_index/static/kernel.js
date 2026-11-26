@@ -614,6 +614,37 @@ function sfRoute(method, path) {    // the path as it is sent: with the code of 
   const half = Math.floor((Date.now() / 1000 + (st.skew || 0)) / 30);
   return `/api/~${sfHmacHex(st.key, `${m} ${bare}|${half}`).slice(0, 8)}${String(path).slice(4)}`;
 }
+let sfRouteAsk = null;
+function sfRouteKeyAgain() {       // the route key again, behind the password: one dialog however many calls are waiting on it
+  if (sfRouteAsk) return sfRouteAsk;
+  sfRouteAsk = sfKnowUser().then(() => new Promise((resolve, reject) => {
+    const pw = sfNode('input', { id: 'routepw', type: 'password', autocomplete: 'current-password', required: true });
+    const msg = sfNode('p', { id: 'routemsg', class: 'sf-err', role: 'alert', hidden: true });
+    const cancel = sfNode('button', { id: 'routecancel', type: 'button', class: 'sf-btn ghost' }, 'Cancel');
+    const form = sfNode('form', { id: 'routeform', method: 'dialog' },
+      sfNode('h2', { id: 'routetitle' }, 'Confirm your password'),
+      sfNode('p', { class: 'muted' }, 'This browser has lost the key that signs sensitive requests for this session. Your password gives it back.'),
+      sfUserName ? sfNode('input', { type: 'text', autocomplete: 'username', value: sfUserName, hidden: true }) : null,
+      sfNode('label', { class: 'sf-field' }, sfNode('span', {}, 'Password'), pw), msg,
+      sfNode('div', { class: 'sf-actions' }, cancel, sfNode('button', { type: 'submit', class: 'sf-btn pri' }, 'Confirm')));
+    const dlg = sfModal(form, 'routetitle');
+    let settled = false;
+    const finish = (fn, arg) => { if (settled) return; settled = true; fn(arg); };
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const password = pw.value;
+      pw.value = '';
+      const res = await fetch('/api/routecode', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+      if (res.status === 401) { dlg.close(); finish(reject, new Error('Sign in required')); sfSignedOut(); return; }
+      if (!res.ok) { msg.textContent = (await res.json().catch(() => ({}))).error || res.statusText; msg.hidden = false; pw.focus(); return; }
+      finish(resolve, await res.json()); dlg.close();
+    });
+    cancel.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => finish(reject, new Error('Password not confirmed: the request was not sent')));
+    pw.focus();
+  })).finally(() => { sfRouteAsk = null; });
+  return sfRouteAsk;
+}
 async function sfCodedFetch(path, init, again = false) {
   const res = await fetch(sfRoute(init.method, path), { credentials: 'same-origin', ...init });
   if (res.status !== 403 || again) return res;
@@ -622,7 +653,7 @@ async function sfCodedFetch(path, init, again = false) {
   const st = sfRouteKey(), skew = body.now - Date.now() / 1000;
   if (st && st.key && Math.abs(skew - (st.skew || 0)) > 5) sfRouteKeep({ key: st.key, skew });          // this machine's clock is off: the server's counts
   else {                              // this browser has no key for the session, or not this one: it is given again, behind the password
-    const got = await (await sfFetch('/api/routecode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, false)).json();
+    const got = await sfRouteKeyAgain();
     sfRouteKeep({ key: got.route_key, skew: got.now - Date.now() / 1000 });
   }
   return sfCodedFetch(path, init, true);

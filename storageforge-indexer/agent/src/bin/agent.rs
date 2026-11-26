@@ -86,7 +86,55 @@ fn wipe_and_exit(paths: &Paths, why: &[String], outbox: &Outbox, tunnel_up: bool
     std::process::exit(wipe::EXIT_WIPED);
 }
 
+/// Empties this thread's effective capability set, keeping permitted, inheritable and the ambient set the plugins get. After the
+/// agent starts itself again in place (restart), the kernel makes the effective set of the new image equal to the ambient one, so
+/// the agent that reads tunnel and plugin input would hold the plugins' capabilities (caps.rs says it holds none). Called before
+/// anything is read, while this is the only thread.
+fn drop_effective() {
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    let Ok((effective, permitted, inheritable)) = storageforge_agent::caps::get() else { return };
+    if effective == 0 {
+        return;
+    }
+    let mut h = Header { version: 0x2008_0522, pid: 0 };
+    let d = [Data { effective: 0, permitted: permitted as u32, inheritable: inheritable as u32 }, Data { effective: 0, permitted: (permitted >> 32) as u32, inheritable: (inheritable >> 32) as u32 }];
+    if unsafe { libc::syscall(libc::SYS_capset, &mut h as *mut Header, d.as_ptr()) } != 0 {
+        log(format!("cannot empty the effective capability set: {}", std::io::Error::last_os_error()));
+    }
+}
+
+/// A problem as the timer compares it with the one from the start: the clock a refusal for age quotes is left out, as it differs
+/// at every pass and would make the agent start itself again every time.
+fn steady(problem: &str) -> String {
+    if let Some(i) = problem.find(", now ") {
+        let rest = &problem[i + 6..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && rest[digits..].starts_with(')') {
+            return format!("{}{}", &problem[..i + 6], &rest[digits..]);
+        }
+    }
+    problem.to_string()
+}
+
+fn same_problems(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| steady(x) == steady(y))
+}
+
 fn run(paths: &Paths) -> i32 {
+    if unsafe { libc::geteuid() } != 0 {
+        drop_effective();
+    }
     if unsafe { libc::geteuid() } == 0 {
         // Started as root only so that the declared capabilities can be kept (caps.rs): root is given up first, before anything
         // is read. Started as root without being told whom to become, it refuses.
@@ -190,7 +238,13 @@ fn run(paths: &Paths) -> i32 {
                     restart();
                 }
             }
-            let (again, _) = supervise::inspect(paths, &key, supervise::now(), false);
+            let (mut again, _) = supervise::inspect(paths, &key, supervise::now(), false);
+            if !again.tamper.is_empty() {
+                // The controller's apply replaces the manifest's signature and the manifest one after the other, and a reading
+                // between the two sees a new signature with the old manifest. A moment later it is whole; tampering stays.
+                std::thread::sleep(Duration::from_secs(2));
+                again = supervise::inspect(paths, &key, supervise::now(), false).0;
+            }
             let mut tamper = again.tamper.clone();
             if program.is_some() && wipe::own_program() != program {
                 tamper.push("the agent's own program changed while it ran".into());
@@ -198,7 +252,7 @@ fn run(paths: &Paths) -> i32 {
             if !tamper.is_empty() {
                 wipe_and_exit(paths, &tamper, &outbox, tunnel.is_some());
             }
-            if again.manifest != running || again.problems != report.problems || again.stray != report.stray {
+            if again.manifest != running || !same_problems(&again.problems, &report.problems) || again.stray != report.stray {
                 log("the manifest or the plugin files changed: starting again with what is there now".into());
                 restart();
             }
@@ -278,4 +332,17 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_for_age_is_the_same_problem_at_every_pass() {
+        let at = |now: u64| vec![format!("the manifest was not signed a moment ago (issued 100, now {now}): it is an old one, or the clocks differ")];
+        assert!(same_problems(&at(5000), &at(5030)));
+        assert!(!same_problems(&at(5000), &["another manifest was accepted with counter 3 already".to_string()]));
+        assert!(!same_problems(&at(5000), &[]));
+    }
 }

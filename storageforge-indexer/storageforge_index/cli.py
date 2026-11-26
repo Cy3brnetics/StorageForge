@@ -642,6 +642,9 @@ def cmd_rotate(args) -> int:
             print(f'  ({p["device_credentials"]} device credential(s) are stored)')
         return 0
     new = os.environ.get('STORAGEFORGE_VAULT_NEW_SECRET', '').encode() or None
+    if new and len(new) < 32:
+        print('the new vault secret needs 32 characters or more', file=sys.stderr)
+        return 1
     r = rotation.apply(db, conn, actor_name(), new, set(args.key) if args.key else None)
     bad = 0
     for k in r['results']:
@@ -963,16 +966,18 @@ def cmd_hosts(args) -> int:
     if getattr(args, 'hosts_cmd', None) == 'remove':
         from .retire import retire
         from .vault import Vault, VaultError
+        # The host is found without regard to case, but retire() compares the name as it is given: hand it the stored spelling.
+        name = conn.scalar('SELECT hostname FROM hosts WHERE lower(hostname) = lower(:h)', {'h': args.name}) or args.name
         try:
-            gone = retire(conn, args.name, args.keep_design)
+            gone = retire(conn, name, args.keep_design)
         except (LookupError, ValueError) as exc:
             print(exc, file=sys.stderr)
             return 1
         try:
             with Vault(db, conn).unlock() as v:
-                _audit(db, conn, v, 'hosts.retire', host=args.name, **gone)
+                _audit(db, conn, v, 'hosts.retire', host=name, **gone)
         except VaultError:
-            _audit(db, conn, None, 'hosts.retire', host=args.name, **gone)
+            _audit(db, conn, None, 'hosts.retire', host=name, **gone)
         stays = gone.pop('still_on_host', None)
         print(f'retired {args.name}: ' + ', '.join(f'{v} {k}' for k, v in gone.items()))
         if stays:
@@ -2151,11 +2156,17 @@ def build_parser() -> argparse.ArgumentParser:
     bk = sub.add_parser('backup', help='database backups (essentials by default: keys, bindings, users, designs, plans, audit)')
     bks = bk.add_subparsers(dest='backup_cmd')
     b1 = bks.add_parser('create', help='write a backup now (the default)')
-    bks.add_parser('list', help='backups on disk').add_argument('--dir', help='backup folder')
-    for x in (bk, b1):
-        x.add_argument('--full', action='store_true', help='the whole database, file index included (large)')
-        x.add_argument('--keep', type=int, help='then delete the oldest of that kind beyond this many')
-        x.add_argument('--dir', help='backup folder (default $STORAGEFORGE_BACKUP_DIR or <data>/backups)')
+    b2 = bks.add_parser('list', help='backups on disk')
+    # The options are accepted before or after the subcommand. A subparser's own defaults would overwrite what was
+    # given before it, so the subparser copies default to SUPPRESS and set nothing unless they are typed.
+    for x, quiet in ((bk, False), (b1, True), (b2, True)):
+        if x is not b2:
+            x.add_argument('--full', action='store_true', help='the whole database, file index included (large)',
+                           **({'default': argparse.SUPPRESS} if quiet else {}))
+            x.add_argument('--keep', type=int, help='then delete the oldest of that kind beyond this many',
+                           **({'default': argparse.SUPPRESS} if quiet else {}))
+        x.add_argument('--dir', help='backup folder (default $STORAGEFORGE_BACKUP_DIR or <data>/backups)',
+                       **({'default': argparse.SUPPRESS} if quiet else {}))
     bk.set_defaults(fn=cmd_backup, backup_cmd='create')
 
     hc = sub.add_parser('config', help='host configuration history and the reinstall script (mounts, accounts, shares, symlinks)')

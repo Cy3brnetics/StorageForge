@@ -13,9 +13,20 @@ stop_all() {   # by number: this sh has no kill -1
     [ "$p" = $$ ] || kill -s "$1" "$p" 2>/dev/null || true
   done
 }
+# This container shares the server's network namespace. When the server's container goes, its interfaces go with it and only
+# loopback is left here, so sshd would keep listening where no one can reach it. Exiting lets the restart policy start us
+# again in the new server's namespace.
+has_network() {
+  for i in /sys/class/net/*; do
+    [ -e "$i" ] || continue
+    [ "${i##*/}" = lo ] || return 0
+  done
+  return 1
+}
 seen=$(cat "$GEN" 2>/dev/null || echo 0)
 start
 while sleep 5; do
+  has_network || { echo "the server's network namespace is gone: exiting so the container restarts" >&2; exit 1; }
   now=$(cat "$GEN" 2>/dev/null || echo 0)
   if [ "$now" != "$seen" ]; then
     seen=$now

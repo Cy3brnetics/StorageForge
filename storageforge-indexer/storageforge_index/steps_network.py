@@ -93,6 +93,15 @@ np_remove() { local f=$1 roll=$2
 }
 np_other() { local f; for f in "$NP_DIR"/*.yaml; do [[ -e $f && $f != */90-storageforge-* ]] || continue; grep -qF -- "$1" "$f" 2>/dev/null && { echo "$f"; return 0; }; done; return 1; }
 
+# whether another file of netplan defines this very route (the destination and the gateway), not merely mentions the gateway: a default
+# route through it says nothing about a route to another network through it
+np_other_route() { local dst=$1 via=$2 f d=${1//./\\.} v=${2//./\\.} dflt=0
+  [[ $dst == 0.0.0.0/0 || $dst == ::/0 ]] && { dflt=1; d="(default|0\\.0\\.0\\.0/0|::/0)"; }
+  for f in "$NP_DIR"/*.yaml; do [[ -e $f && $f != */90-storageforge-* ]] || continue
+    if grep -qE -- "via:[[:space:]]*.?$v.?[[:space:]]*$" "$f" 2>/dev/null && grep -qE -- "to:[[:space:]]*.?$d.?[[:space:]]*$" "$f" 2>/dev/null; then echo "$f"; return 0; fi
+    if ((dflt)) && grep -qE -- "gateway[46]:[[:space:]]*.?$v.?[[:space:]]*$" "$f" 2>/dev/null; then echo "$f"; return 0; fi
+  done; return 1; }
+
 # ── NetworkManager ──────────────────────────────────────────────────
 nm_con() { nmcli -g GENERAL.CONNECTION device show "$1" 2>/dev/null | head -n 1; }
 nm_get() { nmcli -g "$2" connection show "$1" 2>/dev/null | tr -d "\\\\"; }
@@ -129,6 +138,20 @@ nd_dhcp() { local unit f; unit=$(nd_unit "$1"); [[ -n $unit && -e $unit ]] || re
 nd_ours() { local unit; unit=$(nd_unit "$1"); [[ -n $unit ]] && ls "/etc/systemd/network/${unit##*/}.d/$2" 2>/dev/null; }
 nd_other() { local unit f; unit=$(nd_unit "$1"); [[ -n $unit && -e $unit ]] || return 1
   for f in "$unit" /etc/systemd/network/"${unit##*/}".d/*.conf; do [[ -e $f && ${f##*/} != sf-* ]] || continue; grep -qE -- "$2" "$f" && { echo "$f"; return 0; }; done; return 1; }
+
+# the same for systemd-networkd: a file of the interface's unit with this Gateway and this Destination (or none, for the default route)
+nd_other_route() { local dst=$1 via=$2 iface=$3 unit f d=${1//./\\.} v=${2//./\\.} dflt=0
+  [[ $dst == 0.0.0.0/0 || $dst == ::/0 ]] && dflt=1
+  unit=$(nd_unit "$iface"); [[ -n $unit && -e $unit ]] || return 1
+  for f in "$unit" /etc/systemd/network/"${unit##*/}".d/*.conf; do [[ -e $f && ${f##*/} != sf-* ]] || continue
+    grep -qE -- "^Gateway=$v$" "$f" || continue
+    if ((dflt)); then
+      ! grep -q -- "^Destination=" "$f" || grep -qE -- "^Destination=(0\\.0\\.0\\.0/0|::/0)$" "$f" || continue
+    else
+      grep -qE -- "^Destination=$d$" "$f" || continue
+    fi
+    echo "$f"; return 0
+  done; return 1; }
 
 # ── ifupdown ────────────────────────────────────────────────────────
 IF_D=/etc/network/interfaces.d
@@ -212,9 +235,9 @@ t_net_route() { local dst=$1 via=$2 dev=$3 metric=$4 state=${5:-present} roll=$6
   b=$(nw_backend); tag=$(nw_tag "$dev-$dst-$via"); to=$dst
   [[ $dst == 0.0.0.0/0 || $dst == ::/0 ]] && to=default
   case $b in
-    netplan) f=$NP_DIR/90-storageforge-route-$tag.yaml; [[ -e $f ]] && where=ours || where=$(np_other "$via") ;;
+    netplan) f=$NP_DIR/90-storageforge-route-$tag.yaml; [[ -e $f ]] && where=ours || where=$(np_other_route "$dst" "$via") ;;
     nm) nm_has "$(nm_get "$(nm_con "$dev")" "$k.routes")" "$dst $via${metric:+ $metric}" && where=ours ;;
-    networkd) f=sf-route-$tag.conf; [[ -n $(nd_ours "$dev" "$f") ]] && where=ours || where=$(nd_other "$dev" "^Gateway=${via//./\\.}$") ;;
+    networkd) f=sf-route-$tag.conf; [[ -n $(nd_ours "$dev" "$f") ]] && where=ours || where=$(nd_other_route "$dst" "$via" "$dev") ;;
     ifupdown) grep -qsx -- "$dev $dst $via${metric:+ $metric}" "$IF_ROUTES" && where=ours ;;
     *) nw_none; return 0 ;;
   esac

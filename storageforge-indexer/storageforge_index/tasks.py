@@ -256,6 +256,8 @@ def _blocks(raw, depth: int, count: list, where: str) -> list[dict]:
             raise ValueError(f'{where} block {i}: unknown block type {(b or {}).get("type")!r}')
         here = f'{where}{i}'
         params = {s['name']: _param(s, (b.get('params') or {}).get(s['name']), f'block {here} ({t["label"]})') for s in t['params']}
+        if b['type'] == 'if' and params['cond'] == 'host up' and params['arg'] and not HOST_RE.fullmatch(params['arg']):
+            raise ValueError(f'block {here}: "host up" takes a host name or user@host')
         if b['type'] in ('rsync',) and params['src_host'] and params['dst_host']:
             raise ValueError(f'block {here}: one side of the copy must be the host the task runs on')
         nb = {'type': b['type'], 'params': params, 'off': bool(b.get('off')), 'note': str(b.get('note') or '')[:200]}
@@ -747,6 +749,8 @@ class _Emit:
         q = shlex.quote
         c, a = p['cond'], p['arg']
         login, port = _login(self.hs, a) if c == 'host up' else ('', 22)
+        if c == 'host up' and not HOST_RE.fullmatch(login):      # a task saved before the check in _blocks: never code, only a name
+            return 'false'
         expr = {
             'mounted': f'mountpoint -q -- {q(a)}',
             'exists': f'[[ -e {q(a)} ]]',
@@ -778,11 +782,23 @@ def sends(conn: Conn, task: dict, owner: str) -> list[dict]:
     return receiving.only_between_hosts(made)
 
 
+def unit_key(task_id, name: str) -> str:
+    """What names a task on its host (unit, copy of the script): its id first, so a rename or another task with the same
+    slug never takes it. Without an id (an unsaved task) the slug alone, as before."""
+    return f'{int(task_id)}-{slug(name)}' if task_id else slug(name)
+
+
+SAFE_REF = re.compile(r'[a-z0-9_-]{1,120}')
+
+
 @site.stamped
-def script(conn: Conn, task: dict, owner: str | None = None) -> str:
-    """owner: whose sends these are, when a schedule runs this task and keeps its own keys."""
+def script(conn: Conn, task: dict, owner: str | None = None, retired: list[str] | None = None) -> str:
+    """owner: whose sends these are, when a schedule runs this task and keeps its own keys. retired: names this task
+    went by on the host (the slug of before, a name from before a rename): install and uninstall take them off."""
     owner = owner or f't{task.get("id") or 0}'
+    tid = task.get('id')
     task = normalize(task)
+    key = unit_key(tid, task['name'])
     chk = check(conn, task)
     hs = hosts(conn)
     em = _Emit(conn, hs, task, owner)
@@ -809,7 +825,7 @@ def script(conn: Conn, task: dict, owner: str | None = None) -> str:
                              date=dt.datetime.now().strftime('%Y-%m-%d %H:%M'),
                              schedule=task['schedule'] or 'none (by hand)', outline=comments(outline, '#   (no blocks)'),
                              problems=comments(problems, '#   none'))
-            + f'TASK={q(sl)}\nTASK_NAME={q(task["name"])}\nTASK_HOST={q(host_slug(task["host"]) if task["host"] else "")}\n'
+            + f'TASK={q(sl)}\nTASK_KEY={q(key)}\nRETIRED=({" ".join(q(x) for x in (retired or []) if SAFE_REF.fullmatch(x) and x != key)})\nTASK_NAME={q(task["name"])}\nTASK_HOST={q(host_slug(task["host"]) if task["host"] else "")}\n'
             + f'SCHEDULE={q(task["schedule"])}\nTIMEOUT_MIN={int(task["timeout_min"])}\n'
             + TASK_BODY_1 + HELPERS + RECEIVE_KIT + SEND_KIT + TASK_FUNCS + REMOTE.replace('sf-move', 'sf-task').replace('move.sh', 'task.sh')
             + f'\nmain() {{\n{main}\n}}\n\non_failure() {{\n{fail_body}\n}}\n' + TASK_TAIL)
@@ -836,48 +852,69 @@ def deploy_items(db, conn: Conn, task: dict, mode: str, actor: str, run_now: boo
     A task moved to another host is uninstalled from the host it was installed on."""
     from . import deploy
     owner = f't{task.get("id") or 0}'
+    tid = task.get('id')
     task = normalize(task)
     home = find_host(hosts(conn), task['host'])
     if not home:
         raise ValueError(f'{task["host"] or "the task host"} has not been scanned')
-    sl, text = slug(task['name']), script(conn, task, owner=owner)
+    sl = slug(task['name'])
+    key = unit_key(tid, task['name'])
+    # what this task is called on hosts from before: the slug alone (kept as a row until it is taken off), or a name from before a rename
+    mine = [d for d in deploy.deployed(conn, kind='tasks')
+            if d['ref'] != key and ((tid and d['detail'].get('id') == tid) or (d['ref'] == sl and d['detail'].get('id') in (None, tid)))]
+    deployed_rows = deploy.deployed(conn, kind='tasks')
+    # the bare slug is this task's old name unless the row under it says it is another task's: never take another task's unit
+    theirs = any(d['ref'] == sl and d['detail'].get('id') not in (None, tid) for d in deployed_rows)
+    retired = sorted({d['ref'] for d in mine} | ({sl} if tid and not theirs else set()))
+    text = script(conn, {**task, 'id': tid}, owner=owner, retired=retired)
     wanted = sends(conn, task, owner)
+    refs = [key, *retired]
 
     def mark(host, gone=False):
         def hook(_res):
             c = db.connect()
             try:
-                if gone:
-                    c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'tasks' AND ref = :r", {'h': host, 'r': sl})
-                else:
-                    deploy.mark_deployed(c, host, 'tasks', sl, task_hash(task),
-                                         {'name': task['name'], 'schedule': task['schedule'], 'id': task.get('id')}, actor)
+                for r in (refs if gone else retired):
+                    c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'tasks' AND ref = :r", {'h': host, 'r': r})
+                if not gone:
+                    deploy.mark_deployed(c, host, 'tasks', key, task_hash(task),
+                                         {'name': task['name'], 'schedule': task['schedule'], 'id': tid}, actor)
             finally:
                 c.close()
         return hook
     if run_now:          # the key goes again after a run of a task not installed here: nothing on a timer needs it
-        stays = any(d['ref'] == sl and d['host'] == home['name'] for d in deploy.deployed(conn, kind='tasks'))
+        stays = any(d['ref'] in refs and d['host'] == home['name'] for d in deploy.deployed(conn, kind='tasks'))
         before, after = receiving.items(db, conn, wanted, owner, 'apply', actor, task['name'], one_off=not stays)
-        return [*before, {'host': home['name'], 'script': text, 'args': ['--run'], 'kind': 'tasks', 'ref': sl, 'mode': 'apply', **_send_time(task)}, *after]
+        return [*before, {'host': home['name'], 'script': text, 'args': ['--run'], 'kind': 'tasks', 'ref': key, 'mode': 'apply', **_send_time(task)}, *after]
     if mode != 'apply':
         before, _ = receiving.items(db, conn, wanted, owner, mode, actor, task['name'])
-        return [*before, {'host': home['name'], 'script': text, 'args': [], 'kind': 'tasks', 'ref': sl, 'mode': 'report'}]
+        return [*before, {'host': home['name'], 'script': text, 'args': [], 'kind': 'tasks', 'ref': key, 'mode': 'report'}]
     before, after = receiving.items(db, conn, wanted, owner, mode, actor, task['name'], remove=remove)
     items = [*before, {'host': home['name'], 'script': text, 'args': ['--uninstall' if remove else '--install'], 'kind': 'tasks',
-                       'ref': sl, 'mode': 'apply', 'on_ok': mark(home['name'], remove)}]
-    for d in deploy.deployed(conn, kind='tasks'):
-        if d['ref'] == sl and d['host'] != home['name']:
-            items.append({'host': d['host'], 'script': text, 'args': ['--uninstall'], 'kind': 'tasks', 'ref': sl,
-                          'mode': 'apply', 'on_ok': mark(d['host'], True)})
+                       'ref': key, 'mode': 'apply', 'on_ok': mark(home['name'], remove)}]
+    for h in sorted({d['host'] for d in deploy.deployed(conn, kind='tasks') if d['ref'] in refs and d['host'] != home['name']}):
+        items.append({'host': h, 'script': text, 'args': ['--uninstall'], 'kind': 'tasks', 'ref': key,
+                      'mode': 'apply', 'on_ok': mark(h, True)})
     return [*items, *after]
 
 
 def installed(conn: Conn) -> dict:
-    """slug → [{host, hash, at, by}] for tasks deployed with --install."""
+    """slug → [{host, hash, at, by}] for tasks deployed with --install. A host holds a task under its id (<id>-<slug>);
+    it is listed under the slug the task has now, so a rename does not lose it, and an old slug-only row under its own."""
     from . import deploy
+    names = {}
+    for tid, body in conn.all('SELECT task_id, body_json FROM storage_tasks'):
+        try:
+            names[int(tid)] = slug(json.loads(body)['name'])
+        except (ValueError, KeyError, TypeError):
+            continue
     out: dict[str, list] = {}
     for d in deploy.deployed(conn, kind='tasks'):
-        out.setdefault(d['ref'], []).append({'host': d['host'], 'hash': d['hash'], 'at': d['at'], 'by': d['by']})
+        ref = d['ref']
+        m = re.fullmatch(r'(\d+)-.+', ref)
+        if m and int(m.group(1)) in names:
+            ref = names[int(m.group(1))]
+        out.setdefault(ref, []).append({'host': d['host'], 'hash': d['hash'], 'at': d['at'], 'by': d['by']})
     return out
 
 
@@ -939,7 +976,7 @@ need() {   # need <what> <test...>: a guard. The report goes on past a failed gu
   fail "not met: $what"
 }
 free_ge() { local a; a=$(df -P -B1G -- "$1" 2>/dev/null | awk 'NR == 2 {print $4}'); [[ -n $a ]] && ((a >= $2)); }
-reach() { local h=${1#[}; h=${h%]}; timeout 5 bash -c "</dev/tcp/$h/$2" 2>/dev/null; }   # bash wants [v6] bare
+reach() { local h=${1#[}; h=${h%]}; timeout 5 bash -c '</dev/tcp/$0/$1' "$h" "$2" 2>/dev/null; }   # bash wants [v6] bare
 rs() {   # rsync; "some files vanished" (24) is fine for live data
   x rsync "$@"; local rc=$?
   if ((rc == 24)); then warnl "some files vanished while copying"; rc=0; fi
@@ -1167,9 +1204,17 @@ send_zfs() {   # send_zfs <dataset> <prefix> <send id> <address> <port> <into> <
 """
 
 TASK_TAIL = r"""
-UNIT=sf-task-$TASK
+UNIT=sf-task-$TASK_KEY
 LIB=/usr/local/lib/storageforge/tasks
 STATE=/var/lib/storageforge/tasks
+retire_old() {   # what this task was called on the host before: the slug alone, or the name from before a rename
+  local o
+  for o in ${RETIRED[@]+"${RETIRED[@]}"}; do
+    [[ -n $o && $o != "$TASK_KEY" ]] || continue
+    systemctl disable --now "sf-task-$o.timer" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/sf-task-$o.service" "/etc/systemd/system/sf-task-$o.timer" "$LIB/$o.sh"
+  done
+}
 if [[ $MODE == install || $MODE == uninstall ]]; then
   ((EUID == 0)) || { echo "run --$MODE as root (sudo)" >&2; exit 1; }
   if [[ -n $TASK_HOST && $(host_slug "$(hostname)") != "$TASK_HOST" ]]; then
@@ -1182,8 +1227,9 @@ case $MODE in
     if [[ -n $SCHEDULE ]] && ! systemd-analyze calendar "$SCHEDULE" >/dev/null 2>&1; then
       echo "systemd does not understand the schedule \"$SCHEDULE\"" >&2; exit 1
     fi
-    install -D -m 0750 "$0" "$LIB/$TASK.sh" && ok "$LIB/$TASK.sh"
-    label_exec "$LIB/$TASK.sh"
+    retire_old
+    install -D -m 0750 "$0" "$LIB/$TASK_KEY.sh" && ok "$LIB/$TASK_KEY.sh"
+    label_exec "$LIB/$TASK_KEY.sh"
     mkdir -p "$STATE" && chmod 0755 "$STATE" 2>/dev/null || true
     {
       echo "[Unit]"
@@ -1192,7 +1238,7 @@ case $MODE in
       echo "After=network-online.target local-fs.target"
       echo "[Service]"
       echo "Type=oneshot"
-      echo "ExecStart=$LIB/$TASK.sh --run"
+      echo "ExecStart=$LIB/$TASK_KEY.sh --run"
       echo "Nice=10"
       echo "IOSchedulingClass=best-effort"
       echo "IOSchedulingPriority=7"
@@ -1215,7 +1261,8 @@ case $MODE in
   uninstall)
     section "Remove $UNIT"
     systemctl disable --now "$UNIT.timer" >/dev/null 2>&1 || true
-    rm -f "/etc/systemd/system/$UNIT.service" "/etc/systemd/system/$UNIT.timer" "$LIB/$TASK.sh"
+    rm -f "/etc/systemd/system/$UNIT.service" "/etc/systemd/system/$UNIT.timer" "$LIB/$TASK_KEY.sh"
+    retire_old
     reload_systemd || exit 1
     ok "removed (its run history stays in $STATE/$TASK.last and the journal)"
     exit 0 ;;

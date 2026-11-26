@@ -312,7 +312,7 @@ class Supervisor:
                     self.restarts += 1
                     self.on_event('up', {'address': self.address, 'image': self.digest, 'version': status.get('version'), 'restarts': self.restarts, 'state': status.get('state')})
                     break
-                except EnclaveVMError as exc:
+                except Exception as exc:        # an OSError (a missing binary, a full /run) must not end this thread: nothing would restart the VM
                     self.on_event('failed', {'address': self.address, 'why': str(exc)})
                     self._stop.wait(delay)
                     delay = min(delay * 2, 60.0)

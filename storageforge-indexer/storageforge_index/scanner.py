@@ -238,11 +238,18 @@ class WriterPool:
         return self.results
 
     def _run(self, q: queue.Queue):
-        conn = self.db.connect()
         failed: set[int] = set()
+        conn, down = None, None
+        try:
+            conn = self.db.connect()
+        except Exception as exc:      # no connection: the jobs here fail, and the queue is still drained so nothing blocks on it
+            down = exc
         try:
             while (msg := q.get()) is not None:
                 kind, jid = msg[0], msg[1]
+                if down is not None:
+                    self.results[jid] = down if kind != 'abort' else self.results.get(jid, msg[2])
+                    continue
                 if jid in failed and kind != 'abort':
                     continue
                 try:
@@ -265,7 +272,8 @@ class WriterPool:
                     except Exception:
                         pass
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
 
 def stall_limit() -> int:

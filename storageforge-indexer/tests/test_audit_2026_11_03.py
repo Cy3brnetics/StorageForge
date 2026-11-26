@@ -418,6 +418,22 @@ class MapViews(Accounts):
         self.as_role('vera', 'viewer')
         self.assertEqual(self.client.get(url).status_code, 403)
 
+    def test_planner_edits_only_the_selected_member_and_refuses_stale_writes(self):
+        self.as_role('opal', 'operator')
+        did = mapdesign.save_design(self.conn, {'name': 'fleet', 'doc': {'hosts': [{'name': 'nas'}, {'name': 'app'}]}}, 'opal')['id']
+        url = '/api/planner/infrastructure'
+        def edit(host):
+            source = mapdesign.migration_preview(self.conn, host)['current']['source']
+            return {'design_id': did, 'host': host, 'revision': source['revision'],
+                    'sections': {'networks': [{'kind': 'bridge', 'name': 'br0'}], 'firewall': [], 'workloads': []}}
+        nas, app = edit('nas'), edit('app')
+        self.assertEqual(self.client.put(url, json=nas).status_code, 200)
+        self.assertEqual(self.client.put(url, json=nas).status_code, 409)
+        self.assertEqual(self.client.put(url, json=app).status_code, 200)
+        self.assertEqual([m['networks'][0]['name'] for m in mapdesign.get_design(self.conn, did)['doc']['hosts']], ['br0', 'br0'])
+        self.as_role('vera', 'viewer')
+        self.assertEqual(self.client.put(url, json=edit('nas')).status_code, 403)
+
     def test_comparing_a_design_changes_nothing(self):
         did = mapdesign.save_design(self.conn, {'name': 'd', 'doc': {'hosts': []}}, 'admin1')['id']
         before = self.conn.all('SELECT * FROM map_designs WHERE id = :i', {'i': did})

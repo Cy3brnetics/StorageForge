@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from . import access, deploy
 from .alerts import get_setting, set_setting
 from .db import Conn
+from .remote import known_hosts_name
 from .scriptkit import host_name
 from .vault import AuditLog, Vault
 
@@ -255,7 +256,7 @@ def install_script(name: str, node_id: int, endpoint: tuple[str, int], tunnel_ho
                    signer_pub: str, deploy_pub: str, expires_at: int) -> str:
     q = shlex.quote
     host, port = endpoint
-    known = f'[{host.strip("[]")}]:{port} {tunnel_host_key}'
+    known = f'{known_hosts_name(host, port)} {tunnel_host_key}'
     values = {'@NAME@': name, '@HOST@': q(host.strip('[]')), '@PORT@': str(port), '@LISTEN@': f'{address(node_id)}:{LISTEN_PORT}',
               '@SCAN@': SCAN_USER, '@LOGIN@': TUNNEL_USER, '@EXPIRES@': time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(expires_at)),
               '@TAG@': 'SF_' + os.urandom(6).hex().upper(), '@PRIVATE@': private.strip(), '@KNOWN@': known,

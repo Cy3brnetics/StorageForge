@@ -132,21 +132,22 @@ class BuiltIn(Db):
                                   ('disk-full', 'rsync', ['write failed: No space left on device (28)'] * 3)):
             with self.subTest(rule=key):
                 self.setUp()
-                self.logged(*[row(line, ident=ident, at=NOW - 60 - i) for i, line in enumerate(lines[:2])])
+                unit = 'init.scope' if key == 'unit-failed' else ''          # systemd's own lines are written by pid 1, unit init.scope
+                self.logged(*[row(line, ident=ident, unit=unit, at=NOW - 60 - i) for i, line in enumerate(lines[:2])])
                 self.assertEqual(self.raised(), {}, 'two are not three')
-                self.logged(row(lines[2], ident=ident, at=NOW - 5), now=NOW + 60)
+                self.logged(row(lines[2], ident=ident, unit=unit, at=NOW - 5), now=NOW + 60)
                 [(_, (kind, ref, title, message, level))] = self.raised(NOW + 60).items()
                 self.assertEqual((kind, level, ref.split(':')[0]), ('log-rule', 'warn', 'nas'))
                 self.assertIn('3 line(s) in the last 1 h', message)
 
     def test_failed_logins_are_off_until_someone_turns_them_on(self):
-        lines = [row(f'Failed password for root from 203.0.113.9 port {i} ssh2', ident='sshd', comm='sshd', priority='6') for i in range(25)]
+        lines = [row(f'Failed password for root from 203.0.113.9 port {i} ssh2', ident='sshd', unit='sshd.service', comm='sshd', priority='6') for i in range(25)]
         self.logged(*lines)
         self.assertEqual(self.raised(), {})
         ssh = next(r for r in logrules.rules(self.conn) if r['builtin'] == 'ssh-failed')
         self.assertFalse(ssh['enabled'])
         logrules.save(self.conn, {**ssh, 'enabled': True}, 'gabe', ssh['id'])
-        self.logged(*[row(f'Failed password for admin from 203.0.113.9 port {i} ssh2', ident='sshd', comm='sshd', priority='6') for i in range(25)], now=NOW + 30)
+        self.logged(*[row(f'Failed password for admin from 203.0.113.9 port {i} ssh2', ident='sshd', unit='sshd.service', comm='sshd', priority='6') for i in range(25)], now=NOW + 30)
         self.assertEqual([v[2] for v in self.raised(NOW + 30).values()], ['A burst of failed SSH logins on nas'])
 
     def test_an_upgrade_brings_a_rules_new_text_and_keeps_what_the_operator_set(self):
@@ -166,7 +167,7 @@ class Matching(Db):
         hit = dict(unit='smbd.service', ident='smbd', priority='3')
         self.logged(row('a boom', **hit))
         self.assertEqual(len(self.raised()), 1)
-        for name, line in (('another host', None), ('another unit', row('a boom', **{**hit, 'unit': 'nmbd.service'})), ('another program', row('a boom', **{**hit, 'ident': 'cron'})),
+        for name, line in (('another host', None), ('another unit', row('a boom', **{**hit, 'unit': 'nmbd.service'})),
                            ('a lower level', row('a boom', **{**hit, 'priority': '4'})), ('other text', row('a bang', **hit))):
             with self.subTest(name):
                 self.conn.execute('DELETE FROM log_rule_hits')
@@ -182,7 +183,7 @@ class Matching(Db):
         self.rule(program='sshd', text='*Accepted*', min_level='info')
         self.logged(row('Accepted password for root', ident='sshd', comm='logger', priority='6'))
         self.assertEqual(self.raised(), {})
-        self.logged(row('Accepted password for root', ident='sshd', comm='sshd', priority='6'), now=NOW + 5)
+        self.logged(row('Accepted password for root', ident='sshd', unit='sshd.service', comm='sshd', priority='6'), now=NOW + 5)
         self.assertEqual(len(self.raised(NOW + 5)), 1)
         self.conn.execute('DELETE FROM log_rule_hits')
         self.logged(row('Accepted publickey for gabe', ident='sshd', priority='6'), now=NOW + 9)

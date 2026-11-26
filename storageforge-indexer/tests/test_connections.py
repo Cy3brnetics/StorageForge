@@ -25,7 +25,7 @@ class Collected(unittest.TestCase):
         self.bin = self.tmp / 'bin'
         self.bin.mkdir()
         # Only these and the stand-ins are on PATH: the machine running the tests may have a real tailscale, and its tailnet is not test data
-        for real in ('bash', 'sh', 'cat', 'grep', 'head', 'timeout', 'sed', 'tr', 'base64'):
+        for real in ('bash', 'sh', 'cat', 'grep', 'head', 'timeout', 'sed', 'tr', 'base64', 'awk'):
             os.symlink(shutil.which(real), self.bin / real)
 
     def tool(self, name, body):
@@ -88,7 +88,7 @@ class Collected(unittest.TestCase):
         self.put('/etc/frp/frpc.toml', FRP_TOML)
         out = self.collect(running=('cloudflared', 'frpc', 'ngrok', 'newt'))
         self.assertNotIn('SECRET', out, 'no credential line is sent')
-        self.assertNotIn('credentials-file', out)
+        self.assertIn('credentials-file: "***"', out, 'the line stays, with its value blanked')
         by = {t['tool']: t for t in self.access(out)['tunnels']}
         self.assertEqual([p['public'] for p in by['cloudflared']['published']], ['https://photos.example.com', 'https://git.example.com/api'])
         self.assertEqual([p['public'] for p in by['frp']['published']], ['frp.example.net:6000/tcp', 'http://www.example.net', 'http://example.net'])
@@ -169,7 +169,7 @@ class MoreCollected(Collected):
 
     def setUp(self):
         super().setUp()
-        for real in ('awk', 'cut', 'openssl'):
+        for real in ('cut', 'openssl'):
             os.symlink(shutil.which(real), self.bin / real)
 
     def collect_all(self):

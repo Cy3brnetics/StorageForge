@@ -50,6 +50,13 @@ def _host(host) -> str:
     return host
 
 
+def _same_host(bp: dict, host: str) -> None:
+    """A version filed under one host but holding another host's design would, on restore, overwrite the wrong host."""
+    named = str(bp['metadata']['host']).strip()
+    if named != host:
+        raise ValueError(f'that design is for {named}, not {host}')
+
+
 def canonical(bp: dict) -> str:
     """The design without what changes on every save (the date it was generated), for telling whether two are the same."""
     bp = json.loads(json.dumps(bp))
@@ -98,6 +105,7 @@ def save(conn, host: str, bp: dict, actor: str, name: str = '', note: str = '', 
     if len(body) > MAX_BYTES:
         raise ValueError(f'that design is too large to keep as a version (over {MAX_BYTES >> 20} MiB)')
     name, note = _text(name, 'the name', MAX_NAME), _text(note, 'the note', MAX_NOTE)
+    _same_host(bp, host)
     _make_room(conn, host, len(body))
     if not name:
         name = f'Version {conn.scalar("SELECT count(*) FROM design_versions WHERE host = :h AND auto = 0", {"h": host}) + 1}'
@@ -137,7 +145,10 @@ def restore(db, conn, version_id: int, actor: str, current: dict | None = None) 
     v = get(conn, version_id)
     host = v['host']
     bp = _blueprint(v['blueprint'])                 # checked again: this is what gets written
+    _same_host(bp, host)
     now = _blueprint(current) if current is not None else graph.stored_blueprint(conn, host)
+    if current is not None:
+        _same_host(now, host)
     kept = None
     if now is not None:
         newest = conn.all('SELECT body_json FROM design_versions WHERE host = :h ORDER BY id DESC LIMIT 1', {'h': host})

@@ -34,11 +34,13 @@ done
 } | grep -vE '^/etc/storageforge/|\.(default|pacnew|pacsave|dpkg-[a-z]+|rpmnew|rpmsave|bak|orig|sf-bak)$|~$' | sort -u | while IFS= read -r c; do
   [ -f "$c" ] || continue
   [ -r "$c" ] || { printf 'N\t%s\n' "$c"; continue; }
-  grep -E '^(snapshot_root|retain|interval|backup|exclude|logfile|no_create_root|sync_first)[[:space:]]' "$c" | tag R "$c"
+  grep -E '^(snapshot_root|retain|interval|backup|exclude|logfile|no_create_root|sync_first|rsync_long_args)[[:space:]]' "$c" | tag R "$c"
   r=$(sed -n -E 's/^snapshot_root[[:space:]]+//p' "$c" | head -n 1); [ -n "$r" ] || continue
   printf 'M\t%s\t%s\n' "$c" "$(where "$r")"
   $F "$r" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>/dev/null | tag S "$c"
   lg=$(sed -n -E 's/^logfile[[:space:]]+//p' "$c" | head -n 1)
+  o=$(stat -c '%u %A' "$c" 2>/dev/null)   # a config anybody but root could write may name any file: its logfile is not read
+  case "$o" in "0 "?????-??-?) ;; *) lg= ;; esac
   [ -n "$lg" ] && [ -r "$lg" ] && tail -n 200 "$lg" | grep -E 'ERROR|completed' | tail -n 1 | tag L "$c"
 done
 for f in /etc/snapper/configs/*; do [ -e "$f" ] || continue; n=$(basename "$f")
@@ -148,6 +150,8 @@ def parse(text: str) -> list[dict]:
                 j['no_create_root'] = words[:1] == ['1']
             elif key == 'sync_first':
                 j['sync_first'] = words[:1] == ['1']
+            elif key == 'rsync_long_args':
+                j['long_args'] = ' '.join(words).split()
         elif tag == 'M' and len(f) == 5:
             r(f[1]).update(fstype=f[2], mount=f[3], root_exists=f[4] == '1')
         elif tag == 'S' and len(f) == 4 and (_SNAP.fullmatch(f[2]) or f[2] == '.sync'):
@@ -183,8 +187,25 @@ def _finish_rsnapshot(rs: dict, runs: list[dict]) -> list[dict]:
         j['snapshots'].sort(key=lambda x: -x['time'])
         j['newest'] = j['snapshots'][0]['time'] if j['snapshots'] else None
         j['lowest'] = next(iter(j['levels']), None)
+        j['relative'] = _relative(j) if j['readable'] else None
+        j.pop('long_args', None)
         out.append(j)
     return out
+
+
+def _relative(j: dict) -> bool:
+    """Whether rsync runs with --relative, which stores a source /etc/ under <dst>/etc/. A config that sets no
+    rsync_long_args has rsnapshot's own default, which has it; one that sets them says so (the last of the two flags wins)."""
+    words = j.get('long_args')
+    if words is None:
+        return True
+    state = False
+    for w in words:
+        if w == '--relative':
+            state = True
+        elif w == '--no-relative':
+            state = False
+    return state
 
 
 def _finish_snapper(sn: dict, timers: dict) -> list[dict]:

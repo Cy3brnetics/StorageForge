@@ -45,7 +45,8 @@ def ingest(conn: Conn, host: str, reading: dict, at: int | None = None) -> dict:
         sig_id = a.get('signature_id') or ''
         ts = str(a.get('timestamp') or '')
         summary = f'Suricata: {sig} from {src}' + (f' to {dest}' if dest else '')
-        detail = f'client={src};dest={dest};sig={sig};signature_id={sig_id};severity={sev if sev is not None else ""}'
+        said = sig.replace(';', ',').replace('=', ':')          # free text inside a k=v;k=v detail (secplus.event_fields)
+        detail = f'client={src};dest={dest};sig={said};signature_id={sig_id};severity={sev if sev is not None else ""}'
         if ts:
             uid = str(uuid.uuid5(uuid.NAMESPACE_URL, f'suricata:{host.lower()}:{sig_id or sig}:{src}:{dest}:{ts}'))
             added += bool(security.record_event(conn, host, 'suricata_alert', summary, detail, 'suricata', now, uid))

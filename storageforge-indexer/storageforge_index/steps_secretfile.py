@@ -20,14 +20,16 @@ from .changes import F
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
 ACCOUNT = re.compile(r'[a-z_][a-z0-9_.-]{0,31}')
 MODE = re.compile(r'0?[0-7]{3}')
-ARGS = ('secret', 'path', 'owner', 'group', 'mode', 'state')
+ARGS = ('secret', 'path', 'owner', 'group', 'mode', 'state', 'prepare')
 
 # No apostrophes: the script text is checked for values that could end a quoted word.
 BASH = r"""
-t_secret_file() { local secret=$1 path=$2 owner=${3:-root} group=${4:-} mode=${5:-0600} state=${6:-present} d=/run/storageforge/secrets src dir tmp have
+t_secret_file() { local secret=$1 path=$2 owner=${3:-root} group=${4:-} mode=${5:-0600} state=${6:-present} prepare=${7:-} d=/run/storageforge/secrets src dir tmp have
   ((EUID != 0)) && d=${SF_SECRET_DIR:-$d}
   src=$d/$secret dir=${path%/*}
-  [[ -n $group ]] || group=$(id -gn "$owner" 2>/dev/null || echo root)
+  [[ -n $dir ]] || dir=/      # a file directly under / has no folder part
+  # a numeric owner is a user id, which needs no account on the host (a container image names its own user that way)
+  [[ -n $group ]] || group=$(id -gn "$owner" 2>/dev/null || { [[ $owner =~ ^[0-9]+$ ]] && echo "$owner" || echo root; })
   if [[ $state == absent ]]; then
     [[ -e $path ]] || { ok "$path is not there"; return 0; }
     act "remove $path" && try rm -f -- "$path" && ok "removed $path"
@@ -39,8 +41,18 @@ t_secret_file() { local secret=$1 path=$2 owner=${3:-root} group=${4:-} mode=${5
     return 0
   fi
   if [[ ! -r $src ]]; then conflict "the secret $secret is not on this host: apply this plan from StorageForge, which brings it on the runner stdin, or send it first (storageforge-index vault send-secret $secret --host $(uname -n))"; return 0; fi
-  [[ -d $dir ]] || { conflict "the folder $dir does not exist"; return 0; }
-  id -u "$owner" >/dev/null 2>&1 || { conflict "there is no account $owner here"; return 0; }
+  # prepare: a Toolbox install is later in this plan and makes the account, so the folder is made here and an account that is not there
+  # yet owns nothing: the file waits as root, and the install hands the folder and its files over (tb_hand_over)
+  if [[ ! $owner =~ ^[0-9]+$ ]] && ! id -u "$owner" >/dev/null 2>&1; then
+    [[ -n $prepare ]] || { conflict "there is no account $owner here"; return 0; }
+    info "the account $owner is not made yet: the file stays with root until the install step after this one makes it and takes the file over"
+    owner=root group=root
+  fi
+  if [[ ! -d $dir ]]; then
+    [[ -n $prepare ]] || { conflict "the folder $dir does not exist"; return 0; }
+    act "make the folder $dir ($owner:$group, mode 0750)" || return 0
+    mkdir -p -- "$dir" && chmod 0750 -- "$dir" && chown "$owner:$group" -- "$dir" || { conflict "could not make the folder $dir"; return 0; }
+  fi
   have=$(stat -c "%U:%G %a" -- "$path" 2>/dev/null || true)
   if [[ -f $path ]] && cmp -s -- "$src" "$path" && [[ $have == "$owner:$group $(printf %o $((8#$mode)))" ]]; then
     ok "$path holds the secret $secret ($owner:$group, mode $mode)"; return 0
@@ -84,7 +96,7 @@ def _ansible(t, conn=None):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
-    words = [p.get(a) or '' for a in ARGS]
+    words = [('1' if p.get(a) is True else '' if p.get(a) is False else p.get(a) or '') for a in ARGS]
     return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + '\nt_secret_file ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
             'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
 
@@ -94,6 +106,7 @@ changes.register('secret-file', {'group': 'Software', 'label': 'Write a vault se
     F('path', 'path', 'File', required=True, placeholder='/etc/grafana/admin-password'),
     F('owner', 'user', 'Owner', placeholder='root'), F('group', 'user', 'Group'),
     F('mode', 'mode', 'Mode', placeholder='0600'),
+    F('prepare', 'bool', 'Make its folder, and wait for an owner account that a later Toolbox install makes'),
     F('state', 'choice', 'Write or remove', options=['present', 'absent'], default='present')],
     'help': 'Copies a secret from the vault into a file a service reads, with the owner and mode given. The secret comes with the plan '
             'when it is applied from StorageForge, on the signed runner stdin, and is in no plan, script or log.'},

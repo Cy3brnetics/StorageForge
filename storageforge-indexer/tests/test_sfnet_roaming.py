@@ -77,7 +77,7 @@ printf '%s\\n' "$*" >> {sysctl_log}
 """)
         (bin_dir / 'sysctl').chmod(0o755)
         fn = re.search(r'^t_wg_forward\(\) \{.*?^\}$', steps_infra.BASH, re.M | re.S)[0]
-        backend_stub = 'backend() { echo none; }; ok() { echo "ok: $*"; }; act() { echo "act: $*"; }; conflict() { echo "conflict: $*"; }; durable() { :; }; try() { "$@"; }\n'
+        backend_stub = 'fw_tool() { :; }; FW=true; ok() { echo "ok: $*"; }; act() { echo "act: $*"; }; conflict() { echo "conflict: $*"; }; durable() { :; }; try() { "$@"; }\n'
         script = f'export SF_SYSCTL_DIR={shlex.quote(str(sys_dir))} PATH={shlex.quote(str(bin_dir))}:$PATH\n' + backend_stub + fn + '\nt_wg_forward sf0 10.203.0.0/20 present\n'
         ran = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
         self.assertEqual(ran.stderr, '')

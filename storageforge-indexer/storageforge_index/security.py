@@ -169,7 +169,7 @@ def record_event(conn: Conn, host: str, kind: str, summary: str, detail: str = '
 def parse_event_line(line: str) -> dict | None:
     """ev, uuid, kind, epoch, summary (base64), detail (base64). None for anything else."""
     f = line.split('\t')
-    if len(f) != 6 or f[0] != 'ev' or not UUID_RE.fullmatch(f[1]) or f[2] not in HOST_EVENTS or not f[3].isdigit():
+    if len(f) != 6 or f[0] != 'ev' or not UUID_RE.fullmatch(f[1]) or f[2] not in HOST_EVENTS or not re.fullmatch(r'[0-9]{1,12}', f[3]):   # not isdigit(): int() refuses some of what it accepts
         return None
     summary, detail = _b64text(f[4]), _b64text(f[5])
     if summary is None or detail is None:
@@ -313,7 +313,7 @@ def _parse_avc(line: str) -> dict | None:
     def field(name):
         m = re.search(rf'\b{name}="?([^" ]+)"?', line)
         return clean_text(m[1], 300) if m else None
-    at = re.search(r'audit\((\d+)', line)
+    at = re.search(r'audit\(([0-9]{1,12})', line)
     action = re.search(r'denied\s+\{\s*([^}]*?)\s*\}', line)
     if not action:
         return None
@@ -569,9 +569,11 @@ def set_cool_off(conn: Conn, hours, actor: str) -> dict:
 
 def established_admins(conn: Conn, now: int | None = None) -> list[str]:
     """Admins old enough to count. An attacker who has one admin account could make a second and approve themselves,
-    so an account counts only after it has existed for longer than the cool-off."""
+    so an account counts only once it has been an admin, enabled, and in its owner's hands for longer than the cool-off
+    (users.trusted_since: promoting an old account, enabling one, or resetting its password by link starts the clock again)."""
     cutoff = (now or int(time.time())) - cool_off_hours(conn) * 3600
-    return [r[0] for r in conn.all("SELECT username FROM users WHERE role = 'admin' AND disabled_at IS NULL AND created_at <= :c", {'c': cutoff})]
+    return [r[0] for r in conn.all("SELECT username FROM users WHERE role = 'admin' AND disabled_at IS NULL AND COALESCE(trusted_since, created_at) <= :c",
+                                   {'c': cutoff})]
 
 
 def _person(actor: str) -> str:
@@ -588,11 +590,16 @@ def quorum_state(conn: Conn) -> dict:
 
 def _record_hold(conn: Conn, host: str, fs: str, snapshot: str, tag: str, expires: int | None, legal: bool, actor: str, now: int) -> int:
     """A hold can only get stronger here: a later date stands, a legal hold stays, and asking again shortens nothing."""
-    rows = conn.all('SELECT id, expires_at, legal_hold FROM security_retention_holds WHERE lower(host) = lower(:h) AND snapshot = :s AND hold_tag = :t',
+    rows = conn.all('SELECT id, expires_at, legal_hold, status FROM security_retention_holds WHERE lower(host) = lower(:h) AND snapshot = :s AND hold_tag = :t',
                     {'h': host, 's': snapshot, 't': tag})
     never = legal or expires is None
     if rows:
-        hid, old_exp, old_legal = rows[0]
+        hid, old_exp, old_legal, old_status = rows[0]
+        if old_status == 'release_pending':
+            # Holding it again withdraws the request to release it: left armed, the timelock would release the renewed hold later.
+            for t in _timelocks(conn):
+                if t['action'] == 'worm_release' and t['detail'].get('hold_id') == hid:
+                    conn.execute("UPDATE security_timelock_queue SET status = 'aborted', decided_by = :a, decided_at = :t WHERE id = :i", {'a': actor, 't': now, 'i': t['id']})
         keep_legal = bool(old_legal) or legal
         new_exp = None if keep_legal or never or old_exp is None else max(old_exp, expires)
         conn.execute("""UPDATE security_retention_holds SET expires_at = :e, legal_hold = :l, status = 'locked', verified_at = :t, missing_at = NULL WHERE id = :i""",
@@ -927,14 +934,15 @@ def spread_folders(conn: Conn, host: str, folders: list[str], how: str) -> list[
     out = list(folders)
     for root in folders:
         prefix = root.rstrip('/') + '/'
+        like = prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'      # _ and % in a real path are not wildcards
         if how == 'recent':
             scans = _latest_scans(conn, host, 1)
-            rows = conn.all('SELECT DISTINCT parent_path FROM file_changes WHERE scan_id = :s AND parent_path LIKE :p LIMIT 500', {'s': scans[0]['id'], 'p': prefix + '%'}) if scans else []
-            found = sorted(r[0] for r in rows)
+            rows = conn.all("SELECT DISTINCT parent_path FROM file_changes WHERE scan_id = :s AND parent_path LIKE :p ESCAPE '\\' LIMIT 500", {'s': scans[0]['id'], 'p': like}) if scans else []
+            found = sorted(r[0] for r in rows if r[0].startswith(prefix))
         else:
             rows = conn.all("""SELECT d.path FROM directories d JOIN mounts m ON m.mount_id = d.mount_id JOIN hosts h ON h.host_id = m.host_id
-                                WHERE lower(h.hostname) = lower(:h) AND d.path LIKE :p LIMIT 5000""", {'h': host, 'p': prefix + '%'})
-            found = sorted(r[0] for r in rows)
+                                WHERE lower(h.hostname) = lower(:h) AND d.path LIKE :p ESCAPE '\\' LIMIT 5000""", {'h': host, 'p': like})
+            found = sorted(r[0] for r in rows if r[0].startswith(prefix))      # LIKE ignores case in SQLite, paths do not
             if how == 'top':
                 found = [d for d in found if '/' not in d[len(prefix):]]
             else:
@@ -1119,17 +1127,54 @@ def remediate_mac(db, conn: Conn, body: dict, actor: str) -> dict:
 
 
 # ── firewall ─────────────────────────────────────────────────────────
+_CTRL_IP_CACHE: dict[str, tuple[float, list[str]]] = {}
+_CTRL_IP_LOCK = threading.Lock()
+
+
+def _route_ip_for(addr: str) -> list[str]:
+    info = socket.getaddrinfo(addr, 22, type=socket.SOCK_DGRAM)[0]
+    with socket.socket(info[0], socket.SOCK_DGRAM) as s:
+        s.connect(info[4])
+        return [ipaddress.ip_address(s.getsockname()[0]).compressed]
+
+
 def _controller_ips(conn: Conn, host: str) -> list[str]:
     """The address this machine would reach the host from. Connecting a UDP socket picks the route and sends nothing. Behind
-    NAT the host sees something else, so scripts also ask the host who is really on the other end of their own SSH session."""
-    try:
-        addr = connect_address(conn, host)
-        info = socket.getaddrinfo(addr, 22, type=socket.SOCK_DGRAM)[0]
-        with socket.socket(info[0], socket.SOCK_DGRAM) as s:
-            s.connect(info[4])
-            return [ipaddress.ip_address(s.getsockname()[0]).compressed]
-    except (OSError, ValueError):
+    NAT the host sees something else, so scripts also ask the host who is really on the other end of their own SSH session.
+    Prefer stored IP literals over mDNS/.local names (which block getaddrinfo in containers), and bound any DNS lookup."""
+    rows = conn.all('SELECT ssh_host, ip_address FROM hosts WHERE lower(hostname) = lower(:h)', {'h': host})
+    ssh_host, scan_ip = rows[0] if rows else (None, None)
+    for cand in (ssh_host, scan_ip, host):
+        if not cand:
+            continue
+        raw = str(cand).strip().strip('[]')
+        try:
+            ipaddress.ip_address(raw.split('%')[0])
+            return _route_ip_for(raw)
+        except (OSError, ValueError):
+            continue
+    addr = str(ssh_host or host or '').strip()
+    if not addr:
         return []
+    now = time.monotonic()
+    with _CTRL_IP_LOCK:
+        cached = _CTRL_IP_CACHE.get(addr)
+        if cached and cached[0] > now:
+            return list(cached[1])
+    from .vault import resolve_ips
+    found: list[str] = []
+    for ip in sorted(resolve_ips(addr, timeout=0.4), key=str):
+        try:
+            found = _route_ip_for(str(ip))
+            if found:
+                break
+        except OSError:
+            continue
+    with _CTRL_IP_LOCK:
+        if len(_CTRL_IP_CACHE) > 512:
+            _CTRL_IP_CACHE.clear()
+        _CTRL_IP_CACHE[addr] = (now + (300.0 if found else 120.0), found)
+    return list(found)
 
 
 def clean_target(conn: Conn, host: str, raw) -> str:
@@ -1276,10 +1321,18 @@ _SIGNS_KEEP = 256
 
 
 def _scan_signs(conn: Conn, scan_id: int) -> dict:
-    # kept by the scan and what it holds: after a reset, or in another database, the same scan id is another scan
-    key = (scan_id, conn.scalar('SELECT finished_at FROM scans WHERE scan_id = :s', {'s': scan_id}),
-           conn.scalar('SELECT count(*) FROM file_changes WHERE scan_id = :s', {'s': scan_id}))
-    with _SIGNS_LOCK:
+    # Kept only once the scan has finished: its changes no longer change then, and the key is a primary-key lookup instead of a
+    # count over millions of file_changes rows. A scan still writing is worked out each time. The site id and started_at tell a
+    # scan id used again (after a reset, or in another database in the same process) from the one that was kept.
+    meta = conn.all('SELECT started_at, finished_at, added, modified, deleted FROM scans WHERE scan_id = :s', {'s': scan_id})
+    started, fin, added, modified, deleted = meta[0] if meta else (None, None, 0, 0, 0)
+    if fin is None:
+        return _scan_signs_now(conn, scan_id)
+    if not (added or modified or deleted):
+        return {'ransom_names': 0, 'ransom_samples': [], 'appended_extensions': 0}
+    from .site import ensure
+    with _SIGNS_LOCK:                           # the first ask in a fresh database makes its site id: one thread, one id
+        key = (ensure(conn), scan_id, started, fin, added, modified, deleted)
         got = _SIGNS.get(key)
         if got is None:
             got = _SIGNS[key] = {'done': threading.Event(), 'value': None}
@@ -1313,9 +1366,22 @@ def _appended(conn: Conn, scan_id: int) -> int:
                                                       {'s': scan_id})}
     if not gone:
         return 0
+    mounts = sorted({m for m, _, _ in gone})
+    dirs = sorted({p for _, p, _ in gone})
+    params: dict = {'s': scan_id}
+    m_clause = ''
+    if len(mounts) <= 64:
+        for i, mid in enumerate(mounts):
+            params[f'm{i}'] = mid
+        m_clause = f" AND mount_id IN ({', '.join(f':m{i}' for i in range(len(mounts)))})"
+    d_clause = ''
+    if len(dirs) <= 128:
+        for i, dpath in enumerate(dirs):
+            params[f'd{i}'] = dpath
+        d_clause = f" AND parent_path IN ({', '.join(f':d{i}' for i in range(len(dirs)))})"
     n = 0
-    for m, p, f in conn.all("SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'added' AND NOT is_directory",
-                            {'s': scan_id}):
+    for m, p, f in conn.all(f"SELECT mount_id, parent_path, filename FROM file_changes WHERE scan_id = :s AND change_type = 'added' AND NOT is_directory{m_clause}{d_clause}",
+                            params):
         f = f.lower()
         dot = f.find('.', 1)
         while dot != -1:                     # every dot past the first character: a.tar.gz extends both a and a.tar

@@ -3,6 +3,8 @@
 # Run as root on the Docker host, after `docker compose up` (the br-sforge bridge must exist):
 #   sudo ./docker/egress-firewall.sh                 # allow tcp 22 and 443 out of br-sforge
 #   sudo STORAGEFORGE_EGRESS_PORTS="22 2222 443 2586" ./docker/egress-firewall.sh
+#   sudo STORAGEFORGE_EGRESS_PORTS="22 443 51820/udp" ./docker/egress-firewall.sh   # a port is tcp unless it ends in /udp
+#                                                    # (the sfnet overlay's WireGuard handshakes leave over udp, to the hosts' ports)
 #   sudo STORAGEFORGE_BRIDGE=sfdemo0 ./docker/egress-firewall.sh   # another bridge gets its own rules
 #   sudo ./docker/egress-firewall.sh --remove
 # Rules live in a chain per bridge (SF-EGRESS-<bridge>), hooked into Docker's DOCKER-USER chain (which Docker never
@@ -20,9 +22,11 @@ LEGACY=SF-EGRESS        # the one chain every bridge shared before 2026-10-29
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)" >&2; exit 1; }
 case $BRIDGE in ''|-*|*[!A-Za-z0-9_.-]*) echo "not a bridge name: $BRIDGE" >&2; exit 2 ;; esac
 [ "${#BRIDGE}" -le 15 ] || { echo "not a bridge name (15 characters at most): $BRIDGE" >&2; exit 2; }
-for p in $PORTS; do     # all checked before any rule changes
-  case $p in *[!0-9]*|'') echo "not a port: $p" >&2; exit 2 ;; esac
-  [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { echo "not a port: $p" >&2; exit 2; }
+for p in $PORTS; do     # all checked before any rule changes: 443, 443/tcp or 51820/udp
+  n=${p%/*}
+  case $p in */udp|*/tcp) ;; */*) echo "not a port: $p" >&2; exit 2 ;; esac
+  case $n in *[!0-9]*|'') echo "not a port: $p" >&2; exit 2 ;; esac
+  [ "$n" -ge 1 ] && [ "$n" -le 65535 ] || { echo "not a port: $p" >&2; exit 2; }
 done
 
 hook() {   # -C|-I|-D chain: the two jumps into it, out to other machines and to this host
@@ -57,7 +61,10 @@ apply() {   # $1 = iptables or ip6tables
     "$ipt" -A "$new" -p tcp --dport 53 -j RETURN
     # IPv6 needs ICMPv6 to the host (neighbor discovery finds the gateway); IPv4's ARP never passes iptables
     [ "$ipt" = ip6tables ] && "$ipt" -A "$new" -p ipv6-icmp -j RETURN
-    for p in $PORTS; do "$ipt" -A "$new" -p tcp --dport "$p" -j RETURN; done
+    for p in $PORTS; do
+      proto=tcp; case $p in */udp) proto=udp ;; esac
+      "$ipt" -A "$new" -p "$proto" --dport "${p%/*}" -j RETURN
+    done
     "$ipt" -A "$new" -j REJECT
     hook -I "$new"
   else
@@ -69,7 +76,7 @@ apply() {   # $1 = iptables or ip6tables
   drop "$old"
   drop "$LEGACY"
   if [ "$MODE" = remove ]; then echo "$ipt: removed for $BRIDGE"; return 0; fi
-  echo "$ipt: $BRIDGE may open tcp ${PORTS} (and DNS), to other machines and to this host; everything else is rejected"
+  echo "$ipt: $BRIDGE may open ${PORTS} (tcp unless /udp; and DNS), to other machines and to this host; everything else is rejected"
 }
 
 MODE=apply

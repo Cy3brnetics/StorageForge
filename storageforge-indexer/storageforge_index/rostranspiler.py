@@ -595,6 +595,9 @@ def to_firewalld(stmts, zone: str = 'public', **_) -> dict:
             if s['chain'] != 'input' or s['action'] not in ('accept', 'drop', 'reject') or s.get('connection-state') or s.get('out-interface'):
                 o.no(s, 'firewalld rich rules are for what comes in: other chains and states need a policy written by hand')
                 continue
+            if s.get('in-interface') or s.get('dst-address-list') or s.get('src-port') or ',' in (s.get('dst-port') or '') or (s.get('dst-port') or '').startswith('!'):
+                o.no(s, 'a firewalld rich rule has no interface, no destination list, no source port, and takes one port or a range: a zone and a policy written by hand do')
+                continue
             fam = 'ipv6' if _fam(s.get('src-address') or s.get('dst-address')) == 6 else 'ipv4'
             parts = [f'rule family="{fam}"']
             if s.get('src-address'):
@@ -719,19 +722,19 @@ def to_openwrt(stmts, zones: dict | None = None, **_) -> dict:
             if s['action'] == 'dst-nat' and s.get('dst-port'):
                 section('firewall', 'redirect', {'name': s.get('comment') or f'sf-{s.line}', 'target': 'DNAT', 'src': zone(s.get('in-interface')) if s.get('in-interface') else '*', 'proto': s.get('protocol'), 'src_dport': s['dst-port'], 'dest_ip': s['to-addresses'], 'dest_port': s.get('to-ports') or s['dst-port']})
             elif s['action'] == 'masquerade' and s.get('out-interface'):
-                add(f"for z in $(uci show firewall | sed -n \"s/^firewall\\.\\(.*\\)\\.name='{zone(s['out-interface'])}'$/\\1/p\"); do uci set firewall.$z.masq=1; done")
+                add(f"for z in $(uci show firewall | sed -n \"s#^firewall\\.\\(.*\\)\\.name='{zone(s['out-interface'])}'\\$#\\1#p\"); do uci set firewall.$z.masq=1; done")
             else:
                 o.no(s, 'fw4 has redirects with a port, and masquerade on a zone')
         elif p == ALIST:
             touched.add('firewall')
             add(f'n=$(uci show firewall | grep -c "\\.name=\'{s["list"]}\'" || true); [ "$n" != 0 ] || {{ r=$(uci add firewall ipset); uci set firewall.$r.name={_q(s["list"])}; uci set firewall.$r.match=src_net; }}')
-            add(f"for z in $(uci show firewall | sed -n \"s/^firewall\\.\\(.*\\)\\.name='{s['list']}'$/\\1/p\"); do uci add_list firewall.$z.entry={_q(s['address'])}; done")
+            add(f"for z in $(uci show firewall | sed -n \"s#^firewall\\.\\(.*\\)\\.name='{s['list']}'\\$#\\1#p\"); do uci add_list firewall.$z.entry={_q(s['address'])}; done")
         elif p == ('interface', 'bridge'):
             touched.add('network')
             section('network', 'device', {'type': 'bridge', 'name': s['name'], 'mtu': s.get('mtu'), 'vlan_filtering': '1' if s.get('vlan-filtering') in ('yes', 'true') else None})
         elif p == ('interface', 'bridge', 'port'):
             touched.add('network')
-            add(f"for d in $(uci show network | sed -n \"s/^network\\.\\(.*\\)\\.name='{s['bridge']}'$/\\1/p\"); do uci add_list network.$d.ports={_q(s['interface'])}; done")
+            add(f"for d in $(uci show network | sed -n \"s#^network\\.\\(.*\\)\\.name='{s['bridge']}'\\$#\\1#p\"); do uci add_list network.$d.ports={_q(s['interface'])}; done")
         elif p == ('interface', 'vlan'):
             touched.add('network')
             section('network', 'device', {'type': '8021q', 'name': s['name'], 'ifname': s['interface'], 'vid': s['vlan-id']})
@@ -924,6 +927,10 @@ def to_cisco(stmts, **_) -> dict:
             if comment:
                 o.lines.append(f' remark {comment}')
             o.lines.append(f' {ace}')
+        # an IOS ACL ends in an implicit deny, and the firewall this was written for lets through what no rule names
+        if aces[-1][1] not in ('permit ip any any', 'deny ip any any'):
+            o.lines += [' remark SF_end: what no rule above names is let through', ' permit ip any any']
+        o.notes.append(f'{name} replaces any access-group already bound {side} on {iface}: merge its entries into this list first')
         o.lines += ['exit', f'interface {iface}', f' ip access-group {name} {side}', 'exit']
     return o.done()
 

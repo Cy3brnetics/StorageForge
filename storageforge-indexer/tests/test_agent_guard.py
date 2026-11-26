@@ -301,6 +301,7 @@ class Outside(test_agent.Base):
         row = sfagent.get(self.conn, 'nas')
         self.assertEqual(row['state'], 'running')
         self.assertFalse(json.loads(row['check_json'])['ok'])
+        self.assertNotIn('agent-unchecked:nas', agentwatch.problems(self.conn), 'one failed check is not news')
         self.conn.execute("UPDATE agents SET enrolled_at = :t WHERE host = 'nas'", {'t': int(time.time()) - 2 * agentguard.UNCHECKED_SECS})
         self.assertIn('agent-unchecked:nas', agentwatch.problems(self.conn))
 

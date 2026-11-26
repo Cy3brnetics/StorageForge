@@ -15,7 +15,7 @@ async function loadTasks(selectId) {
     const [r, h] = await Promise.all([getJSON('/api/tasks'), getJSON('/api/hosts')]);
     Object.assign(TK, { loaded: true, types: r.types, cats: r.categories, templates: r.templates, schedules: r.schedules,
       installed: r.installed, list: r.tasks, hosts: h.indexed.map((x) => x.hostname).sort() });
-    if (selectId) { TK.task = await getJSON(`/api/tasks/${selectId}`); TK.dirty = false; TK.undo = []; TK.redo = []; }
+    if (selectId) { TK.task = await getJSON(`/api/tasks/${selectId}`); TK.target = null; TK.dirty = false; TK.undo = []; TK.redo = []; }
   } catch (err) { box.replaceChildren(text('p', err.message, 'st-failed tkerr')); return; }
   if (!TK.task) TK.task = blankTask();
   renderTasks();
@@ -50,6 +50,7 @@ function tkUndo(redo = false) {
   if (!from.length) return;
   to.push(JSON.stringify(TK.task));
   TK.task = JSON.parse(from.pop());
+  TK.target = null;
   TK.dirty = true;
   renderTasks(); tkCheckSoon();
 }

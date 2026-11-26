@@ -292,6 +292,7 @@ def register(web, ctx):
     @web.post('/api/security/mac/apparmor/stage')
     @login_required
     def api_apparmor_stage():
+        need('plans.edit')            # it saves a change plan, as its sibling stage routes do; the path rule only asks for security.manage
         res = secplus.stage_apparmor(conn(), json_body(), actor())
         return note_audit('security.apparmor.stage', res, plan=res.get('plan_id'), profile=res.get('profile'))
 

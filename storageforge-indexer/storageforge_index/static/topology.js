@@ -423,6 +423,7 @@ function renderTopo() {
   const kids = [];
   for (const host of T.order) {
     const doc = T.docs.get(host);
+    if (!doc) continue;
     const f = { host, doc, el: el('div', { class: 'tframe', dataset: { host } }, hostHead(doc)), tbs: [], ox: 0, oy: 0 };
     kids.push(f.el);
     if (doc.bp) {

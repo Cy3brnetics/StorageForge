@@ -318,6 +318,14 @@ def plan(conn, design: dict, blank=()) -> dict:
                 if was is None or props or move:
                     task('zfs-dataset', dataset=f'{name}/{dn}', mountpoint=ds.get('mount') or '' if was is None else move,
                          options=','.join(f'{k}={v}' for k, v in props.items()))
+            # Devices and layout of a pool that is there cannot be told as simply as datasets (the scan may list partitions, not disks),
+            # but a device the design adds, or another level, must not go unsaid.
+            have_m = [_bare(x) for x in (hp or {}).get('members') or []]      # no hp: the pool was only just made by a task above
+            for m in members:
+                if have_m and not any(x == m or re.fullmatch(re.escape(m) + r'p?\d+', x) for x in have_m):
+                    by_hand(f'Add /dev/{m} to {name}', 'which vdev it joins (mirror, stripe, log, cache) is for you to choose: stage "Add a vdev to a pool" in Changes')
+            if hp and pool.get('level') and hp.get('level') and pool['level'] != hp['level']:
+                by_hand(f'Reshape zfs {name} from {hp["level"]} to {pool["level"]}', 'a ZFS pool cannot change its layout in place')
             continue
         if kind == 'lvm' and hp.get('vg'):
             for m in members:

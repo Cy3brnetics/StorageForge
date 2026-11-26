@@ -157,6 +157,19 @@ def canvas(graph: dict) -> str:
     return json.dumps({'nodes': nodes, 'edges': edges}, indent=1) + '\n'
 
 
+def _prefix_of(n: dict, p: dict) -> str | None:
+    """The network a Subnet or DHCPScope node stands for: a cidr prop, the Subnet's label, or the scope's subnet prop."""
+    import ipaddress
+    for cand in (p.get('cidr'), n['label'] if n['kind'] == 'Subnet' else None, p.get('subnet')):
+        if not cand or '/' not in str(cand):
+            continue
+        try:
+            return str(ipaddress.ip_network(str(cand).strip(), strict=False))
+        except ValueError:
+            continue
+    return None
+
+
 def netbox(graph: dict) -> str:
     """NetBox-compatible DCIM/IPAM bulk JSON export: devices, interfaces, prefixes, IP addresses and services."""
     devices, interfaces, prefixes, ips, services = [], [], [], [], []
@@ -165,10 +178,11 @@ def netbox(graph: dict) -> str:
         p = n.get('props') or {}
         if n['kind'] == 'Host':
             devices.append({'name': n['label'], 'role': p.get('platform') or 'server', 'status': 'active'})
-        elif n['kind'] in ('Subnet', 'DHCPScope') and p.get('cidr'):
-            if p['cidr'] not in seen_prefix:
-                seen_prefix.add(p['cidr'])
-                prefixes.append({'prefix': p['cidr'], 'status': 'active', 'description': n['label']})
+        elif n['kind'] in ('Subnet', 'DHCPScope') and _prefix_of(n, p):
+            cidr = _prefix_of(n, p)
+            if cidr not in seen_prefix:
+                seen_prefix.add(cidr)
+                prefixes.append({'prefix': cidr, 'status': 'active', 'description': n['label']})
         elif n['kind'] in ('NIC', 'Bond', 'Bridge', 'VLAN', 'VPNInterface') and n.get('host'):
             interfaces.append({'device': n['host'], 'name': n['label'], 'type': n['kind'].lower(), 'mac_address': p.get('mac'), 'mtu': p.get('mtu')})
             for addr in p.get('addresses') or []:

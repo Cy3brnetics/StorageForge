@@ -63,6 +63,7 @@ function routeResolvePanel(r) {
     INF.view = sub;
     if (sub === 'toolbox' && typeof tbTakeLink === 'function' && r.q) tbTakeLink(r.q);
   }
+  if (r.panel === 'changes' && r.q?.get('plan')) window.CHANGES_LINK_PLAN = r.q.get('plan');
   if (r.panel === 'rebuild' && sub) window.REBUILD_LINK_SUB = sub;
   return r.panel;
 }

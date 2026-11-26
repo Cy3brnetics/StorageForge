@@ -79,7 +79,7 @@ def model(plan: dict) -> list[dict]:
             for sname, s in m['services'].items():
                 services.append({'name': f'{p["name"]}-{sname}', 'service': sname, 'image': s['image'] or '',
                                  'ports': [{'ip': x['bind'], 'external': int(x['published']), 'internal': int(x['target'] or x['published']), 'protocol': x['proto']}
-                                           for x in s['ports'] if x['published'].isdigit()],
+                                           for x in s['ports'] if x['published'].isdigit() and (x['target'] or x['published']).isdigit()],
                                  'volumes': [{'host_path': b['source'], 'container_path': b['target'], 'read_only': 'ro' in b['options'].split(',')} for b in s['binds']]})
             out.append({**base, 'runtime': p['runtime'], 'dir': p['dir'] or f'/srv/stacks/{p["name"]}', 'compose': p['compose'], 'services': services,
                         'labels': {'storageforge.managed': 'true', 'storageforge.stack': p['name'], **labels}, 'allow_from': p['allow_from']})

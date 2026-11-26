@@ -443,4 +443,80 @@ function bindAdminForms() {
   });
 }
 
+async function loadMaintenance() {
+  const sec = $('#ad-sec-maintenance');
+  if (!sec) return;
+  sec.replaceChildren(text('p', 'Loading controller status…', 'muted'));
+  const cards = [];
+  const v = await getJSON('/api/version').catch(() => null);
+  if (v) {
+    cards.push(el('div', { class: 'card stack' },
+      text('h3', 'Controller release & health'),
+      el('div', { class: 'row wrap' },
+        text('b', `StorageForge ${v.version}`),
+        v.update_available ? text('span', `Release ${v.latest} is available`, 'st-warn') : text('span', v.checking ? 'Up to date' : 'Release check not configured (STORAGEFORGE_UPDATE_URL)', 'muted small')),
+      v.source ? text('p', `Source: ${v.source}${v.checked_at ? ` · checked ${fmtTime(v.checked_at)}` : ''}${v.error ? ` · ${v.error}` : ''}`, 'muted small') : '',
+      el('div', { class: 'row wrap' },
+        can('backups.view') ? button('Open Backups & Audit', () => adOpen('audit'), 'btn sm') : '')));
+  }
+  if (can('keys.view')) {
+    const sig = await getJSON('/api/scans/signing').catch(() => null);
+    if (sig) {
+      const msg = text('span', '', 'muted small');
+      const modeSel = el('select', { 'aria-label': 'Signed scan requirement' },
+        new Option('Accept unsigned scans (default)', 'off'),
+        new Option('Require signed scans on all hosts', 'on'));      // the server's switch is on or off (scansign.parse_switch)
+      modeSel.value = sig.require ? 'on' : 'off';
+      const saveMode = can('settings.manage') ? button('Save policy', async () => {
+        try {
+          await api('/api/scans/signing', jsonOpts('PUT', { require: modeSel.value === 'on' }));
+          toast('Scan signing policy saved');
+          loadMaintenance();
+        } catch (err) { msg.textContent = err.message; msg.className = 'st-failed small'; }
+      }, 'btn sm pri') : '';
+      const pinnedRows = (sig.pinned || []).map((p) => el('li', { class: 'row wrap' },
+        text('code', p.address), text('span', `${p.fingerprint} · pinned ${fmtTime(p.pinned_at)} (${p.how})`, 'muted small'),
+        can('keys.manage') ? button('Forget', async () => {
+          if (!(await confirmDialog({ title: `Forget scan signer for ${p.address}?`, body: 'The next scan will need to pin a signer again.', confirm: 'Forget', danger: true }))) return;
+          try { await api(`/api/scans/signing/${encodeURIComponent(p.address)}`, { method: 'DELETE' }); loadMaintenance(); }
+          catch (err) { notify(err.message, 'error'); }
+        }, 'btn ghost sm') : ''));
+      cards.push(el('div', { class: 'card stack' },
+        text('h3', 'Scan payload signing'),
+        text('p', 'Verify scan payloads signed on target hosts before ingesting them into the index.', 'muted small'),
+        el('div', { class: 'row wrap' }, modeSel, saveMode, msg),
+        pinnedRows.length ? el('ul', { class: 'list' }, ...pinnedRows) : text('p', 'No host scan signers pinned yet.', 'muted small')));
+    }
+  }
+  if (can('logs.view') || can('audit.view')) {
+    const qIn = el('input', { type: 'text', placeholder: 'Filter host or text…', 'aria-label': 'Filter operational log' });
+    const list = el('ul', { class: 'list' });
+    const outBox = el('pre', { class: 'small', hidden: true });
+    const refreshLogs = async () => {
+      try {
+        const q = qIn.value.trim();
+        const d = await getJSON(`/api/log?limit=40${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+        const entries = d.entries || [];
+        list.replaceChildren(...(entries.length ? entries.map((e) => el('li', { class: 'row wrap' },
+          text('span', `${fmtTime(e.ts)} · ${e.source}`, 'muted small'),
+          text('b', `${e.host || 'controller'} · ${e.action}`),
+          text('span', e.summary || e.outcome, e.outcome === 'failed' || e.outcome === 'denied' ? 'st-failed small' : 'small'),
+          e.has_output ? button('Output', async () => {
+            const r = await getJSON(`/api/log/output?id=${encodeURIComponent(e.id)}`);
+            outBox.textContent = r.output || '(empty)';
+            outBox.hidden = false;
+          }, 'btn ghost sm') : '')) : [text('li', 'No matching operational log entries.', 'muted small')]));
+      } catch (err) { list.replaceChildren(text('li', err.message, 'st-failed small')); }
+    };
+    cards.push(el('div', { class: 'card stack' },
+      text('h3', 'Operational logbook & export'),
+      text('p', 'Combined timeline of audit events, deployments, scans, scheduled runs and task runs on this controller.', 'muted small'),
+      el('div', { class: 'row wrap' }, qIn, button('Filter', refreshLogs, 'btn sm'),
+        ...['csv', 'json', 'text'].map((fmt) => button(`Export ${fmt.toUpperCase()}`, () => download(`/api/log/export?format=${fmt}`, `storageforge-log.${fmt === 'text' ? 'txt' : fmt}`), 'btn ghost sm'))),
+      outBox, list));
+    refreshLogs();
+  }
+  sec.replaceChildren(...(cards.length ? cards : [el('div', { class: 'card' }, text('p', 'No controller maintenance actions are available for your role.', 'muted'))]));
+}
+
 bindAdminForms();

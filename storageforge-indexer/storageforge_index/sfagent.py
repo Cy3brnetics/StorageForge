@@ -440,10 +440,11 @@ def host_arch(conn, name: str) -> str:
     """The machine a host is, from its last scan (uname -m)."""
     inv = conn.scalar('SELECT inventory_json FROM hosts WHERE hostname = :h', {'h': name})
     inv = (inv if isinstance(inv, dict) else json.loads(inv or '{}')) or {}
-    for line in str(inv.get('packages') or '').splitlines():       # the package survey ends with it: arch<TAB>x86_64
+    for line in str(inv.get('packages') or '').splitlines():       # an agent's own report: arch<TAB>x86_64
         if line.startswith('arch\t'):
             return line.split('\t', 1)[1].strip()
-    return ''
+    pk = inv.get('pkglist')             # an SSH scan: the package survey (pkglist.parse) says it, as amd64 or arm64
+    return str(pk.get('arch') or '') if isinstance(pk, dict) else ''
 
 
 def runtime_hint(conn, name: str) -> dict:
@@ -511,7 +512,12 @@ def switch(conn, host: str, on: bool, actor: str) -> dict:
     row = get(conn, name)
     if not on and row and row['state'] in ('running', 'stopped', 'wiped'):
         raise AgentError(f'{name} has an agent enrolled: remove it before switching the agent off for this host')
-    _save(conn, name, actor, enabled=1 if on else 0, state='on' if on else 'off', **({} if on else {'detail': ''}))
+    if on and row and row['state'] in ('running', 'stopped', 'wiped'):
+        # An agent that is enrolled keeps its state: only the switch is set. Overwriting the
+        # state would forget its session and clear the wiped guards.
+        _save(conn, name, actor, enabled=1)
+    else:
+        _save(conn, name, actor, enabled=1 if on else 0, state='on' if on else 'off', **({} if on else {'detail': ''}))
     return get(conn, name)
 
 
@@ -684,11 +690,18 @@ def apply(db: Database, host: str, plugins: list[tuple[bytes, str, str]], actor:
         with Vault(db, conn).unlock() as v:
             text, sig = manifest(_signer(v), row['fingerprint'], machine, counter, image, entries)
         sent = [{'descriptor': descriptor.decode(), 'signature': s} for descriptor, s, _signer_kind in plugins]
+        before = conn.all('SELECT host, fingerprint, counter, manifest, signature, plugins_json, updated_at FROM agent_deliveries WHERE host = :h', {'h': name})
         save_delivery(conn, name, row['fingerprint'], counter, text, sig, plugins, tunnel=tunnel is not None)
         try:
             got = call(db, name, 'apply', group_id=group_id, actor=actor, manifest=text, manifest_signature=sig, image_signature=image_sig, plugins=sent,
                        tunnel=tunnel, accept_new_tunnel_key=new_key)
         except AgentError as exc:
+            # The agent never took this manifest. Left in place, the receiver would hand its plugins out as newer than the
+            # host's and every tunnel session would be refused, so what was delivered before goes back.
+            conn.execute('DELETE FROM agent_deliveries WHERE host = :h', {'h': name})
+            for row_before in before:
+                conn.execute('INSERT INTO agent_deliveries (host, fingerprint, counter, manifest, signature, plugins_json, updated_at) '
+                             'VALUES (:h, :f, :c, :m, :s, :p, :t)', dict(zip('hfcmspt', row_before)))
             _audit(db, conn, actor, 'agent.apply', 'failed', name, row['fingerprint'], {'counter': counter, 'error': str(exc)[:500]})
             raise
         sha = hashlib.sha256(text.encode()).hexdigest()

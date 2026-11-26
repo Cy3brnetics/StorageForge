@@ -399,7 +399,7 @@ def build(conn: Conn, source: str, target: str, *, packages: bool = True, skip: 
         after = _snapshot_tasks(conn, tgt, 'after', stamp, notes, risks)
         if after:
             # Phase 4b: hold clone ZFS snapshots so retention expiry cannot remove them prematurely
-            holds = [{'type': 'zfs-hold', 'host': t['host'], 'params': {'snapshot': f'{t["params"]["dataset"]}@{t["params"]["snapshot"]}', 'tag': 'sf-clone'}}
+            holds = [{'type': 'zfs-hold', 'host': t['host'], 'params': {'snapshot': f'{t["params"]["dataset"]}@{t["params"]["name"]}', 'tag': 'sf-clone'}}
                      for t in before + after if t['type'] == 'zfs-snapshot']
             plans['after'] = {'name': f'{title}: snapshot after', 'tasks': after + holds}
 
@@ -465,6 +465,8 @@ def save(conn: Conn, built: dict, actor: str, accepted: list[str] | None = None)
             tail = f' {stamp}' + (f' ({n - 1})' if n > 2 else '')
             name = body['name'][:80 - len(tail)] + tail
         body = {**body, 'name': name}
+        if key == 'changes' and accepted:       # what the preview showed and the person named: the apply passes these as --accept
+            body['accepted'] = [a for a in accepted if a in (body.get('require_accept') or [])]
         out[key] = (moves.save_plan if key == 'files' else changes.save_plan)(conn, body, actor)
     return out
 

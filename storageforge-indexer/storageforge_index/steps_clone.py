@@ -294,13 +294,21 @@ t_disk_image() { local src=$1 dest=$2 fmt=${3:-qcow2} fix_boot=${4:-1} snap=""
   if ((!APPLY)); then missing "would image snapshot of $src into $dest ($fmt, fix_boot=$fix_boot)"; return 0; fi
   act "capture $src into $dest ($fmt)" || return 0
   if command -v lvs >/dev/null && lvs --noheadings -o lv_name -- "$src" >/dev/null 2>&1; then
-    snap="${src}-sf-img-$STAMP"
-    try lvcreate -s -L 1G -n "${snap##*/}" "$src" >/dev/null
+    # the snapshot lives in the volume group of the source, whatever path (/dev/mapper/...) it was named by
+    local vg lv
+    read -r vg lv < <(lvs --noheadings -o vg_name,lv_name -- "$src")
+    snap="/dev/$vg/${lv}-sf-img-$STAMP"
+    try lvcreate -s -L 1G -n "${snap##*/}" -- "$src" >/dev/null || return 0
     src=$snap
   fi
   mkdir -p "$(dirname -- "$dest")"
-  try qemu-img convert -f raw -O "$fmt" -- "$src" "$dest"
-  [[ -n $snap ]] && lvremove -f -- "$snap" >/dev/null 2>&1 || true
+  # written beside the final name, so a failed or interrupted copy is never taken for the image on the next run
+  if ! try qemu-img convert -f raw -O "$fmt" -- "$src" "$dest.sf-part"; then
+    rm -f -- "$dest.sf-part"; [[ -n $snap ]] && { lvremove -f -- "$snap" >/dev/null 2>&1 || true; }
+    return 0
+  fi
+  [[ -n $snap ]] && { lvremove -f -- "$snap" >/dev/null 2>&1 || true; }
+  mv -f -- "$dest.sf-part" "$dest" || { conflict "could not move the finished image into place at $dest"; return 0; }
   if [[ $fix_boot == 1 ]] && command -v virt-customize >/dev/null; then
     virt-customize -a "$dest" --run-command "command -v dracut >/dev/null && dracut -f --add-drivers virtio_blk || true" >/dev/null 2>&1 || true
   fi
@@ -339,7 +347,7 @@ def _ansible_phase7(fn: str, args: tuple):
 
 
 changes.register('zfs-hold', {'group': 'ZFS', 'label': 'Hold a ZFS snapshot', 'fields': [
-    F('snapshot', 'dataset', 'Snapshot (dataset@name)', required=True),
+    F('snapshot', 'zfs-snapshot', 'Snapshot (dataset@name)', required=True),
     F('tag', 'name', 'Hold tag', default='sf-clone', required=True)]},
     ('snapshot', 'tag'), lambda p: f'Hold ZFS snapshot {p["snapshot"]} ({p["tag"] or "sf-clone"})',
     _check_zfs_hold, _ansible_phase7('t_zfs_hold', ('snapshot', 'tag')))

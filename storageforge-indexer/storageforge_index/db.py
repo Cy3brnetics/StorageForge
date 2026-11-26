@@ -21,6 +21,7 @@ from pathlib import Path
 from .stream import ROW_COLUMNS, split_path
 
 MIGRATIONS = Path(__file__).with_name('migrations')
+_OWN_TX = re.compile(r'^\s*(BEGIN|COMMIT|END|PRAGMA)\b', re.I | re.M)   # a migration that manages its own transaction
 # A mount that gains more entries than this in one scan (a new disk or a restored folder) is a bulk import: the
 # scan counts the adds, but the change log doesn't list them one by one.
 CHANGE_LOG_MAX_ADDS = 50_000
@@ -211,12 +212,40 @@ class Database:
                 continue
             sql = f.read_text()
             if self.dialect == 'sqlite':
-                conn.raw.executescript(sql)
+                if _OWN_TX.search(sql):         # it runs its own transaction, or a pragma that only works outside one
+                    conn.raw.executescript(sql)
+                elif not self._migrate_atomic(conn, f, sql):
+                    continue                    # another process applied it while this one waited for the write lock
             else:
                 with conn.tx():
                     conn.raw.execute(sql)
             applied.append(f.name)
         return applied
+
+    @staticmethod
+    def _migrate_atomic(conn: Conn, f, sql: str) -> bool:
+        """One SQLite migration in one transaction, so a failure or a killed process leaves none of it behind. The version
+        is read again once the write lock is held: a second process starting at the same time waits, then finds it done."""
+        raw, version = conn.raw, int(f.name.split('_')[0])
+        raw.execute('BEGIN IMMEDIATE')
+        try:
+            if raw.execute('SELECT 1 FROM schema_version WHERE version = ?', (version,)).fetchone():
+                raw.execute('ROLLBACK')
+                return False
+            buf = ''
+            for line in sql.splitlines(keepends=True):
+                buf += line
+                if sqlite3.complete_statement(buf):
+                    raw.execute(buf)
+                    buf = ''
+            if buf.strip() and not all(x.strip().startswith('--') or not x.strip() for x in buf.splitlines()):
+                raw.execute(buf)
+            raw.execute('COMMIT')
+        except BaseException:
+            if raw.in_transaction:
+                raw.execute('ROLLBACK')
+            raise
+        return True
 
     # hosts, mounts, scans
     def upsert_host(self, conn: Conn, inv, t, host_keys: list[str] | None = None) -> int:
@@ -420,6 +449,8 @@ class Database:
         stats = DiffStats(seen=conn.scalar(f'SELECT count(*) FROM {t}'))
         prev = conn.scalar('SELECT count(*) FROM file_records WHERE mount_id = :m', p)
         stats.first_scan = prev == 0
+        # the guard compares what vanished in scope with what was in scope: a subtree scan is not measured against the mount
+        prev_scope = prev if full else conn.scalar(f'SELECT count(*) FROM file_records r WHERE r.mount_id = :m{scope}', p)
         match = 'r.dir_id = s.dir_id AND r.filename = s.filename'
         content_changed = f'(r.file_size_bytes <> s.size OR r.modified_at <> {ts("s.mtime")})'
         with conn.tx():
@@ -437,9 +468,9 @@ class Database:
             conn.execute(f"""INSERT INTO gone_{j} (file_id) SELECT r.file_id FROM file_records r
                              WHERE r.mount_id = :m{scope} AND NOT EXISTS (SELECT 1 FROM {t} s WHERE {match})""", p)
             stats.deleted = conn.scalar(f'SELECT count(*) FROM gone_{j}')
-            if not stats.first_scan and prev >= 1000 and stats.deleted > prev * max_delete_ratio:
+            if not stats.first_scan and prev_scope >= 1000 and stats.deleted > prev_scope * max_delete_ratio:
                 raise MassDeleteRefused(
-                    f'{stats.deleted:,} of {prev:,} indexed entries vanished; refusing to apply. If the data really '
+                    f'{stats.deleted:,} of {prev_scope:,} indexed entries vanished; refusing to apply. If the data really '
                     f'is gone, rerun with --max-delete-ratio 1')
             if stats.deleted:
                 conn.execute(f"""INSERT INTO file_changes (scan_id, mount_id, change_type, parent_path, filename, is_directory,
@@ -484,7 +515,10 @@ class Database:
                                      last_changed_scan_id = :scan
                                  FROM chg_{j} c WHERE file_records.file_id = c.file_id""", p)
 
-            # added: in this walk but not in the index
+            # added: in this walk but not in the index. Rows with a larger id than this are the ones inserted here:
+            # another --path root of the same mount shares the scan id and must not have its adds logged again.
+            top = conn.scalar('SELECT coalesce(max(file_id), 0) FROM file_records WHERE mount_id = :m', p)
+            p['top'] = top
             cur = conn.execute(f"""INSERT INTO file_records (mount_id, dir_id, filename, extension, file_size_bytes,
                                        is_directory, is_symlink, symlink_target, mode_permissions, owner_uid, group_gid,
                                        modified_at, first_seen_scan_id, last_changed_scan_id)
@@ -501,11 +535,11 @@ class Database:
                                     SELECT :scan, :m, 'added', d.path, f.filename, f.is_directory,
                                            NULL, f.file_size_bytes, NULL, f.modified_at
                                     FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                    WHERE f.mount_id = :m AND f.first_seen_scan_id = :scan""", p)
+                                    WHERE f.mount_id = :m AND f.first_seen_scan_id = :scan AND f.file_id > :top""", p)
                 if sqlite:
                     conn.execute("""INSERT INTO file_fts (rowid, filename)
                                     SELECT file_id, filename FROM file_records
-                                    WHERE mount_id = :m AND first_seen_scan_id = :scan""", p)
+                                    WHERE mount_id = :m AND first_seen_scan_id = :scan AND file_id > :top""", p)
             if stats.deleted:                       # folders whose last entry went
                 conn.execute("""DELETE FROM directories WHERE mount_id = :m
                                 AND NOT EXISTS (SELECT 1 FROM file_records r WHERE r.dir_id = directories.dir_id)""", p)

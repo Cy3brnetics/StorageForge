@@ -110,11 +110,17 @@ fn as_account(host: &Host, user: &User, f: &dyn Fn(&str) -> Option<String>) -> R
             }
             let path = dir.join("authorized_keys");
             let mut old = String::new();
-            if let Ok(file) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path) {
-                if !file.metadata().map_err(|_| ())?.is_file() {
-                    return Err(());
+            // Only a missing file may be replaced: a symlink or unreadable file holds keys that must not be overwritten.
+            match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path) {
+                Ok(file) => {
+                    let meta = file.metadata().map_err(|_| ())?;
+                    if !meta.is_file() || meta.len() > 1 << 20 {
+                        return Err(());
+                    }
+                    file.take(1 << 20).read_to_string(&mut old).map_err(|_| ())?;
                 }
-                file.take(1 << 20).read_to_string(&mut old).map_err(|_| ())?;
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(()),
             }
             let Some(new) = f(&old) else { return Ok(()) };
             let tmp = dir.join(format!(".authorized_keys.storageforge-{}", std::process::id()));

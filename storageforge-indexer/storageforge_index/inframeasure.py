@@ -20,7 +20,7 @@ from .runtimes import docker, guests
 MEASURE_EVERY = 6 * 3600
 OFF_KEY = 'infra.read.off'
 SECTIONS = ('tools', 'fw_state', 'nft', 'iptables', 'ip6tables', 'ufw', 'firewalld', 'listeners', 'storage_clients', 'libvirt', 'libvirt_snap', 'libvirt_net', 'libvirt_pool',
-            'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
+            'incus', 'lxc', 'proxmox', 'podman', 'wireguard', 'ip_forward', 'tailscale', 'netbird', 'headscale', 'tailscale_json', 'netbird_json', 'zt_info', 'zt_networks', 'zt_peers', 'headscale_json',
             'openvpn_status', 'openvpn_pki', 'nebula_conf', 'nebula_cert', 'netmaker_json', 'swan_sas', 'swan_conns', 'ziti_status', 'tp_status', 'tp_nodes', 'tp_conf',
             'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf', 'cloudflared', 'frp', 'ngrok', 'tunnel_procs', 'tunnel_cmdline', 'caddy', 'nginx', 'units', 'vm_mac', 'quadlet', 'wl_units', 'end')
 PVE_KEYS = '^(cores|memory|onboot|unprivileged|net[0-9]+|(scsi|virtio|sata|ide|efidisk|tpmstate|mp)[0-9]+|rootfs): '
@@ -117,6 +117,9 @@ if has wg; then
     if [ -e "$wgdir/$i.storageforge" ] && [ -s "$wgdir/$i.key.next" ]; then printf 'n\t%s\t%s\n' "$i" "$(try wg pubkey <"$wgdir/$i.key.next")"; fi
   done
 fi
+sec ip_forward
+# whether this host routes IPv4 between interfaces: a WireGuard hub needs it on (sfnetwork.py plans wg-forward only where it is not)
+try cat /proc/sys/net/ipv4/ip_forward | head -n 1
 sec tailscale; has tailscale && try tailscale status | head -n 200 | capped 12000
 sec netbird; has netbird && try netbird status | head -n 40 | capped 4000
 sec headscale; has headscale && try headscale nodes list | head -n 200 | capped 12000
@@ -177,7 +180,7 @@ sec boundary_conf; confs /etc/boundary.d/controller.hcl /etc/boundary.d/worker.h
 # a Pomerium policy names people: an address is replaced before the file is printed
 sec pomerium_conf; conf /etc/pomerium/config.yaml /etc/pomerium/config.yml | sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/someone/g'
 # what a tunnel publishes (tunnels.py), without the lines that hold its credentials: a token never leaves the host
-tunnel() { for f in "$@"; do [ -r "$f" ] && { grep -aviE '@SECRET_LINE@' "$f" | capped 60000; return 0; }; done; return 0; }
+tunnel() { for f in "$@"; do [ -r "$f" ] && { awk -v re='@SECRET_LINE@' '@TUNNEL_AWK@' "$f" | capped 60000; return 0; }; done; return 0; }
 sec cloudflared; tunnel /etc/cloudflared/config.yml /etc/cloudflared/config.yaml /root/.cloudflared/config.yml
 sec frp; tunnel /etc/frp/frpc.toml /etc/frp/frpc.ini /etc/frpc.toml /etc/frpc.ini
 sec ngrok; tunnel /etc/ngrok.yml /root/.config/ngrok/ngrok.yml /root/.ngrok2/ngrok.yml
@@ -199,7 +202,7 @@ def script(health: str = '') -> str:
             f'PVE_KEYS={shlex.quote(PVE_KEYS)}\nFMT={shlex.quote(fmt)}\n{SCRUB_VARS}' + BODY.replace('@TB_HEALTH@\n', health))
 
 
-BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE).replace('\nsec end\n', '\n' + wlread.BODY + 'sec end\n')     # what workloads add (wlread.py)
+BODY = BODY.replace('@SECRET_LINE@', tunnels.SECRET_LINE).replace('@TUNNEL_AWK@', tunnels.TUNNEL_AWK).replace('\nsec end\n', '\n' + wlread.BODY + 'sec end\n')     # what workloads add (wlread.py)
 BODY = BODY.replace('\nsec end\n', '\n' + tbadapters.BODY + '@TB_HEALTH@\nsec end\n')      # what the Toolbox adapters add (tbadapters.py)
 SECTIONS = SECTIONS + tbadapters.SECTIONS
 # The index of an OpenSSL CA, one certificate to a line: of the subject only the common name is printed, never an email address
@@ -372,7 +375,10 @@ def parse_tunnels(s: dict) -> list[dict]:
     for tool, read in tunnels.READERS.items():
         text = '\n'.join(s.get(tool, [])).strip()
         if text:
-            out.append(read(text) | {'running': tool in running})
+            try:
+                out.append(read(text) | {'running': tool in running})
+            except Exception:                              # noqa: BLE001
+                out.append({'tool': tool, 'error': 'could not be read', 'running': tool in running})
         elif tool in running:
             out.append({'tool': tool, 'server': None, 'published': [], 'remote': True, 'running': True})
     if 'newt' in running:
@@ -387,7 +393,8 @@ def parse_access(s: dict, tools: list[str]) -> dict:
     ts = next((o for o in read if o['network'] == 'tailscale' and o.get('self') and not o.get('error')), None)
     tailscale = ([{'ip': p['addresses'][0], 'name': p['name'] or p['addresses'][0], 'os': p['os'], 'active': bool(p['online'])} for p in ts['peers'] if p['addresses']]
                  if ts else parse_tailscale(s.get('tailscale', [])) if 'tailscale' in tools else None)
-    return {'wireguard': parse_wireguard(s.get('wireguard', [])) if 'wg' in tools else None, 'tailscale': tailscale, 'overlays': read, 'proxies': parse_proxies(s), 'tunnels': parse_tunnels(s),
+    fwd = ''.join(s.get('ip_forward', [])).strip()
+    return {'wireguard': parse_wireguard(s.get('wireguard', [])) if 'wg' in tools else None, 'ip_forward': int(fwd) if fwd in ('0', '1') else None, 'tailscale': tailscale, 'overlays': read, 'proxies': parse_proxies(s), 'tunnels': parse_tunnels(s),
             'netbird': 'netbird' in tools, 'headscale': 'headscale' in tools, 'proxy_routes': parse_proxy_routes(s.get('caddy', []), s.get('nginx', [])),
             'units': [u.strip() for u in s.get('units', []) if u.strip()]}
 

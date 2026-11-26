@@ -11,7 +11,8 @@ minute later, and a code for one route is no code for another.
 
 The route key is given to a browser once, in the answer to its sign-in, and kept in that browser. A session that asked for it at
 sign-in (the sign-in page does) must send the code from then on: the mark is in the signed session cookie and cannot be taken off.
-A browser that lost its key gets it again from POST /api/routecode, which takes the password. So a session cookie alone, copied to
+A browser that lost its key gets it again from POST /api/routecode, which takes the password in its body (a recent sign-in is not enough, and
+wrong passwords are limited the way POST /api/reauth limits them). So a session cookie alone, copied to
 another machine, changes nothing on a sensitive route: it has no route key, and getting one takes the password.
 
 What it is worth: it binds a sensitive request to a live session, a browser that holds that session's key, and a moment, on top of
@@ -30,6 +31,8 @@ import time
 
 from flask import jsonify, request, session
 from flask_login import current_user, login_required
+
+from . import users
 
 WINDOW = 30
 SENSITIVE = re.compile(r'/api/(keys|bindings|enclave|deploy|console|access|security/webauthn)(/.*)?')
@@ -75,7 +78,7 @@ class _OutOfThePath:
 
 
 def register(web, ctx, master: str) -> None:
-    core, conn, actor, json_body, password_confirmed = ctx.core, ctx.conn, ctx.actor, ctx.json_body, ctx.password_confirmed
+    core, conn, actor, json_body, limiter = ctx.core, ctx.conn, ctx.actor, ctx.json_body, ctx.limiter
     web.wsgi_app = _OutOfThePath(web.wsgi_app)
 
     @web.before_request
@@ -90,10 +93,15 @@ def register(web, ctx, master: str) -> None:
 
     @web.post('/api/routecode')
     @login_required
-    @password_confirmed
+    @limiter.limit(ctx.login_limit_user, key_func=lambda: f'routecode:{current_user.get_id()}',
+                   deduct_when=lambda resp: resp.status_code == 403, error_message='too many wrong passwords; try again later')
     def api_routecode():
-        """The route key again, for a browser that lost it: behind the password, so a copied cookie cannot ask."""
-        json_body()
+        """The route key again, for a browser that lost it: the request carries the password, which is checked here every time. A cookie
+        that was copied, even one whose owner typed the password a minute ago, cannot ask without it."""
+        ok = users.confirm(conn(), current_user.user_id, str(json_body().get('password', '')))
+        if not ok:
+            core.audit(conn(), actor(), 'web.routecode', 'denied', None, {})
+            return jsonify(error='wrong password'), 403     # not 401: the session itself is still good
         session['rc'] = 1
         core.audit(conn(), actor(), 'web.routecode', 'ok', None, {})
         return jsonify(issued(master, session))

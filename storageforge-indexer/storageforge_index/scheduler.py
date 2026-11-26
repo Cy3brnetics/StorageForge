@@ -263,7 +263,12 @@ def normalize_config(body: dict) -> dict:
         'auto_rescan': bool(raw_vr.get('auto_rescan')),
     }
 
-    notify_on = list(cfg.get('notify_on') or ['failure', 'verify_failure'])
+    raw_notify = cfg.get('notify_on')
+    if raw_notify is None:
+        notify_on = ['failure', 'verify_failure']
+    else:        # an empty list is a choice: no notifications
+        notify_on = [x for x in (raw_notify if isinstance(raw_notify, (list, tuple)) else [raw_notify])
+                     if x in ('failure', 'verify_failure')]
 
     return {
         'timezone': tz,
@@ -924,7 +929,7 @@ def pause_pending(conn: Conn, schedule: dict) -> bool:
 def reverify_run(conn: Conn, run_id: int, schedule_id: int | None = None) -> dict:
     """Re-runs server verification on an existing schedule_run against the latest StorageForge index. schedule_id: the
     schedule the caller means; a run of another one is not found."""
-    rows = conn.all("""SELECT run_id, schedule_id, host, status, started_at, finished_at, exit_code, output, nonce
+    rows = conn.all("""SELECT run_id, schedule_id, host, status, started_at, finished_at, exit_code, output, nonce, report_source
                        FROM schedule_runs WHERE run_id = :id""", {'id': run_id})
     if not rows or (schedule_id is not None and rows[0][1] != schedule_id):
         raise LookupError(f'no schedule run #{run_id}')
@@ -937,7 +942,7 @@ def reverify_run(conn: Conn, run_id: int, schedule_id: int | None = None) -> dic
         'exit_code': r[6],
         'output': r[7],
         'nonce': r[8],
-        'no_output': not r[7],
+        'no_output': (not r[7]) and str(r[9] or '').startswith('scan:'),   # only a scan-ingested run lacks its output
     }
     v_result = _verified(conn, schedule, report)
     exit_code = r[6] if r[6] is not None else -1
@@ -993,6 +998,7 @@ def ingest_report(conn: Conn, report: dict, report_source: str) -> dict:
     nonce = str(report.get('nonce') or secrets.token_hex(16))[:64]
     if started_at > time.time() + 3600:
         raise ValueError('this run says it started in the future')
+    finished_at = min(max(finished_at, started_at), int(time.time()) + 300)   # a bad clock must not park next_run_at
     seen = conn.scalar('SELECT run_id FROM schedule_runs WHERE schedule_id = :sid AND nonce = :n', {'sid': sid, 'n': nonce})
     if seen:                     # a repeat, or a replay: the first answer stands
         return {'run_id': seen, 'schedule_id': sid, 'duplicate': True, 'auto_rescan': False}
@@ -1192,7 +1198,13 @@ def generate_install_script(conn: Conn, schedule: dict, report_url: str | None, 
     sid = schedule['schedule_id']
     cfg = schedule['config']
     q = shlex.quote
-    task_script, script_args = generate_task_script(conn, schedule)
+    try:
+        task_script, script_args = generate_task_script(conn, schedule)
+    except LookupError:
+        if not schedule.get('paused'):
+            raise
+        # what it ran is gone, and it is paused: the host only needs its timer off, so what stays is a script that says why
+        task_script, script_args = '#!/usr/bin/env bash\necho "the task of this schedule was deleted" >&2\nexit 1\n', ['--run']
     env = {k: v for k, v in (cfg.get('env') or {}).items() if not UNSAFE_ENV.fullmatch(k)} if schedule['task_type'] == 'command' else {}    # a row from before the env rules too
     task_sh, run_sh = f'{LIB}/task-{sid}.sh', f'{LIB}/run-{sid}.sh'
     # it can hold what the schedule view masks: only whoever runs it reads it
@@ -1307,12 +1319,26 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
                  run_now: bool = False, remove: bool = False) -> list[dict]:
     """deploy.start_group items for deploying, running, or uninstalling a schedule over SSH via storageforge-run."""
     from . import deploy
+    if remove:
+        # Taking a schedule off a host needs no task: one whose task or plan was deleted would otherwise stay installed for good.
+        try:
+            generate_task_script(conn, schedule)
+        except LookupError:
+            return orphan_items(db, conn, schedule['schedule_id'], mode, actor)
+    orphan = False
+    if not remove:
+        try:
+            generate_task_script(conn, schedule)
+        except LookupError:
+            if run_now or not schedule.get('paused'):
+                raise            # nothing to run or to resume: only pausing works without the task
+            orphan = True
     home = find_host(hosts(conn), schedule['host'])
     host_name = home['name'] if home else schedule['host']
     sid = schedule['schedule_id']
     ref = str(sid)
     digest = schedule_hash(conn, schedule)
-    if not remove and not schedule.get('paused'):
+    if not remove and not schedule.get('paused') and not orphan:
         check_target(conn, schedule)
 
     # The old token keeps working until the host holds the new one, so a deploy that fails leaves reports working
@@ -1346,7 +1372,7 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
         return hook
 
     # a schedule's timer needs its key whether or not this run is the first, so the key stays until the schedule is taken off
-    before, after = receiving.items(db, conn, sends(conn, schedule), f's{sid}', 'apply' if run_now else mode, actor, schedule['name'], remove=remove and not run_now)
+    before, after = receiving.items(db, conn, ([] if orphan else sends(conn, schedule)), f's{sid}', 'apply' if run_now else mode, actor, schedule['name'], remove=remove and not run_now)
     if run_now:
         return [*before, {'host': host_name, 'script': text, 'args': ['--run'], 'kind': 'schedules', 'ref': ref,
                           'mode': 'apply', 'on_ok': mark(host_name, False)}]

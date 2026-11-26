@@ -187,6 +187,11 @@ def pinned_client_address(conn: Conn, reporter: str) -> str | None:
     return str(addr).strip() if isinstance(addr, str) and str(addr).strip() else None
 
 
+def _names(text: str, target: str) -> bool:
+    """Whether `target` is in the text as a whole address or name, so 10.0.0.1 is not found inside 10.0.0.11."""
+    return bool(target) and re.search(r'(?<![\w.:-])' + re.escape(target) + r'(?![\w-]|\.\w)', text) is not None
+
+
 def recent_witnesses(conn: Conn, reporter: str, target: str, now: float | None = None) -> list[Witness]:
     """Independent witnesses already recorded near `now` for `target` (scans, non-agent sentinels, or tripped decoys)."""
     now = float(time.time() if now is None else now)
@@ -200,7 +205,7 @@ def recent_witnesses(conn: Conn, reporter: str, target: str, now: float | None =
         if not src:
             continue
         detail_str = str(detail or '')
-        if ev_host == target or f'client={target}' in detail_str or target in detail_str:
+        if ev_host == target or _names(detail_str, target):
             out.append(Witness(source=src, host=ev_host, target=target, at=float(occurred_at or now), via=via))
     canaries = conn.all("""SELECT host, path, tripped_at FROM security_canaries
                            WHERE status = 'tripped' AND tripped_at >= :t""", {'t': cutoff})

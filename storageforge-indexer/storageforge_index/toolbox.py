@@ -135,6 +135,11 @@ def _str(v, problems, where, rx=None, required=True, limit=200):
     return v
 
 
+def _known(v, table) -> bool:
+    """Whether v, a value read from YAML, names an entry of table. A list or mapping is no name, and is not hashable to be looked up."""
+    return isinstance(v, str) and v in table
+
+
 def _list(v, problems, where):
     if v is None:
         return []
@@ -444,7 +449,7 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
         inp = inp if isinstance(inp, dict) else {}
         name = _str(inp.get('name'), problems, f'inputs[{i}] name', re.compile(r'[a-z][a-z0-9_]{0,30}'))
         kind = inp.get('kind')
-        if kind not in changes.CHECKS:
+        if not _known(kind, changes.CHECKS):
             problems.append(f'inputs[{i}]: kind is a field kind of plan steps (iface, cidr, port, name, word, ...)')
             continue
         default = '' if inp.get('default') is None else str(inp.get('default'))
@@ -525,14 +530,14 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
             e['gui']['level'] = level
         from . import tbadapters
         adapter = panel.get('adapter')
-        if adapter is not None and adapter not in tbadapters.ADAPTERS:
+        if adapter is not None and not _known(adapter, tbadapters.ADAPTERS):
             problems.append(f'gui.panel.adapter: there is no adapter {adapter} in this version of StorageForge ({", ".join(sorted(tbadapters.ADAPTERS))})')
         else:
             e['gui']['adapter'] = adapter
         api = panel.get('api')
         if api is not None:
             from . import apiconn
-            if api not in apiconn.KINDS:
+            if not _known(api, apiconn.KINDS):
                 problems.append(f'gui.panel.api names a platform connection kind ({", ".join(sorted(apiconn.KINDS))})')
             else:
                 e['gui']['api'] = api
@@ -542,14 +547,14 @@ def load_entry(text: str) -> tuple[dict | None, list[str]]:
     e['upgrade'] = {'strategy': up.get('strategy') or 'recreate', 'rollback_on_unhealthy': bool(up.get('rollback_on_unhealthy'))}
     e['declared_risks'] = []
     for r in _list(raw.get('risk'), problems, 'risk'):
-        if r not in RISKS:
+        if not _known(r, RISKS):
             problems.append(f'risk: {r} is not a known label ({", ".join(RISKS)})')
         else:
             e['declared_risks'].append(r)
     e['compliance'] = [str(c)[:60] for c in _list(raw.get('compliance'), problems, 'compliance')][:20]
     e['labels'] = []
     for lb in _list(raw.get('labels'), problems, 'labels'):
-        if lb not in LABELS:
+        if not _known(lb, LABELS):
             problems.append(f'labels: {lb} is not a known label ({", ".join(LABELS)})')
         elif lb not in e['labels']:
             e['labels'].append(lb)
@@ -901,7 +906,10 @@ SYSTEM_PREFIXES = ('/etc', '/root', '/usr', '/boot', '/proc', '/sys', '/dev', '/
 def data_folder_ok(path: str) -> bool:
     """A folder a tool may keep its data in: a volume gets :Z (SELinux gives it to that container alone) and a rootless tool's account
     owns what it makes, so never a system folder or anything under one, never / and never a home folder itself."""
-    p = '/' + path.strip('/')
+    parts = [s for s in path.split('/') if s]
+    if not path.startswith('/') or any(s in ('.', '..') for s in parts):      # /./etc and /srv/../etc are /etc to the kernel
+        return False
+    p = '/' + '/'.join(parts)
     if p == '/' or any(p == s or p.startswith(s + '/') for s in SYSTEM_PREFIXES):
         return False
     return not (p == '/home' or (p.startswith('/home/') and p.count('/') == 2))
@@ -929,9 +937,10 @@ def load_override(text: str) -> tuple[dict, list[str]]:
                 out['ports'] = {int(a): int(b) for a, b in v.items()}
         elif k == 'bind':
             try:
-                out['bind'] = str(ipaddress.ip_address(str(v)))
+                # IPv4 only: the tool-install step's bind field is one, and an IPv6 address would need brackets in PublishPort and ListenStream
+                out['bind'] = str(ipaddress.IPv4Address(str(v)))
             except ValueError:
-                problems.append('bind is one address of the host')
+                problems.append('bind is one IPv4 address of the host')
         elif k == 'exposure':
             if v not in EXPOSURES:
                 problems.append(f'exposure is one of {", ".join(EXPOSURES)}')
@@ -1094,7 +1103,8 @@ def quadlet_text(e: dict, m: dict, r: dict, rootless: bool) -> str:
     lines += [f'Volume={DATA_ROOT}/{e["id"]}/files/{name}:{f["path"]}:{"ro,Z,U" if m.get("volume_owner") else "ro,Z"}' for name, f in sorted((m.get('files') or {}).items())]
     if m.get('engine_socket'):        # its own account's Podman socket, which the step switches on: %t is that account's runtime folder
         lines += ['Volume=%t/podman/podman.sock:/var/run/docker.sock', 'SecurityLabelDisable=true']
-    lines += [f'Environment={k}={v}' for k, v in sorted(r.get('env', m.get('env') or {}).items())]
+    # Quadlet splits Environment= on whitespace, so an assignment with a space in its value is quoted (values hold no quote or backslash)
+    lines += [f'Environment="{k}={v}"' if ' ' in str(v) else f'Environment={k}={v}' for k, v in sorted(r.get('env', m.get('env') or {}).items())]
     if m.get('drop_caps'):
         lines.append('DropCapability=ALL')
     lines += [f'AddCapability={c}' for c in m.get('caps') or []]
@@ -1255,7 +1265,7 @@ def preview(conn: Conn, host: str, tool_id: str, method: str | None = None, inpu
             say('crit', f'make the secret {name} ({s["kind"]}) under Keys, Secrets for plan steps, before this plan is applied')
         tasks.append({'host': host, 'type': 'secret-file', 'params': {'secret': name, 'path': f'{DATA_ROOT}/{e["id"]}/secrets/{s["name"]}',
                       'owner': account_of(e['id']) if m['kind'] == 'container' else (m.get('volume_owner') or 'root') if m['kind'] == 'compose' else 'root',
-                      'mode': '0600', 'state': 'present'}, 'note': f'for {e["name"]}'})
+                      'mode': '0600', 'state': 'present', 'prepare': True}, 'note': f'for {e["name"]}'})
     ovr_sha = ovr_row['sha256'] if ovr_row and not problems else ''
     tasks.append({'host': host, 'type': 'tool-install', 'params': {'tool': e['id'], 'method': m['kind'], 'sha': row['sha256'], 'override': ovr_sha,
                   'exposure': r['exposure'], 'bind': r['bind'] if r['exposure'] == 'management' else '', 'allow_from': allow_from or ''},

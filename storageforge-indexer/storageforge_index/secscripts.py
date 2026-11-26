@@ -1025,7 +1025,9 @@ def tool_script(tool: str, watch=()) -> str:
     }[tool]
     if watch and tool.startswith('aide'):              # extra paths, on the command line of aide itself. Validated by the controller, then quoted
         rules = ''.join(f'{shlex.quote(p + " p+i+n+u+g+s+b+sha256")} ' for p in watch)
-        job = job.replace('aide ${conf[@]+"${conf[@]}"} --', f'aide ${{conf[@]+"${{conf[@]}}"}} $(for r in {rules}; do printf -- "--before=%s\\n" "$r"; done | tr "\\n" " ") --')
+        # one array element for each --before, so aide gets "<path> <rules>" as the one argument it is, not two words
+        job = job.replace('aide ${conf[@]+"${conf[@]}"} --', f'extra=(); for r in {rules}; do extra+=("--before=$r"); done\n'
+                                                              'aide ${conf[@]+"${conf[@]}"} "${extra[@]}" --')
     body = TOOL_BODY.replace('@JOB@', job).replace('@NEED@', need_line(what).strip() + ';')
     return (head() + PACKAGES + APPLY_ONLY + f'TITLE={shlex.quote(title)} NEEDS={shlex.quote(need)} UNIT={shlex.quote(unit)}\n' + body)
 

@@ -73,15 +73,10 @@ class Adopt(test_agent.Base):
         with self.assertRaises(agentmonitor.MonitoringError):
             agentmonitor.register(self.conn, 'bad name;', '10.0.0.8', 22, 'x86_64', 'test')
 
-    def test_windows_monitoring_host_generates_native_service_powershell_setup(self):
-        agentmonitor.register(self.conn, 'winbox', '10.0.0.44', 22, 'x86_64', 'test', os_family='windows')
-        self.assertEqual(agentmonitor.host_os(self.conn, 'winbox'), 'windows')
-        self.assertEqual(sfagent.host_arch(self.conn, 'winbox'), 'x86_64')
-        bundle = agentmonitor.setup(self.db, 'winbox')
-        self.assertEqual((bundle['platform'], bundle['service']), ('windows', 'StorageForgeAgent'))
-        self.assertIn('sc.exe create StorageForgeAgent', bundle['script'])
-        self.assertIn('administrators_authorized_keys', bundle['script'])
-        self.assertIn('storageforge-agent-adopt', bundle['script'])
+    def test_windows_monitoring_host_is_refused_until_a_native_agent_is_shipped(self):
+        with self.assertRaisesRegex(agentmonitor.MonitoringError, 'not shipped yet'):
+            agentmonitor.register(self.conn, 'winbox', '10.0.0.44', 22, 'x86_64', 'test', os_family='windows')
+        self.assertIsNone(self.conn.scalar("SELECT hostname FROM hosts WHERE hostname = 'winbox'"))
         with self.assertRaises(agentmonitor.MonitoringError):
             agentmonitor.register(self.conn, 'bad-os', '10.0.0.45', 22, 'x86_64', 'test', os_family='solaris')
 

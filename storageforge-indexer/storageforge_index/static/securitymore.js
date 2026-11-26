@@ -7,7 +7,13 @@ SEC_PANELS.push(['policy', 'Retention'], ['fencing', 'Fencing'], ['identity', 'I
 ['fencing', 'identity', 'detect'].forEach((p) => SEC_NEEDS_HOST.add(p));
 
 const secLines = (t) => t.value.split('\n').map((s) => s.trim()).filter(Boolean);
-const secChanges = (r, out) => { if (r?.plan_id) out.prepend(el('div', { class: 'row wrap' }, text('p', `${r.tasks} step(s) staged in plan #${r.plan_id}.`, 'st-ok'), button('Open Changes', () => showTab('changes'), 'btn sm'))); };
+const secChanges = (r, out) => {
+  if (!r?.plan_id) return;
+  const acts = [button('Open Changes', () => showTab('changes', { plan: r.plan_id }), 'btn sm')];
+  if (secCan('deploy.report')) acts.push(button('Dry run now', () => startDeploy('changes', r.plan_id, 'report', `Plan #${r.plan_id}`), 'btn sm ghost'));
+  if (secCan('deploy.apply')) acts.push(button('Apply now', () => startDeploy('changes', r.plan_id, 'apply', `Plan #${r.plan_id}`), 'btn sm pri'));
+  out.prepend(el('div', { class: 'row wrap' }, text('p', `${r.tasks} step(s) staged in plan #${r.plan_id}.`, 'st-ok'), ...acts));
+};
 const secSave = async (path, body, out, after) => { const r = await secPost(path, body, out); if (r && after) after(r); return r; };
 
 /* ── retention ────────────────────────────────────────────────────── */

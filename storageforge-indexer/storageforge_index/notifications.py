@@ -157,6 +157,9 @@ def center(conn: Conn, host: str | None = None, kind: str | None = None, level: 
 # password, as any plan's does. One is offered only where there is a way back, which is a second plan made the same way. So far one kind
 # has both: a service that keeps failing is restarted, and the way back stops it again, which is how it was found. A stale job run now,
 # a scan run again or a full disk have no fix here: the first two cannot be taken back, and nothing here deletes data.
+# The sample a fix is read from came from a line the unit-failed rule took, and that rule takes only lines written by systemd itself
+# (unit init.scope, logrules.who_wrote), never by a name a process chose for itself such as `comm`, so a process on the host cannot
+# put a unit of its choosing in front of this.
 _UNIT_IN_LINE = re.compile(r'(?<![A-Za-z0-9:_.@-])([A-Za-z0-9:_@-][A-Za-z0-9:_.@-]{0,190}\.service)\b')
 
 

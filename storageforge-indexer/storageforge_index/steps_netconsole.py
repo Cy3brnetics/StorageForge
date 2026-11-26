@@ -32,9 +32,17 @@ ARGS = ('target', 'port', 'source_port', 'interface', 'state')
 BASH = r"""
 # ── netconsole: kernel messages over UDP to the controller (netconsole.py) ──
 nc_field() { awk -v k="$1" '{ for (i = 1; i < NF; i++) if ($i == k) { print $(i + 1); exit } }'; }
+# Whether the configfs target StorageForge makes is there, on and with these settings: the one way to read what is running.
+nc_target_matches() {
+  [[ -d $cfs && $(cat "$cfs/enabled" 2>/dev/null || true) == 1 && $(cat "$cfs/dev_name" 2>/dev/null || true) == "$dev" \
+     && $(cat "$cfs/remote_ip" 2>/dev/null || true) == "$target" && $(cat "$cfs/remote_port" 2>/dev/null || true) == "$port" \
+     && $(cat "$cfs/local_port" 2>/dev/null || true) == "$sport" && $(cat "$cfs/local_ip" 2>/dev/null || true) == "$src" \
+     && $(cat "$cfs/remote_mac" 2>/dev/null || true) == "$mac" ]]
+}
 t_netconsole() { local target=$1 port=${2:-6666} sport=${3:-6665} dev=${4:-} state=${5:-present}
-  local root=${NC_ROOT:-} cfs bk mp ml want route src via hop mac before level f did=
+  local root=${NC_ROOT:-} cfs bk boot mp ml want route src via hop mac before level f did=
   cfs=$root/sys/kernel/config/netconsole/storageforge; bk=$root/etc/storageforge/netconsole
+  boot=$root/run/storageforge/netconsole-loaded     # in /run, so a reboot clears it: the module is then not ours any more
   mp=$root/etc/modprobe.d/storageforge-netconsole.conf; ml=$root/etc/modules-load.d/storageforge-netconsole.conf
   if [[ $state == absent ]]; then
     if [[ -d $cfs ]]; then
@@ -75,9 +83,9 @@ t_netconsole() { local target=$1 port=${2:-6666} sport=${3:-6665} dev=${4:-} sta
   if [[ ! -d $root/sys/module/netconsole ]]; then
     act "load netconsole now" || return 0
     modprobe netconsole 2>/dev/null || { conflict "modprobe netconsole failed: the settings start at the next reboot"; return 0; }
-    mkdir -p "$bk"; : >"$bk/loaded"
+    mkdir -p "$bk" "${boot%/*}"; : >"$bk/loaded"; : >"$boot"
     ok "netconsole is loaded and sending to $target port $port"
-  elif [[ $before == "$want" ]]; then
+  elif nc_target_matches || [[ $before == "$want" && -e $boot ]]; then
     ok "netconsole is loaded with these settings"
   else
     [[ -d $root/sys/kernel/config/netconsole ]] || mount -t configfs none "$root/sys/kernel/config" 2>/dev/null || true

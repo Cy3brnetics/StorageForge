@@ -37,6 +37,9 @@ class MonitoringError(RuntimeError):
     pass
 
 
+NO_WINDOWS = 'a native Windows agent is not shipped yet: a Windows host cannot be set up for monitoring only'
+
+
 def monitoring_only(conn, host: str) -> bool:
     return conn.scalar("SELECT count(*) FROM agents WHERE host = :h AND mode = 'monitoring' AND enabled = 1", {'h': deploy.canonical(conn, host)}) > 0
 
@@ -102,6 +105,8 @@ def register(conn, name: str, address: str, port: int, arch: str, actor: str, os
     os_family = (os_family or 'linux').strip().lower()
     if os_family not in ('linux', 'windows'):
         raise MonitoringError('monitoring-only hosts support linux or windows')
+    if os_family == 'windows':
+        raise MonitoringError(NO_WINDOWS)
     with conn.tx():
         if conn.scalar('SELECT count(*) FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :a', {'h': name, 'a': address}):
             raise MonitoringError(f'{name} or {address} is a host StorageForge has already: switch the agent on for it instead')
@@ -137,6 +142,8 @@ def setup(db: Database, name: str) -> dict:
         name = deploy.canonical(conn, name)
         if not monitoring_only(conn, name):
             raise MonitoringError(f'{name} is not a monitoring-only host: its agent is set up through its deploy access')
+        if host_os(conn, name) == 'windows':
+            raise MonitoringError(NO_WINDOWS)
         arch = sfagent.host_arch(conn, name)
         os_family = host_os(conn, name)
         program = _windows_agentctl(arch) if os_family == 'windows' else sfagent.agentctl_program(arch)
@@ -190,6 +197,8 @@ def adopt(db: Database, name: str, line: str, actor: str, install_podman: bool =
             raise MonitoringError(f'{name} is not a monitoring-only host')
         if row['state'] in ('running', 'stopped'):
             raise MonitoringError(f'{name} has an agent enrolled already: remove it before adopting the host again')
+        if host_os(conn, name) == 'windows':
+            raise MonitoringError(NO_WINDOWS)
         m = ADOPT_RE.search(line or '')
         if not m:
             raise MonitoringError('that is not the line the setup printed: storageforge-agent-adopt, the machine id, then ssh-ed25519 and the host key')

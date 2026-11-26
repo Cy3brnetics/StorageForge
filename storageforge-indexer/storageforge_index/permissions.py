@@ -151,6 +151,7 @@ _RULES = tuple((methods, re.compile(pattern), perm) for methods, pattern, perm i
     (READ, r'/api/dsl/of', 'security.view'),
     (_WRITE, r'/api/devices(/.*)?', 'devices.manage'),
     (READ, r'/api/map/(exposure|reach|coverage)', 'security.view'),
+    (('PUT',), r'/api/planner/infrastructure', 'plans.edit'),
     (READ, r'/api/map/designs/migration-preview', 'plans.edit'),
     (READ, r'/api/map/designs/\d+/export', 'plans.scripts'),
     (READ, r'/api/changes/\d+/export/(terraform|opentofu|puppet)', 'plans.scripts'),     # a change plan's workloads as Terraform, OpenTofu or Puppet

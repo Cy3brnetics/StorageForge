@@ -113,12 +113,12 @@ class Readers(unittest.TestCase):
         for reader, text in ((tunnels.cloudflared, CLOUDFLARED), (tunnels.frp, FRP_TOML), (tunnels.frp, FRP_INI), (tunnels.ngrok, NGROK)):
             self.assertNotIn('SECRET', json.dumps(reader(text)))
             self.assertNotIn('SECRET', tunnels.scrub(text))
-            self.assertNotIn('credentials-file', tunnels.scrub(text))
+            self.assertNotIn('/root/.cloudflared', tunnels.scrub(text), 'the value of a credential line is blanked, the name stays')
 
-    def test_the_hosts_grep_drops_the_same_lines_scrub_does(self):
-        """The collector runs grep with SECRET_LINE on the host, so the credential is not sent at all."""
+    def test_the_hosts_awk_blanks_the_same_values_scrub_does(self):
+        """The collector runs awk with SECRET_LINE on the host, so the credential is not sent at all."""
         for text in (CLOUDFLARED, FRP_TOML, FRP_INI, NGROK):
-            kept = subprocess.run(['grep', '-viE', tunnels.SECRET_LINE], input=text, capture_output=True, text=True).stdout
+            kept = subprocess.run(['awk', '-v', f're={tunnels.SECRET_LINE}', tunnels.TUNNEL_AWK], input=text, capture_output=True, text=True).stdout
             self.assertEqual(kept.strip().splitlines(), tunnels.scrub(text).strip().splitlines())
         self.assertTrue(re.fullmatch(r'[\w()|?]+', tunnels.SECRET_LINE), 'nothing in it a shell would read')
 

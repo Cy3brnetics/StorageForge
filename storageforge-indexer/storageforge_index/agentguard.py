@@ -31,8 +31,22 @@ SYSTEM = 'storageforge'
 
 
 def _store_check(conn, name: str, result: dict):
+    now = int(time.time())
+    if result.get('ok'):
+        result['last_ok'] = now
+    else:
+        # A failed check keeps the time of the last one that ran, so that one failure is not "unchecked": agentwatch counts from it.
+        before = conn.all('SELECT checked_at, check_json FROM agents WHERE host = :h', {'h': name})
+        try:
+            old = json.loads(before[0][1] or '{}') if before else {}
+        except ValueError:
+            old = {}
+        old = old if isinstance(old, dict) else {}
+        last_ok = old.get('last_ok') or (before[0][0] if before and old.get('ok') else None)
+        if last_ok:
+            result['last_ok'] = int(last_ok)
     conn.execute('UPDATE agents SET checked_at = :t, check_json = :j WHERE host = :h',
-                 {'t': int(time.time()), 'j': json.dumps(result, separators=(',', ':'))[:8000], 'h': name})
+                 {'t': now, 'j': json.dumps(result, separators=(',', ':'))[:8000], 'h': name})
 
 
 def _words(items, most: int = 50, chars: int = 300) -> list[str]:

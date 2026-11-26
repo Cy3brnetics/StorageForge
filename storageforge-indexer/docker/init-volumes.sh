@@ -33,6 +33,9 @@ if [ -d /secrets/vault ]; then
   VAULT=/secrets/vault
   if [ -s "$APP/vault_secret" ] && [ ! -s "$VAULT/vault_secret" ]; then
     cp "$APP/vault_secret" "$VAULT/vault_secret"; log "vault_secret moved to its own volume: the server no longer holds it"
+  elif [ -s "$APP/vault_secret" ] && [ "$(cat "$APP/vault_secret")" != "$(cat "$VAULT/vault_secret")" ]; then
+    # two different secrets: removing the one in sf-secrets would lose it unseen, and which of them opens the vault is not for this script to guess
+    log "error: sf-secrets and sf-vault-secret hold different vault secrets. Keep the one that opens the vault in the sf-vault-secret volume (./secrets/vault_secret has it too, if you saved it), delete the other, then start again"; exit 64
   fi
   rm -f "$APP/vault_secret"
 fi

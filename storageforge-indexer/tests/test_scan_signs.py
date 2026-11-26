@@ -47,9 +47,14 @@ class Signs(unittest.TestCase):
         self.change('added', '/srv/docs', 'README.txt.locky')          # its README.txt was not deleted
         self.assertEqual(security._appended(self.conn, self.sid), 3)
 
+    def finish(self, added, deleted):
+        self.conn.execute(f'UPDATE scans SET finished_at = {self.db.ts("1")}, added = :a, deleted = :d WHERE scan_id = :s',
+                          {'a': added, 'd': deleted, 's': self.sid})
+
     def test_signs_are_worked_out_once_per_scan(self):
         self.change('deleted', '/srv', 'a.txt')
         self.change('added', '/srv', 'a.txt.enc')
+        self.finish(1, 1)                       # only a finished scan is kept: one still writing is worked out each time
         calls = []
         real = security._scan_signs_now
 
@@ -76,8 +81,11 @@ class Signs(unittest.TestCase):
         self.assertEqual([g['appended_extensions'] for g in got], [1] * 5)
         got[0]['appended_extensions'] = 99                              # a caller's copy, not the kept one
         self.assertEqual(security._scan_signs(self.conn, self.sid)['appended_extensions'], 1)
-        self.change('deleted', '/srv', 'b.txt')                         # the same scan id holding something else: worked out again
+        # the same scan id holding something else, as after a reset: another scan, started at another time, worked out again
+        self.conn.execute(f'UPDATE scans SET started_at = {self.db.ts("5")} WHERE scan_id = :s', {'s': self.sid})
+        self.change('deleted', '/srv', 'b.txt')
         self.change('added', '/srv', 'b.txt.enc')
+        self.finish(2, 2)
         self.assertEqual(security._scan_signs(self.conn, self.sid)['appended_extensions'], 2)
 
 

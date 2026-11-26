@@ -40,10 +40,9 @@ sfPaletteSource(() => {
 
 (async function boot() {
   try {
-    const me = await getJSON('/api/me');
+    const [me] = await Promise.all([sfMe(), populateHostSelect($('#host'))]);
     setMe(me);
     if (me.site) document.title = `${me.site} · Security Center · StorageForge`;
-    await populateHostSelect($('#host'));
     secApplyHash();
     const sel = $('#host');
     if (sel && S.host) sel.value = S.host;

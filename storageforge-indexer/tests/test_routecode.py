@@ -88,19 +88,17 @@ class RouteCodes(unittest.TestCase):
         self.assertNotIn('route_key', thief.get('/api/me').get_json())
         with thief.session_transaction() as s:
             s['auth_at'] = 0                                                    # the password was typed in the owner's browser, a while ago
-        self.assertEqual(thief.post('/api/routecode', json={}).get_json().get('reauth'), True)
-        self.assertEqual(thief.post('/api/reauth', json={'password': 'not the password'}).status_code, 403)
-        self.assertEqual(thief.post('/api/routecode', json={}).get_json().get('reauth'), True)
+        self.assertEqual(thief.post('/api/routecode', json={}).status_code, 403)
+        self.assertEqual(thief.post('/api/routecode', json={'password': 'not the password'}).status_code, 403)
         self.assertEqual(self.conn.scalar("SELECT count(*) FROM ssh_keys WHERE name = 'stolen'"), 0)
-        self.assertEqual(c.post('/api/reauth', json={'password': PW}).status_code, 200)          # the owner, whose browser lost its key
-        self.assertEqual(c.post('/api/routecode', json={}).get_json()['route_key'], key)
-        self.assertEqual(self.conn.scalar("SELECT count(*) FROM audit_log WHERE action = 'web.routecode'"), 1)
+        self.assertEqual(c.post('/api/routecode', json={'password': PW}).get_json()['route_key'], key)          # the owner, whose browser lost its key
+        self.assertEqual(self.conn.scalar("SELECT count(*) FROM audit_log WHERE action = 'web.routecode'"), 3, 'two refusals and the owner\'s, each recorded')
 
     def test_the_mark_on_the_session_cannot_be_taken_off_and_asking_for_the_key_puts_it_on(self):
         c = self.web.test_client()
         self.assertEqual(c.post('/api/login', json={'username': 'root', 'password': PW}).status_code, 200)
         self.assertIsNone(c.post('/api/bindings', json={}).get_json().get('routecode'))
-        key = c.post('/api/routecode', json={}).get_json()['route_key']
+        key = c.post('/api/routecode', json={'password': PW}).get_json()['route_key']
         self.assertEqual(c.post('/api/bindings', json={}).get_json().get('routecode'), True, 'from then on this session sends codes')
         self.assertIsNone(c.post(self.coded(key, 'POST', '/api/bindings'), json={}).get_json().get('routecode'))
 

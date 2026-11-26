@@ -166,7 +166,9 @@ def read_batch(body: bytes) -> dict:
         if not isinstance(r['body'], dict) or not depth_ok(r['body']):
             raise Refused('malformed', 'a record body is not an object of the depth allowed')
         r['body_json'] = json.dumps(r['body'], separators=(',', ':'), ensure_ascii=True)
-        if len(r['body_json']) > MAX_BODY:
+        # The cap is measured in UTF-8 bytes as the agent's plugins measure it, not in the escaped text, where every
+        # non-ASCII character costs six characters and a full record of Cyrillic or CJK would be refused.
+        if len(json.dumps(r['body'], separators=(',', ':'), ensure_ascii=False).encode('utf-8', 'replace')) > MAX_BODY:
             raise Refused('malformed', 'a record body is larger than a record may be')
     return b
 
@@ -297,9 +299,10 @@ class Store:
             lost = 0
             seqs = [r['seq'] for r in b['records']]
             if p['last_run'] == b['run']:
-                if seqs and seqs[0] > p['last_seq'] + 1:
-                    lost += seqs[0] - p['last_seq'] - 1
-                lost += max(0, b['dropped'] - p['last_dropped'])
+                # The agent's outbox numbers every record it drops, so the same loss shows as a gap in seq and as a rise in `dropped`:
+                # the larger of the two is the count, not their sum.
+                gap = seqs[0] - p['last_seq'] - 1 if seqs and seqs[0] > p['last_seq'] + 1 else 0
+                lost += max(gap, b['dropped'] - p['last_dropped'], 0)
             if lost:
                 self.bump(conn, fp, lost=lost)
                 self.event(conn, host, fp, 'lost', lost, 'records the agent made and never sent: its queue was full, or they were dropped')
@@ -490,7 +493,14 @@ class Receiver:
         self.store.hello(db_conn, fp, host, hello, address)
         have = [h for h in hello.get('have') or [] if isinstance(h, str) and NAME.fullmatch(h)][:64]
         delivery = self.store.delivery(db_conn, host, fp)
-        for frame in t.delivery_frames(delivery, have, self.store.cursors(db_conn, fp, delivery)):
+        try:
+            frames = t.delivery_frames(delivery, have, self.store.cursors(db_conn, fp, delivery))
+        except (t.TunnelError, OSError) as exc:
+            # Our own plugin folder is wrong, not the peer's frames: say so, because _connection ends such a session without a word.
+            self.log(f'cannot read a plugin program for {host}: {exc}')
+            self.store.event(db_conn, host, fp, 'delivery-failed', 1, f'a plugin program could not be read: {exc}')
+            return
+        for frame in frames:
             s.send_json(conn, frame)
         with self.lock:
             rates = self.rates.setdefault(fp, (Bucket(self.bpm), Bucket(self.bytes_pm)))

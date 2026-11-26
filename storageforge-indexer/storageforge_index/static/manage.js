@@ -52,8 +52,9 @@ function setView(view) {
   $('#mgtitle').textContent = VIEWS.find((v) => v[0] === view)[1];
   $('#mgsub').textContent = sub[view];
   document.querySelectorAll('#mgnav button').forEach((b) => (b.dataset.v === view ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  const box = $('#mgview');
-  box.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
+  const real = $('#mgview'), fresh = latest('manage');
+  real.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
+  const box = { replaceChildren: (...kids) => { if (fresh()) real.replaceChildren(...kids); } };      // a slow view never lands on top of the view chosen after it
   ({ fleet: viewFleet, devices: viewDevices, compose: viewCompose, changes: viewChanges, traffic: viewTraffic })[view](box).catch((err) => box.replaceChildren(el('p', { class: 'bad' }, err.message)));
 }
 

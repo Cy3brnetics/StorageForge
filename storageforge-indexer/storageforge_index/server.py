@@ -229,6 +229,7 @@ BODY_LIMITS = {('PUT', '/api/planner/design'): MAX_BLUEPRINT, ('POST', '/api/pla
                ('POST', '/api/security/report'): MAX_REPORT,       # a sentinel's path can be 4 KiB, which base64 makes 5.5
                ('POST', '/api/dsl/compile'): MAX_LONG_TEXT, ('POST', '/api/dsl/whatif'): MAX_LONG_TEXT, ('POST', '/api/dsl/stage'): MAX_LONG_TEXT,
                ('POST', '/api/map/views'): MAX_LONG_TEXT, ('POST', '/api/map/designs'): MAX_LONG_TEXT,
+               ('PUT', '/api/planner/infrastructure'): MAX_LONG_TEXT,
                ('POST', '/api/security/behavior/yara/rules'): MAX_LONG_TEXT, ('POST', '/api/security/behavior/falco'): MAX_LONG_TEXT}
 # Failed sign-ins allowed before /api/login answers 429; successful ones are not counted.
 LOGIN_LIMIT_PER_IP = '10 per minute; 50 per hour'
@@ -377,11 +378,25 @@ class App:
     def audit(self, conn, actor: str, action: str, outcome: str, host: str | None, detail: dict):
         AuditLog(self.db, conn, self.audit_key).append(actor, action, outcome, host, None, detail)
 
+    def _finish_job(self, jid: int, status: str, result: dict):
+        """Writes a job's end on a connection of its own, so a job is never left queued or running (which would
+        turn every later scan of that host away). Failing to write is logged, nothing more."""
+        try:
+            c = self.scan_db.connect()
+            try:
+                c.execute('UPDATE scan_jobs SET status = :s, finished_at = :t, result_json = :r WHERE job_id = :j',
+                          {'s': status, 't': int(time.time()), 'r': json.dumps(result, default=str), 'j': jid})
+            finally:
+                c.close()
+        except Exception:
+            errlog.trace()
+
     def _work(self):
         while True:
             jid = self.queue.get()
-            conn = self.scan_db.connect()
+            conn, finished = None, False
             try:
+                conn = self.scan_db.connect()
                 host, actor = conn.all('SELECT host, requested_by FROM scan_jobs WHERE job_id = :j', {'j': jid})[0]
                 conn.execute("UPDATE scan_jobs SET status = 'running', started_at = :t WHERE job_id = :j",
                              {'t': int(time.time()), 'j': jid})
@@ -398,14 +413,22 @@ class App:
                     status, result = res['status'], res
                 except Exception as exc:
                     status, result = 'failed', {'error': str(exc)}
-                conn.execute('UPDATE scan_jobs SET status = :s, finished_at = :t, result_json = :r WHERE job_id = :j',
-                             {'s': status, 't': int(time.time()), 'r': json.dumps(result, default=str), 'j': jid})
+                done = {'s': status, 't': int(time.time()), 'r': json.dumps(result, default=str), 'j': jid}
+                try:
+                    conn.execute('UPDATE scan_jobs SET status = :s, finished_at = :t, result_json = :r WHERE job_id = :j', done)
+                except Exception:       # the connection sat idle through the whole scan and may be gone: the answer must still be written
+                    errlog.trace()
+                    self._finish_job(jid, status, result)
+                finished = True
                 self.scan_db.prune(conn)             # cheap deletes; keeps change history and denied lists bounded
             except Exception:
                 errlog.trace()
+                if not finished:
+                    self._finish_job(jid, 'failed', {'error': 'the scan job could not be run: see the log'})
             finally:
                 self.progress.pop(jid, None)
-                conn.close()
+                if conn is not None:
+                    conn.close()
                 if self.scan_db.dialect != 'sqlite' or self.scan_db.path == ':memory:' or Path(self.scan_db.path).exists():
                     try:
                         alerts.evaluate(self.scan_db)
@@ -453,15 +476,16 @@ class App:
         conn = self.db.connect()
         out = {}
         try:
-            try:
-                out['backup'] = backup.create(self.db, 'essentials', keep=BACKUP_KEEP)
-                if BACKUP_FULL:
-                    out['full'] = backup.create(self.db, 'full', keep=BACKUP_FULL)
-                self.audit(conn, 'system', 'backup.create', 'ok', None, {k: v['path'] for k, v in out.items()})
-                out['copy'] = self.copy_off(conn, out['backup']['path'], 'system')
-            except (Exception, SystemExit) as exc:
-                out['error'] = str(exc)
-                self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
+            if self.db.dialect == 'sqlite':       # a PostgreSQL database is pg_dump's job: the rest of the night still runs
+                try:
+                    out['backup'] = backup.create(self.db, 'essentials', keep=BACKUP_KEEP)
+                    if BACKUP_FULL:
+                        out['full'] = backup.create(self.db, 'full', keep=BACKUP_FULL)
+                    self.audit(conn, 'system', 'backup.create', 'ok', None, {k: v['path'] for k, v in out.items()})
+                    out['copy'] = self.copy_off(conn, out['backup']['path'], 'system')
+                except (Exception, SystemExit) as exc:
+                    out['error'] = str(exc)
+                    self.audit(conn, 'system', 'backup.create', 'failed', None, {'error': str(exc)[:300]})
             if CONFIG_EXPORT_DIR:
                 try:
                     out['hostconfigs'] = hostconfig.export_to(conn, site.export_dir(conn, CONFIG_EXPORT_DIR))
@@ -504,14 +528,7 @@ class App:
             wait = ((BACKUP_HOUR - now.tm_hour) % 24) * 3600 - now.tm_min * 60 - now.tm_sec
             time.sleep(wait if wait > 0 else wait + 86400)
             try:
-                if self.db.dialect == 'sqlite':
-                    self.nightly_once()
-                else:
-                    conn = self.db.connect()
-                    try:
-                        self.db.prune(conn)
-                    finally:
-                        conn.close()
+                self.nightly_once()
             except Exception:
                 errlog.trace()
 
@@ -528,22 +545,38 @@ class App:
 class _FromProxy:
     """X-Forwarded-For and -Proto, believed only from the proxy (proxy_host: its name or address). Anything else that
     reaches the app directly, on a Docker network it shares, could claim any client address. The name is looked up
-    again every 30 seconds (a recreated proxy container gets a new address), and at most every 5 for an unknown peer."""
+    again every 30 seconds (a recreated proxy container gets a new address), and at most every 5 for an unknown peer.
+
+    The lookup never runs inside a request: getaddrinfo has no timeout of its own, and where the container's resolver is
+    slow (an mDNS or search-domain timeout) every request that triggered it waited for it, 8 s at a time. One bounded lookup
+    at start, then a background thread refreshes the addresses while requests read the last ones known."""
+
+    LOOKUP_SECS = 2.0
 
     def __init__(self, app, hops: int, proxy_host: str):
         # Proto from the nearest proxy only: it is the one that terminated TLS
         self.plain, self.fixed, self.proxy_host = app, ProxyFix(app, x_for=hops, x_proto=1), proxy_host
-        self.addrs: set[str] = set()
+        self.addrs: frozenset[str] = frozenset()
         self.at = 0.0
+        self._busy = threading.Lock()
+        if proxy_host:
+            self._refresh()
+
+    def _refresh(self):
+        if not self._busy.acquire(blocking=False):
+            return                                  # one lookup at a time; the others keep the addresses they have
+        try:
+            from .vault import resolve_ips
+            self.addrs = frozenset(ip.compressed for ip in resolve_ips(self.proxy_host, timeout=self.LOOKUP_SECS))
+            self.at = time.time()
+        finally:
+            self._busy.release()
 
     def _is_proxy(self, peer: str) -> bool:
         now = time.time()
         if now - self.at > 30 or (peer not in self.addrs and now - self.at > 5):
-            self.at = now
-            try:
-                self.addrs = {ai[4][0] for ai in socket.getaddrinfo(self.proxy_host, None, proto=socket.IPPROTO_TCP)}
-            except OSError:
-                self.addrs = set()
+            self.at = now                           # stamped now, so a slow lookup is not started again by every request
+            threading.Thread(target=self._refresh, name='proxy-lookup', daemon=True).start()
         return peer in self.addrs
 
     def __call__(self, environ, start_response):
@@ -1005,7 +1038,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         if not rows or not keys:
             return jsonify(error='no security key enrolled for that account'), 401
         host = request.host.split(':')[0].strip('[]')
-        options, challenge = webauthn.assert_options(host, [k['credential_id'] for k in keys])
+        options, challenge = webauthn.assert_options(host, [k['credential_id'] for k in keys], verify=True)
         session['login_webauthn_user'] = rows[0][0]
         session['login_webauthn_challenge'] = challenge
         return jsonify(options)
@@ -1031,14 +1064,15 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             return jsonify(error='that is not a key on this account'), 403
         host, origin = request.host.split(':')[0].strip('[]'), request.host_url.rstrip('/')
         try:
-            count = webauthn.assert_finish(body, challenge, origin, host, key['public_key'], key['sign_count'])
+            count = webauthn.assert_finish(body, challenge, origin, host, key['public_key'], key['sign_count'], verified=True)
         except (KeyError, ValueError, TypeError) as exc:
             core.audit(conn(), f'web:{request.remote_addr}', 'web.login.webauthn', 'denied', None, {'username': user.username, 'why': str(exc)[:100]})
             return jsonify(error=f'that did not check out: {exc}'), 403
         conn().execute('UPDATE security_webauthn SET sign_count = :c WHERE id = :i', {'c': count, 'i': key['id']})
         session.clear()
-        session['login_at'] = session['auth_at'] = int(time.time())
-        session['webauthn_at'] = time.time()
+        # signed in, but not a fresh password or a step-up: commands on hosts and other sensitive actions still ask for those,
+        # so a key that was taken, with its PIN watched, opens the UI and nothing that changes a host
+        session['login_at'] = int(time.time())
         session['sid'] = users.start_session(conn(), user.user_id, request.remote_addr)
         if len(signed_in_from) >= 10_000:
             signed_in_from.clear()
@@ -1111,7 +1145,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         users.end_all_sessions(conn(), current_user.username)
         return jsonify(signed_out=True)
 
-    ctx = SimpleNamespace(login_limit=LOGIN_LIMIT_PER_IP, core=core, db=db, limiter=limiter, conn=conn, actor=actor, need=need, may_hand_out=may_hand_out, json_body=json_body,
+    ctx = SimpleNamespace(login_limit=LOGIN_LIMIT_PER_IP, login_limit_user=LOGIN_LIMIT_PER_USER, core=core, db=db, limiter=limiter, conn=conn, actor=actor, need=need, may_hand_out=may_hand_out, json_body=json_body,
                           arg_num=arg_num, password_stale=password_stale, password_confirmed=password_confirmed,
                           need_for_commands=lambda c, kind, ref: need_for_commands(c, kind, ref))
     routes_accounts.register(web, ctx)
@@ -1143,7 +1177,7 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
     def api_host_retire(name):
         host = core.canonical(conn(), name)
         try:
-            gone = retire.retire(conn(), host, bool(request.args.get('keep_design')))
+            gone = retire.retire(conn(), host, request.args.get('keep_design', '').strip().lower() in ('1', 'true', 'yes', 'on'))
         except LookupError as exc:
             return jsonify(error=str(exc)), 404
         except ValueError as exc:
@@ -2312,8 +2346,11 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
         c = conn()
         options = {k: bool(body[k]) for k in ('remove', 'paused', 'destructive', 'run', 'rearm') if body.get(k)}
         need_for_deploy(c, kind, ref, mode, options)
+        # building a jobs apply stores new job tokens and retires dropped jobs. The checks below only need the hosts, so for that
+        # case they look at a report build (same hosts, nothing stored) and the apply is built once they have all passed
+        deferred = kind == 'jobs' and mode == 'apply'
         try:
-            items = deploy_items_for(c, kind, ref, mode, options)
+            items = deploy_items_for(c, kind, ref, 'report' if deferred else mode, options)
         except receiving.NotEnrolled as exc:        # there is no unsigned way to a host, so this is the end of it, and the row says who asked
             core.audit(c, actor(), 'deploy.start', 'denied', None, {'kind': kind, 'ref': ref, 'mode': mode, 'receivers': exc.hosts, 'error': str(exc)[:500]})
             return jsonify(error=str(exc), hosts=exc.hosts), 409
@@ -2331,6 +2368,8 @@ def create_app(core: App, session_secret: str, secure_cookies: bool = False, pro
             seen = engine.get(c, report) if re.fullmatch(r'[0-9a-f]{32}', report) else None
             if seen and seen['digest'] != digest:
                 return jsonify(error='the plan changed since this dry run: run the dry run again', stale=True), 409
+        if deferred:
+            items = deploy_items_for(c, kind, ref, mode, options)
         who = actor()
         # every view reads the index: without a rescan, an apply that worked looks like nothing changed
         title = str(body.get('title') or f'{kind} {ref}')[:200]

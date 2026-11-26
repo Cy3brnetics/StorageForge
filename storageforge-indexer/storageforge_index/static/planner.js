@@ -172,7 +172,7 @@ function poolMembers(pool){
 function poolCalc(pool){
   const m=poolMembers(pool);
   const width=pool.level==='mirror'?2:m.data.length;
-  const layout=pool.type==='zfs'?'zfs-'+pool.level:pool.type==='btrfs'?'btrfs-'+(['single','raid1','raid1c3','raid10'].includes(pool.level)?pool.level:'single'):'md-'+(['raid0','raid1','raid5','raid6','raid10'].includes(pool.level)?pool.level:'raid0');
+  const layout=(pool.type==='lvm'&&!pool.lv)||pool.level==='linear'?'lvm-linear':pool.type==='zfs'?'zfs-'+pool.level:pool.type==='btrfs'?'btrfs-'+(['single','raid1','raid1c3','raid10'].includes(pool.level)?pool.level:'single'):'md-'+(['raid0','raid1','raid5','raid6','raid10'].includes(pool.level)?pool.level:'raid0');
   return {layout,sizes:m.data.map(x=>x.size),width,recordsize:128*1024,ashift:pool.ashift||12,fill:0.7,speed:180,ure:1e-15,fs:pool.fs||'ext4',reserve:true,virt:0};
 }
 function isRedundantPool(pool){ return pool && !['stripe','raid0','linear'].includes(pool.level) }
@@ -694,7 +694,7 @@ function diskHTML(d){
     if(d.table==='mbr'&&d.size>2*TiB) segs+=`<div class="seg dead" style="flex-grow:${(d.size-2*TiB)/d.size}"><b>beyond MBR limit</b><span>${fmtBin(d.size-2*TiB,1)} unaddressable</span></div>`;
   }
   const sect=d.lbs===d.pbs?(d.pbs===4096?'4Kn':'512n'):'512e';
-  return `<article class="disk ${esc(d.tier)} ${sel?'sel':''}" data-node="disk:${esc(d.dev)}" data-act="sel" data-type="disk" data-id="${esc(d.dev)}">
+  return `<article class="disk ${esc(d.tier)} ${sel?'sel':''}" data-node="disk:${esc(d.dev)}" tabindex="0" role="button" data-act="sel" data-type="disk" data-id="${esc(d.dev)}">
     <div class="dh"><span class="dev">/dev/${esc(d.dev)}</span><span class="chip t-${esc(d.tier)}">${esc(d.bus)}</span><span class="chip">${d.table.toUpperCase()}</span><span class="chip">${sect} · ${d.lbs}/${d.pbs}</span>${d.os?'<span class="chip">boot</span>':''}<span class="sz">${both(d.size)}</span></div>
     <div class="dmeta">${esc(d.model)} · SN ${esc(d.serial)}</div>
     <div class="pbar">${segs}</div></article>`;
@@ -702,14 +702,14 @@ function diskHTML(d){
 function poolHTML(p){
   const sel=UI.sel&&UI.sel.type==='pool'&&UI.sel.id===p.name;const m=poolMembers(p);const r=calcEngine(poolCalc(p));
   const rows=p.type==='lvm'&&!p.lv?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.vg)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||(ds.fs==='swap'?'[swap]':'—'))}</span><span class="muted">${esc(ds.fs||'no fs')} · ${fmtBin(ds.sizeBytes||0,1)}</span></div>`).join(''):p.type==='zfs'?(p.datasets||[]).map(ds=>`<div class="dsrow" data-node="ds:${esc(p.name)}/${esc(ds.name)}"><span>${esc(p.name)}/${esc(ds.name)}</span><span class="muted">${esc(ds.mount||'—')}</span><span class="muted">rs=${esc(ds.recordsize)} ${esc(ds.compression)}${ds.sync!=='standard'?' sync='+esc(ds.sync):''}</span></div>`).join(''):`<div class="dsrow"><span>${esc(p.fs)} · ${esc(p.label)}</span><span class="muted">${esc(p.mount)}</span><span class="muted">${esc((p.opts||[]).join(','))}</span></div>`;
-  return `<article class="pool ${sel?'sel':''}" data-node="pool:${esc(p.name)}" data-act="sel" data-type="pool" data-id="${esc(p.name)}">
+  return `<article class="pool ${sel?'sel':''}" data-node="pool:${esc(p.name)}" tabindex="0" role="button" data-act="sel" data-type="pool" data-id="${esc(p.name)}">
     <div class="dh"><span class="dev">${esc(p.name)}</span><span class="chip t-${esc(p.tier)}">${p.type==='lvm'&&!p.lv?'LVM volume group':(POOL_KIND[p.type]||'mdadm')+' '+esc(p.level)}</span>${p.lv?`<span class="chip">${esc(p.vg)}/${esc(p.lv)}</span>`:''}${p.levelSource&&p.levelSource.startsWith('inferred')?`<span class="chip" title="${esc(p.levelSource)}">level inferred</span>`:''}${p.type==='zfs'?`<span class="chip">ashift=${p.ashift}</span><span class="chip">${p.encryption==='off'?'unencrypted':esc(p.encryption)}</span>`:''}<span class="sz">${fmtBin(r.usable)} usable · tolerates ${r.tol}</span></div>
     <div class="members">${m.data.map(x=>`<span class="chip" data-node="${x.whole?'disk:'+x.id:'part:'+x.id}">${esc(x.id)}</span>`).join('')}${m.log.map(x=>`<span class="chip t-fast" data-node="part:${x.id}">log ${esc(x.id)}</span>`).join('')}${m.cache.map(x=>`<span class="chip t-fast" data-node="part:${x.id}">cache ${esc(x.id)}</span>`).join('')}</div>
     <div>${rows}</div></article>`;
 }
 function remoteHTML(r){
   const sel=UI.sel&&UI.sel.type==='rem'&&UI.sel.id===r.id;
-  return `<article class="pool ${sel?'sel':''}" data-node="rem:${esc(r.id)}" data-act="sel" data-type="rem" data-id="${esc(r.id)}">
+  return `<article class="pool ${sel?'sel':''}" data-node="rem:${esc(r.id)}" tabindex="0" role="button" data-act="sel" data-type="rem" data-id="${esc(r.id)}">
     <div class="dh"><span class="dot ${r.status==='connected'?'ok':'crit'}"></span><span class="dev">${esc(r.name)}</span><span class="chip t-remote">${esc(r.proto)}</span><span class="chip">${esc(r.via)}</span><span class="sz">${r.capacity?fmtDec(r.capacity,0):'metered'}</span></div>
     <div class="dsrow" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)"><span>${esc(r.endpoint)}</span><span class="muted">→ ${esc(r.mount)}</span></div></article>`;
 }
@@ -1142,15 +1142,17 @@ async function loadHosts(){
 }
 async function openDoc(host,source,push){
   if(DOC.host&&DOC.dirty&&!(await confirmDialog({ title: `Leave ${DOC.host} with unsaved changes?`, body: 'They stay as a draft in this browser.', confirm: 'Leave', danger: true }))){ $('#hostpick').value=DOC.host;return }
+  const fresh=latest('planner-doc');
   if(!host){ DOC.host='';DOC.source='example';DOC.dirty=false;DOC.activity=null;S=load('')||sample();UI.sel=null;UI.calc=null;render();docState();setHash(push);return }
   docState('Loading '+host+'…');
   try{
     const r=await apiJSON('/api/planner/design?host='+encodeURIComponent(host)+(source?'&source='+source:''));
+    if(!fresh()) return;
     DOC.offsite=!!r.offsite;
     const draft=!source&&load(host);
     Object.assign(DOC,{host,source:r.source,savedAt:r.saved_at,scanned:r.scanned,dirty:!!draft});
     S=draft||fromBlueprint(r.blueprint);if(!source) normalizeIds();UI.sel=null;UI.calc=null;render();docState();setHash(push);loadActivity();
-  }catch(e){ docState(e.message,'err') }
+  }catch(e){ if(fresh()) docState(e.message,'err') }
 }
 function normalizeIds(){ S.links.forEach((l,i)=>{l.id=l.id||'L'+i}); }
 async function adoptScanObject(){
@@ -1179,18 +1181,21 @@ async function adoptScanObject(){
     cancel.onclick=()=>dlg.close();
     apply.onclick=()=>{
       dlg.close();
-      if(DOC.host!==host) return;
-      const {section,key,identity,obj}=items[Number(select.value)];
-      const matches=S[section].filter(x=>key(x)===identity);
-      if(matches.length>1){docState('Multiple draft objects match this selection.','err');return}
-      if(matches.length){
-        if(matches[0].id) obj.id=matches[0].id;
-        S[section][S[section].indexOf(matches[0])]=obj;
-      } else {
-        if(obj.id) obj.id=section+'-'+crypto.randomUUID();
-        S[section].push(obj);
-      }
-      commit();
+      try{
+        if(DOC.host!==host) return;
+        const {section,key,identity,obj}=items[Number(select.value)];
+        const matches=S[section].filter(x=>key(x)===identity);
+        if(matches.length>1){docState('Multiple draft objects match this selection.','err');return}
+        if(matches.length){
+          if(matches[0].id) obj.id=matches[0].id;
+          S[section][S[section].indexOf(matches[0])]=obj;
+        } else {
+          // crypto.randomUUID is missing on a plain-http page that is not localhost
+          if(obj.id) obj.id=section+'-'+(crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2,10));
+          S[section].push(obj);
+        }
+        commit();
+      }catch(e){docState(e.message,'err')}
     };
   } catch(e){docState(e.message,'err')}
 }
@@ -1236,7 +1241,39 @@ async function openVersions(){
       if(!data) return;
       const entries=[data.current,...data.versions].map(({document,source},i)=>{
         const label=(i?'Saved alternative':'Current design')+' · '+(source?.name||'Storage blueprint');
-        return sfNode('details',{},sfNode('summary',{},label),sfNode('pre',{class:'code'},JSON.stringify(document,null,2)));
+        const detail=sfNode('details',{},sfNode('summary',{},label),sfNode('pre',{class:'code'},JSON.stringify(document,null,2)));
+        if(i===0 && source){
+          const edit=sfNode('button',{type:'button',class:'sf-btn ghost'},'Edit infrastructure');
+          detail.append(edit);
+          sfOnClick(edit,()=>{
+            const fields=['networks','workloads','firewall'];
+            const inputs=fields.map(key=>sfNode('textarea',{rows:5,value:JSON.stringify(document.sections[key],null,2),spellcheck:false}));
+            const save=sfNode('button',{type:'button',class:'sf-btn pri'},'Save infrastructure');
+            const cancel=sfNode('button',{type:'button',class:'sf-btn ghost'},'Cancel');
+            const form=sfNode('div',{class:'pv-body'},...fields.map((key,n)=>sfNode('label',{},key,inputs[n])),sfNode('div',{class:'sf-actions'},cancel,save));
+            edit.hidden=true;detail.append(form);inputs[0].focus();
+            sfOnClick(cancel,()=>{form.remove();edit.hidden=false;edit.focus();say('')});
+            let revision=source.revision;
+            sfOnClick(save,async()=>{
+              const saved=await attempt(()=>withBusy(save,async()=>{
+                const sections=Object.fromEntries(fields.map((key,n)=>[key,JSON.parse(inputs[n].value)]));
+                try{
+                  return await apiJSON('/api/planner/infrastructure',jsonOpts('PUT',{host,design_id:source.design_id,revision,sections}));
+                }catch(e){
+                  if(e.status!==409) throw e;
+                  // the design changed underneath: keep what was typed, take the current revision so the next save can go through
+                  const fresh=await apiJSON('/api/map/designs/migration-preview?host='+encodeURIComponent(host));
+                  const next=fresh.current?.source?.revision;
+                  if(typeof next!=='string') throw e;
+                  revision=next;
+                  throw new Error('Someone else changed this design while you were editing. Your edits are kept below. Saving now will replace their change.');
+                }
+              }));
+              if(saved){preview.click();notify('Infrastructure saved for '+host)}
+            });
+          });
+        }
+        return detail;
       });
       result.replaceChildren(sfNode('h3',{},'Unified design preview'),...entries);
       result.focus();
@@ -1302,7 +1339,8 @@ function readHash(){
   const p=sfParseHash();
   if(!p.legacy&&p.parts.length) return {view:p.parts[0],host:p.q.get('host')||''};
   const [view,host]=(location.hash||'').slice(1).split('@');
-  return {view:view||'',host:decodeURIComponent(host||'')};
+  let h=host||'';try{ h=decodeURIComponent(h) }catch(e){}
+  return {view:view||'',host:h};
 }
 function setHash(push){ try{ (push?sfPushHash:sfReplaceHash)(sfFormatHash([UI.view],{host:DOC.host})) }catch(e){} }
 

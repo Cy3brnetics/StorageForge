@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # StorageForge: multi-stage build, non-root minimal runtime on Wolfi.
-#   docker build -t storageforge:0.3.2 .
-#   docker build --build-arg EXTRAS=postgres -t storageforge:0.3.2-pg .
+#   docker build -t storageforge:0.5.4.1 .
+#   docker build --build-arg EXTRAS=postgres -t storageforge:0.5.4.1-pg .
 # The base images are pinned by digest and every Python package by hash (docker/requirements*.lock). Wolfi packages
 # are not: a rebuild picks up the latest security updates. README "Updating dependencies" has the commands that refresh the pins.
 # Wolfi, not Debian: it ships fixes as upstream releases them and publishes a security feed Trivy and Grype both read, so
@@ -239,9 +239,11 @@ ENTRYPOINT ["/usr/local/bin/storageforge-sfnet-link", "run"]
 
 # ── runtime (last, so a plain docker build makes this one) ─────────────────────
 FROM ${BASE_IMAGE} AS runtime
+# kept equal to the package and the compose image tags by tests/test_bughunt_rest_a.py
+ARG VERSION=0.5.4.1
 LABEL org.opencontainers.image.title="StorageForge" \
       org.opencontainers.image.description="Encrypted SSH key vault, agentless file indexer and storage graph" \
-      org.opencontainers.image.version="0.3.2"
+      org.opencontainers.image.version="${VERSION}"
 # tzdata: the scheduler's zoneinfo would otherwise fall back to UTC for every schedule. The so: names are the libraries
 # the openssh and nmap stages linked against; the -V checks below fail the build if a soname moves.
 RUN apk add --no-cache python-3.14 tini ca-certificates-bundle tzdata openssl so:libcrypto.so.4 so:libz.so.1 \

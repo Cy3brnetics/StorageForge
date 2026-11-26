@@ -7,8 +7,12 @@ No pattern here is a regular expression (SF-52: one 4,000-character line took a 
 anything, and `|` between alternatives; matching is a run of substring searches, so its cost is bounded by the line and the pattern.
 Case is ignored.
 
-`program` is matched against what journald saw write the line (`_COMM`) when the line has it, and only otherwise against the name the
-line gives itself, which anyone on the host can choose: a rule about sshd is not set off by `logger -t sshd`.
+`program` is matched against what journald saw write the line: the systemd unit it ran in (`_SYSTEMD_UNIT`, with or without `.service`),
+or, when the line has no unit, the program file's name (`_EXE`). `_COMM` is not used: any process can rename itself, so it is kept
+only as display text. The name the line gives itself (`SYSLOG_IDENTIFIER`, which anyone on the host can choose) counts only for a line
+that journald stamped with no unit, no `_EXE` and no `_COMM` at all, which is how kernel lines and lines from before these fields were
+kept look. So a rule about sshd is not set off by `logger -t sshd`, nor by a program that calls itself sshd, and the rules for the
+kernel and for systemd itself (which logs as unit `init.scope`) name those.
 
 The built-in rules are for storage hosts. Their text is StorageForge's and follows the release; whether each is on, its threshold,
 window and level are the operator's, and are kept across upgrades.
@@ -27,7 +31,7 @@ HIT_KEEP_SECS = MAX_WINDOW + 86400
 RULE_LEVELS = ('crit', 'warn', 'info')
 FIELDS = ('name', 'host', 'unit', 'program', 'min_level', 'text', 'threshold', 'window_secs', 'level', 'enabled', 'note')
 
-# key, name, program, lowest level, text, threshold, window, level, on
+# key, name, program (matched as who_wrote says: a unit, a program file or kernel; systemd's own lines are unit init.scope), lowest level, text, threshold, window, level, on
 BUILTIN = (
     ('oom', 'Out of memory: a process was killed', 'kernel', 'warning', '*Out of memory: Killed process*|*invoked oom-killer*|*oom-kill:*', 1, 3600, 'crit', True),
     ('io-error', 'Disk or controller I/O errors', 'kernel', 'warning',
@@ -41,11 +45,11 @@ BUILTIN = (
     ('panic', 'The kernel panicked or locked up', 'kernel', 'debug',
      '*Kernel panic - not syncing*|*BUG: soft lockup*|*Watchdog detected hard LOCKUP*|*hard LOCKUP on cpu*|*rcu_sched self-detected stall*|*rcu: INFO: rcu_* detected stalls*|*rcu_preempt self-detected stall*', 1, 86400, 'crit', True),
     ('share-down', 'An NFS or SMB server is not responding', 'kernel', 'warning', '*nfs: server * not responding*|*CIFS: VFS: *has not responded in*|*CIFS*server * not responding*', 1, 1800, 'warn', True),
-    ('unit-failed', 'Services failing', 'systemd', 'warning', '*Failed with result *|Failed to start *', 3, 3600, 'warn', True),
+    ('unit-failed', 'Services failing', 'init.scope', 'warning', '*Failed with result *|Failed to start *', 3, 3600, 'warn', True),
     ('segfault', 'Programs crashing', 'kernel', 'info', '*segfault at *|*general protection fault*', 3, 3600, 'warn', True),
     ('disk-full', 'No space left on a device', '*', 'warning', '*No space left on device*', 3, 3600, 'warn', True),
-    ('ssh-failed', 'A burst of failed SSH logins', 'sshd*', 'info', 'Failed password for *|Invalid user * from *|*authentication failure*rhost=*|Connection closed by authenticating user *', 20, 600, 'warn', False),
-    ('sudo-failed', 'A burst of failed sudo logins', 'sudo', 'notice', '*authentication failure*|*incorrect password attempt*', 5, 600, 'warn', False),
+    ('ssh-failed', 'A burst of failed SSH logins', 'ssh*', 'info', 'Failed password for *|Invalid user * from *|*authentication failure*rhost=*|Connection closed by authenticating user *', 20, 600, 'warn', False),
+    ('sudo-failed', 'A burst of failed sudo logins', '*', 'notice', '*pam_unix(sudo:auth): authentication failure*|*incorrect password attempt*', 5, 600, 'warn', False),
 )
 
 
@@ -202,6 +206,19 @@ def _compiled(conn: Conn) -> list[tuple]:
     return out
 
 
+def who_wrote(x: dict) -> list[str]:
+    """The names journald vouches for as the writer of a line, for `program`: its unit (also without .service), else its program file, else
+    the line's own name when journald stamped no writer at all. Never `comm`, which any process can set."""
+    unit = x.get('unit') or ''
+    if unit:
+        return [unit, unit.removesuffix('.service')]
+    if x.get('exe'):
+        return [x['exe'].rsplit('/', 1)[-1]]
+    if not x.get('comm'):
+        return [x.get('ident') or '']
+    return []
+
+
 def match_new(conn: Conn, host: str, lines: list[dict], now: float) -> int:
     """Counts the lines that are new this pickup against every rule that is on. Called inside hostlogs.store's transaction."""
     if not lines:
@@ -217,7 +234,7 @@ def match_new(conn: Conn, host: str, lines: list[dict], now: float) -> int:
             unit_name = x.get('unit') or ''
             if unit is not None and not (matches(unit, unit_name) or matches(unit, unit_name.removesuffix('.service'))):
                 continue
-            if program is not None and not matches(program, x.get('comm') or x.get('ident') or ''):
+            if program is not None and not any(matches(program, name) for name in who_wrote(x)):
                 continue
             if not matches(text, x['message']):
                 continue

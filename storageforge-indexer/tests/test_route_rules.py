@@ -20,7 +20,6 @@ FRESH_PASSWORD = {
     ('POST', '/api/console/sessions'),          # a shell on a host: the password again for each session
     ('POST', '/api/enclave/unlock'),            # the vault secret, typed by a person
     ('POST', '/api/enclave/lock'),
-    ('POST', '/api/routecode'),                 # this session's route key again, for a browser that lost it
     ('POST', '/api/enclave/chain/accept'),      # taking a cut audit log as it is
     ('POST', '/api/enclave/stepup/enroll'),     # what the enclave will check a person by
     ('PUT', '/api/console/settings'),           # whether every session is recorded in full
@@ -179,6 +178,7 @@ FRESH_PASSWORD = {
 }
 # No fresh password: plans that only sit in the database, reads over SSH or signed read-only probes, or the sign-in routes themselves.
 NO_FRESH_PASSWORD = {
+    ('POST', '/api/routecode'),                  # this session's route key again: it takes the password in its body, not the fresh-password rule
     ('PUT', '/api/desktop/profiles/<name>'),         # a profile sits in the database; the plan step that writes it to a host is run like any other
     ('DELETE', '/api/desktop/profiles/<name>'),
     ('POST', '/api/desktop/render'),              # a profile in, the text of a configuration out
@@ -292,6 +292,7 @@ NO_FRESH_PASSWORD = {
     ('POST', '/api/moves/check'),
     ('POST', '/api/planner/changes'),
     ('PUT', '/api/planner/design'),
+    ('PUT', '/api/planner/infrastructure'),     # a design's networks, workloads and firewall, as the storage design above
     ('PUT', '/api/planner/example'),
     ('PUT', '/api/planner/offsite'),
     ('POST', '/api/planner/versions'),           # a copy of a design in the database, as PUT /api/planner/design is one of the saved design

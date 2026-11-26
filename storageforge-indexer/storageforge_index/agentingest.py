@@ -49,7 +49,11 @@ def take_lines(db: Database, now: float | None = None, counts: dict | None = Non
                 body = {}
             by_host.setdefault(host, []).append((record_id, received_at, body if isinstance(body, dict) else {}))
         for host, records in by_host.items():
-            stored[host] = _take_host(conn, host, records, now, counts)
+            try:
+                stored[host] = _take_host(conn, host, records, now, counts)
+            except Exception:       # one host's odd reading (a number past what the database holds) is dropped, never retried forever
+                errlog.trace()
+                stored[host] = 0
             ids = [r[0] for r in records]
             for i in range(0, len(ids), 200):
                 part = ids[i:i + 200]
@@ -68,7 +72,7 @@ def _take_host(conn, host: str, records: list, now: float | None, counts: dict) 
         for raw in _lines_of(body):
             try:
                 line = hostlogs._line(raw, now)
-            except (ValueError, TypeError, KeyError, RecursionError):
+            except (ValueError, TypeError, KeyError, RecursionError, OverflowError):
                 continue
             if not line:
                 continue

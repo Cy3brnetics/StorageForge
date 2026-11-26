@@ -705,7 +705,7 @@ def ingest(conn: Conn, r: dict, via: str) -> bool:
     def num(k):
         try:
             return int(r.get(k) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
     if max(num('start'), num('end')) > time.time() + 600:      # a forged "ok" dated ahead would hide real failures
         raise ValueError('run times are in the future')
@@ -727,7 +727,7 @@ def ingest_state(conn: Conn, r: dict) -> None:
         pct = None if r.get('percent') is None else max(0, min(int(r['percent']), 100))
         ratio = max(0.0, min(float(r.get('dedup_ratio') or 0), 1.0))
         at = int(r.get('at') or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError('bad state event') from None
     if at > time.time() + 600:
         raise ValueError('state time is in the future')
@@ -747,7 +747,7 @@ def ingest_scan(conn: Conn, host: str, text: str) -> int:
             r = json.loads(line)
         except ValueError:
             continue
-        if isinstance(r, dict) and r.get('job') in mine:
+        if isinstance(r, dict) and isinstance(r.get('job'), str) and r['job'] in mine:
             try:
                 n += ingest(conn, r, 'scan')
             except ValueError:

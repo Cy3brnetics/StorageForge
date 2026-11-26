@@ -121,6 +121,7 @@ def remove(conn: Conn, name: str) -> dict:
         conn.execute("DELETE FROM graph_edges WHERE built_by = :b", {'b': f'infra:{d["name"]}'})
         conn.execute('DELETE FROM graph_nodes WHERE host = :h', {'h': d['name']})
         conn.execute('DELETE FROM hosts WHERE hostname = :h', {'h': d['name']})
+        conn.execute('DELETE FROM traffic_samples WHERE host = :h', {'h': d['name']})      # else its last anomaly is shown for a device that is gone
     return {'ok': True, 'name': d['name']}
 
 
@@ -306,17 +307,52 @@ def forwards(conn: Conn) -> list[dict]:
 
 
 # ── what a change would do ──────────────────────────────────────────
+def _openwrt_zones(facts: dict, stmts: list) -> dict:
+    """{interface name used in a statement: fw4 zone}. A rule says eth1 or br-lan, and fw4 zones list UCI networks (`lan`), so each name is
+    taken through the network config to the one network it carries. A name that carries none, or several, or whose network is in no
+    zone, is refused: guessing would put the rule in the wrong zone."""
+    by_network = {n: z['name'] for z in facts.get('zones') or [] for n in z.get('networks') or []}
+    config = facts.get('config')
+    if not config:
+        return by_network                     # nothing read of the network config: the names can only be taken as networks
+    uci = openwrt.parse_uci(config)
+    networks = {k for k, r in uci.items() if r.get('.type') == 'interface'}
+    carried: dict[str, set] = {}
+
+    def words(v):
+        return [w for x in (v if isinstance(v, list) else [v or '']) for w in str(x).split()]
+    for k in networks:
+        for dev in words(uci[k].get('device')) + words(uci[k].get('ifname')):
+            carried.setdefault(dev, set()).add(k)
+    for r in uci.values():
+        if r.get('.type') == 'device' and r.get('name'):
+            for port in words(r.get('ports')):
+                carried.setdefault(port, set()).update(carried.get(r['name'], set()))
+    zones = {}
+    for st in stmts:
+        if st.path not in (rostranspiler.FILTER, rostranspiler.NAT):
+            continue
+        for name in (st.get('in-interface'), st.get('out-interface')):
+            if not name or name in zones:
+                continue
+            found = {name} if name in networks else carried.get(name, set())
+            if len(found) != 1:
+                raise DeviceError(f'{name} is not one UCI network on {facts.get("identity") or "this device"}: '
+                                  + ('it carries none' if not found else f'it carries {", ".join(sorted(found))}') + '; name the network (for example lan) instead')
+            zone = by_network.get(next(iter(found)))
+            if zone is None:
+                raise DeviceError(f'the network {next(iter(found))} behind {name} is in no firewall zone')
+            zones[name] = zone
+    return zones
+
+
 def compile_for(conn: Conn, name: str, text: str, **options) -> dict:
     d = get(conn, name)
     stmts = rostranspiler.parse(text)
     extra = {}
     facts = facts_of(conn, d['name']) or {}
     if d['platform'] == 'openwrt':
-        zones = {}
-        for z in facts.get('zones') or []:
-            for n in z.get('networks') or []:
-                zones[n] = z['name']
-        extra['zones'] = zones
+        extra['zones'] = _openwrt_zones(facts, stmts)
     return {**rostranspiler.emit(stmts, PLATFORMS[d['platform']]['target'], **{**extra, **options}), 'statements': [s.text() for s in stmts], 'device': d['name'], 'platform': d['platform']}
 
 
@@ -336,7 +372,20 @@ def cuts_off(conn: Conn, d: dict, stmts: list) -> dict | None:
     if not fw or not fw.get('readable') or not net:
         return {'cuts': None, 'why': 'its firewall has not been read'}
     added = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]), existing=fw['rules'])
-    combined = {**fw, 'rules': sorted(fw['rules'] + added['rules'], key=lambda r: r.get('order') or 0)}
+    # the new rules say table filter, and only RouterOS and pf have one: elsewhere they go on the device's own chain for that hook, or the answer is not known
+    chains = fw.get('chains') or []
+    mapped = []
+    for r in added['rules']:
+        if any(c.get('table') == r.get('table') and c.get('name') == r.get('chain') for c in chains) or r.get('chain') not in ('input', 'forward', 'output'):
+            mapped.append(r)
+            continue
+        base = sorted((c for c in chains if c.get('hook') == r['chain']), key=lambda c: c.get('prio') or 0)
+        if not base:
+            if r['chain'] == 'input':
+                return {'cuts': None, 'why': f'the new rules have no chain to land in on this {d["platform"]} device'}
+            continue
+        mapped.append({**r, 'table': base[0]['table'], 'chain': base[0]['name']})
+    combined = {**fw, 'rules': sorted(fw['rules'] + mapped, key=lambda r: r.get('order') or 0)}
     iif = next((i['name'] for i in net.get('interfaces') or [] for a in i.get('addresses') or [] if a.get('ip') == d['address']), None)
     src = next(iter(_controller_ips(conn, d['name'])), None)
     flow = {'proto': 'tcp', 'port': d['port'], 'iif': iif, 'daddr': d['address'], 'saddr': src, 'family': 'ip'}
@@ -443,7 +492,9 @@ class RouterOsApply:
                          line)
             got = run(cmd)
             if self.REFUSED.search(got or ''):
-                raise DeviceError(f'the router refused `{line[:120]}`: {got.strip()[:200]}')
+                # the error is saved with the change and shown to the user: a private key in the line must not go with it
+                said = re.sub(r'\b(' + '|'.join(map(re.escape, rostranspiler.SECRET_ATTRS)) + r')=("[^"]*"|\S+)', r'\1=***', line)
+                raise DeviceError(f'the router refused `{said[:120]}`: {got.strip()[:200]}')
             out.append(got)
         return out
 
@@ -488,6 +539,9 @@ echo planted"""
         script = 'set -e\n' + compiled['text'] + "\n(sleep 1; /etc/init.d/network reload; /etc/init.d/firewall restart) >/dev/null 2>&1 &\necho applied\n"
         got = run(script)
         if 'applied' not in got:
+            # uci keeps what was set but not yet committed in /tmp/.uci, and the next commit on the router would write it out: drop it
+            for pkg in sorted(set(re.findall(r'^uci commit (\w+)', compiled['text'], re.M))):
+                run(f'uci revert {pkg}')
             raise DeviceError(f'the router refused it: {got[-300:]}')
         return [got]
 
@@ -640,6 +694,10 @@ def apply(db, conn: Conn, cid: int, actor: str, rollback: int = DEFAULT_ROLLBACK
             except Exception as exc:
                 # a refusal part-way: the timer stays set, and takes it back to the start
                 _set(conn, cid, status='rolling-back', output=str(exc)[:2000])
+                _SOURCES.pop(cid, None)
+                conn.execute('UPDATE network_changes SET source = NULL WHERE change_id = :i', {'i': cid})
+                # nobody else will say when the timer has done its work
+                threading.Thread(target=_settle, args=(db, cid, rollback, True), daemon=True).start()
                 return {'ok': False, 'id': cid, 'status': 'rolling-back', 'error': str(exc)[:500]}
     except (RemoteError, DeviceError, OSError) as exc:
         if not planted:       # no way back on the device, so nothing was changed, and it can be tried again (SF-61)
@@ -661,7 +719,7 @@ def apply(db, conn: Conn, cid: int, actor: str, rollback: int = DEFAULT_ROLLBACK
     return {'ok': True, 'id': cid, 'status': 'unconfirmed', 'rollback_at': now + rollback}
 
 
-def _settle(db, cid: int, rollback: int) -> None:
+def _settle(db, cid: int, rollback: int, refused: bool = False) -> None:
     """If it answers from a new connection, keep the change. If it doesn't, leave the timer to do its work, and wait to see it back."""
     from . import errlog
     conn = db.connect()
@@ -670,7 +728,7 @@ def _settle(db, cid: int, rollback: int) -> None:
         d = get(conn, c['device'])
         applier = APPLIERS[d['platform']](cid)
         time.sleep(5)
-        for _ in range(CONFIRM_TRIES):
+        for _ in range(0 if refused else CONFIRM_TRIES):      # a refused change is not kept, whatever answers
             try:
                 with session(db, conn, d, 'deploy', timeout=30) as run:
                     if applier.alive(run):
@@ -681,7 +739,8 @@ def _settle(db, cid: int, rollback: int) -> None:
             except Exception:
                 errlog.trace()
             time.sleep(10)
-        _set(conn, cid, status='rolling-back', output='the device stopped answering after the change: its timer will take it back')
+        if not refused:
+            _set(conn, cid, status='rolling-back', output='the device stopped answering after the change: its timer will take it back')
         until = int(time.time()) + rollback + 300
         time.sleep(max(0, (c['rollback_at'] or 0) - time.time()))
         while time.time() < until:
@@ -705,6 +764,10 @@ def confirm(db, conn: Conn, cid: int) -> dict:
     c = change(conn, cid)
     if c['status'] != 'unconfirmed':
         raise DeviceError(f'this change is {c["status"]}')
+    if c.get('rollback_at') and time.time() >= c['rollback_at']:
+        # the device's timer has run, or is running now: a confirm would keep a change the device has already taken back
+        _set(conn, cid, status='rolling-back', output='the rollback timer ran out before it was confirmed: the device has gone back to what it had')
+        raise DeviceError('the rollback timer has run out: the device has gone back to what it had. Read it again to see where it stands')
     d = get(conn, c['device'])
     with session(db, conn, d, 'deploy', timeout=30) as run:
         APPLIERS[d['platform']](cid).confirm(run)

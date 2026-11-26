@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -155,8 +156,9 @@ def run(db, conn: Conn, target: str | None, actor: str, wait: bool = False, runn
 
     def work():
         from . import errlog
-        c = db.connect()
+        c = None
         try:
+            c = db.connect()        # inside the try: a connection that cannot be opened must still release the lock
             hosts, error = [], None
             for t in targets:
                 argv = command(t, cfg['top_ports'])
@@ -182,7 +184,8 @@ def run(db, conn: Conn, target: str | None, actor: str, wait: bool = False, runn
         except Exception:
             errlog.trace()
         finally:
-            c.close()
+            if c is not None:
+                c.close()
             _running.release()
             if getattr(db, 'dialect', None) != 'sqlite' or getattr(db, 'path', '') == ':memory:' or os.path.exists(getattr(db, 'path', '')):
                 try:

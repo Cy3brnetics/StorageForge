@@ -283,16 +283,19 @@ class StepUp(Base):
         new = b'n' * 48
         with vault.Vault(self.db, self.conn).unlock() as v:
             with self.assertRaises(vault.StepUpNeeded):
-                v.rotate_secret(new)
+                v.rotate_secret(new, current=SECRET)
             self.assertFalse(self.e.status()['rotating'])
             vault.present_token(self.token())
-            v.rotate_secret(new)
+            v.rotate_secret(new, current=SECRET)
         self.assertTrue(self.token(), 'the record was rewrapped with the keys: the same password still proves gabe')
         self.e.lock()
         self.assertEqual(self.e.unlock(new, self.meta(), records=enclave_stepup.records(self.conn))['stepup'], True)
         with vault.Vault(self.db, self.conn, new).unlock() as fresh:          # and the vault without the enclave rewraps them too
             fresh.rotate_secret(SECRET)
-        self.e.lock()
+        # turned over outside it, the running enclave takes only the secret it was unlocked with: it is restarted, as after a reboot
+        self.stop()
+        self.start()
+        self.answering()
         self.unlock()
         self.assertTrue(self.token())
 

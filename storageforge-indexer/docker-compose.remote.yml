@@ -24,7 +24,7 @@ services:
     image: storageforge-tunnel:0.5.4.1
     restart: unless-stopped
     depends_on:
-      storageforge: { condition: service_healthy }
+      storageforge: { condition: service_healthy, restart: true }   # it shares the server's network: a new server container needs a new tunnel
     network_mode: "service:storageforge"
     user: "10002:10002"
     read_only: true

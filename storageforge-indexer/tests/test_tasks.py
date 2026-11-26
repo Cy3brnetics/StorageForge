@@ -732,7 +732,7 @@ class UnitScriptLabel(unittest.TestCase):
 
     def test_both_installers_label_what_their_units_run(self):
         root = Path(tasks.__file__).parent
-        self.assertIn('label_exec "$LIB/$TASK.sh"', (root / 'tasks.py').read_text())
+        self.assertIn('label_exec "$LIB/$TASK_KEY.sh"', (root / 'tasks.py').read_text())
         self.assertIn('label_exec "$RUN_SH" "$TASK_SH"', (root / 'scheduler.py').read_text())
 
 

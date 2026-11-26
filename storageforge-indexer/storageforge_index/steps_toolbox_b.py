@@ -99,7 +99,7 @@ tb_scan_refs() { # the images of the running containers of Docker and root Podma
   local e
   for e in docker podman; do command -v $e >/dev/null && $e ps --format "{{.Image}}" 2>/dev/null; done | grep -E "^[a-z0-9][a-z0-9._/:@-]{0,300}$" | sort -u | head -n 100
 }
-t_trivy_scan() { local target=$1 images=$2 scanner=${3:-trivy} verdict=$4 why=$5 image=$6 tpl=$7 dir=@SCANS@ refs ref key tmp rt= server= n=0 bad=0 rc
+t_trivy_scan() { local target=$1 images=$2 scanner=${3:-trivy} verdict=$4 why=$5 image=$6 tpl=$7 dir=@SCANS@ refs ref key tmp rt= server= n=0 bad=0 rc f
   if [[ $verdict != ok ]]; then conflict "$why"; return 0; fi
   if [[ $target == running ]]; then refs=$(tb_scan_refs); else refs=$images; fi
   [[ -n $refs ]] || { ok "there is no image to scan"; return 0; }
@@ -135,6 +135,14 @@ t_trivy_scan() { local target=$1 images=$2 scanner=${3:-trivy} verdict=$4 why=$5
     else bad=$((bad + 1)); info "could not scan $ref: an image only on this host, or a registry that wants a sign-in, cannot be scanned this way"; fi
     rm -f -- "$tmp"
   done <<<"$refs"
+  # a report of an image that no longer runs would keep the CVE alert and the Fixable tile up for good
+  if [[ $target == running ]]; then
+    for f in "$dir/$scanner"-*.tsv; do
+      [[ -f $f ]] || continue
+      ref=$(head -n 1 "$f" | cut -f 2)
+      printf "%s\n" "$refs" | grep -qxF -- "$ref" || rm -f -- "$f"
+    done
+  fi
   ((bad == 0)) || [[ $n -gt 0 ]] || { conflict "no image could be scanned"; return 0; }
   ok "$n image(s) scanned; the next reading of this host brings the findings in"
 }

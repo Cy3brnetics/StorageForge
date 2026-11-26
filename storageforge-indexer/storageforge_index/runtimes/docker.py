@@ -222,8 +222,12 @@ def parse_compose(path: str, text: str) -> dict:
 
 
 def compose_candidates(conn: Conn, host_id: int, extra: list[str]) -> list[str]:
+    # SQLite's filename index is COLLATE NOCASE: only a comparison with that collation on the column can use it, so this narrows to
+    # the few compose files first instead of walking every file of the host (`IN (...) COLLATE NOCASE` collates the result, not the
+    # comparison, and changes nothing). The exact-case IN below still decides which names count.
+    nocase = f"f.filename COLLATE NOCASE IN ({', '.join(f'{chr(39)}{n}{chr(39)}' for n in COMPOSE_NAMES)}) AND " if conn.dialect == 'sqlite' else ''
     rows = conn.all(f"""SELECT d.path, f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id JOIN mounts m ON m.mount_id = f.mount_id
-                        WHERE m.host_id = :h AND NOT f.is_directory AND f.file_size_bytes <= 524288
+                        WHERE {nocase}m.host_id = :h AND NOT f.is_directory AND f.file_size_bytes <= 524288
                           AND f.filename IN ({', '.join(f"'{n}'" for n in COMPOSE_NAMES)})""", {'h': host_id})
     paths = {posixpath.join(p, n) for p, n in rows}
     paths |= {p for p in extra if p.startswith('/')}

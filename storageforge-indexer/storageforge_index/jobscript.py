@@ -428,7 +428,9 @@ headroom() { # folder bytes-needed -> 0, or why not on stdout
 }
 preflight() { # bytes-needed -> reports and exits when there is no room
   ((PREFLIGHT)) || return 0
-  local why; why=$(headroom "$DST" "$1") && return 0
+  local at=$DST
+  while [[ ! -e $at && $at == /?* ]]; do at=${at%/*}; at=${at:-/}; done      # an archive or file copy names a file the first run makes
+  local why; why=$(headroom "$at" "$1") && return 0
   ((HOOKS && !posted)) && hook post
   report 6 "not enough room: $why"; exit 6
 }

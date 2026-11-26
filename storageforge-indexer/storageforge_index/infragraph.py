@@ -184,19 +184,19 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
     # the other private networks, each by its own account: a peer whose address a scanned host has is that host, and so is one
     # whose key (a ZeroTier node id, a WireGuard public key under Netmaker) is the key another scanned host said is its own
     overlay_keys = overlay_keys or {}
-    for net in acc.get('overlays') or []:
-        name = net.get('network')
-        kind = 'server' if net.get('self') is None and not net.get('error') else 'client'
-        oid = add(f'ovnet:{host}:{name}:{kind}', 'VPNNetwork', overlays.label(name), 'access', network=overlays.label(name), state=net.get('state'), role=net.get('role'),
-                  peers=len(net.get('peers') or []), routes=net.get('routes'), interface=net.get('interface'), listen_port=net.get('port'),
-                  certificate_ends=(net.get('certificate') or {}).get('expires'), says=overlays.sentence(net, now), unread=bool(net.get('error')),
-                  certificates=overlays.certificate_counts(net['pki'], now) if isinstance(net.get('pki'), dict) and not net['pki'].get('error') and now is not None else None)
+    for ovn in acc.get('overlays') or []:       # not `net`: that is the host's network reading, read again below
+        name = ovn.get('network')
+        kind = 'server' if ovn.get('self') is None and not ovn.get('error') else 'client'
+        oid = add(f'ovnet:{host}:{name}:{kind}', 'VPNNetwork', overlays.label(name), 'access', network=overlays.label(name), state=ovn.get('state'), role=ovn.get('role'),
+                  peers=len(ovn.get('peers') or []), routes=ovn.get('routes'), interface=ovn.get('interface'), listen_port=ovn.get('port'),
+                  certificate_ends=(ovn.get('certificate') or {}).get('expires'), says=overlays.sentence(ovn, now), unread=bool(ovn.get('error')),
+                  certificates=overlays.certificate_counts(ovn['pki'], now) if isinstance(ovn.get('pki'), dict) and not ovn['pki'].get('error') and now is not None else None)
         edge(oid, host_id, 'RUNS_ON', overlays.SOURCES.get(name, f'{overlays.label(name)} status'))
-        if net.get('error') or (name == 'tailscale' and net.get('self')):          # a Tailscale client's peers are drawn above
+        if ovn.get('error') or (name == 'tailscale' and ovn.get('self')):          # a Tailscale client's peers are drawn above
             continue
-        said = overlays.SOURCES.get(name) or (f'{overlays.label(name)} status' if net.get('self') else f'{overlays.label(name)}: the server\'s list')
+        said = overlays.SOURCES.get(name) or (f'{overlays.label(name)} status' if ovn.get('self') else f'{overlays.label(name)}: the server\'s list')
         targets = {}
-        for p in net.get('peers') or []:
+        for p in ovn.get('peers') or []:
             ip = next((a for a in p.get('addresses') or [] if a in peers), None) or next(iter(p.get('addresses') or []), None)
             if ip and ip in me:
                 continue
@@ -223,7 +223,7 @@ def build(host: str, net: dict | None, infra: dict | None, containers: list[dict
                 if p.get('routes'):
                     edge(host_id, tid, 'ROUTES_VIA', f'{said}: {", ".join(p["routes"][:8])} is behind this peer', sure, network=name, networks=p['routes'], local_networks=p.get('local_routes') or None)
         # Nebula: a network reached through another Nebula host (tun.unsafe_routes)
-        for u in net.get('uses_routes') or []:
+        for u in ovn.get('uses_routes') or []:
             via = u.get('via')
             tid, sure = targets.get(via) or ((f'host:{peers[via]}', 'confirmed') if via in peers else (None, None))
             if tid is None and via and via not in me:

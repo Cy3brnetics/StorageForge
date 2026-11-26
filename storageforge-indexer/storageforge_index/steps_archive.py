@@ -154,6 +154,7 @@ sf_check_tar_members() { # reads tar -tf lines on stdin -> 0 if every path is re
 }
 
 t_archive() { local src=$1 dst=$2 codec=${3:-zstd-ultra} verify=${4:-1} trash=${5:-} comp_host_raw=${6:-} comp_login=${7:-} comp_port=${8:-22}
+  src=$(realpath -m -s -- "$src" 2>/dev/null) || { conflict "cannot work out the path $1"; return 0; }    # //proc is /proc
   case $src in
     /|/proc|/sys|/dev|/run) conflict "refusing to archive virtual or root filesystem $src"; return 0 ;;
   esac
@@ -252,7 +253,7 @@ t_archive() { local src=$1 dst=$2 codec=${3:-zstd-ultra} verify=${4:-1} trash=${
   fi
 }
 
-t_archive_extract() { local archive=$1 dest=$2 verify_sum=${3:-1}
+t_archive_extract() { local archive=$1 dest=$2 verify_sum=${3:-1} dmode downer
   if [[ -f "$dest/.sf-extracted" ]] && [[ $(cat "$dest/.sf-extracted" 2>/dev/null || true) == "$archive" ]]; then
     ok "$archive already extracted into $dest"
     return 0
@@ -322,7 +323,10 @@ t_archive_extract() { local archive=$1 dest=$2 verify_sum=${3:-1}
     try mv -T -- "$stage" "$dest" || { rm -rf -- "$stage"; return 0; }
   else
     try mkdir -p -- "$dest" || { rm -rf -- "$stage"; return 0; }
+    # cp -a of "stage/." also copies the attributes of the staging folder onto dest, so its owner and mode are put back after
+    dmode=$(stat -c %a -- "$dest") && downer=$(stat -c %u:%g -- "$dest") || { rm -rf -- "$stage"; conflict "could not read the owner of $dest"; return 0; }
     cp -a -- "$stage/." "$dest/" || { rm -rf -- "$stage"; conflict "could not move extracted files into $dest"; return 0; }
+    chown -- "$downer" "$dest" 2>/dev/null || true; chmod -- "$dmode" "$dest" 2>/dev/null || true
     rm -rf -- "$stage"
   fi
   printf "%s\n" "$archive" >"$dest/.sf-extracted"
@@ -332,8 +336,8 @@ t_archive_extract() { local archive=$1 dest=$2 verify_sum=${3:-1}
 
 
 def _check_archive(conn: Conn, c: changes.Host, h: dict, p: dict, say):
-    src = posixpath.normpath(p['path'])
-    dst = posixpath.normpath(p['dest'])
+    src = '/' + posixpath.normpath(p['path']).lstrip('/')
+    dst = '/' + posixpath.normpath(p['dest']).lstrip('/')
     codec = p.get('codec') or 'zstd-ultra'
     comp_raw = str(p.get('compress_host') or '').strip()
     if src in OS_PROTECTED:
@@ -389,8 +393,8 @@ def _check_archive(conn: Conn, c: changes.Host, h: dict, p: dict, say):
 
 
 def _check_extract(conn: Conn, c: changes.Host, h: dict, p: dict, say):
-    arc = posixpath.normpath(p['archive'])
-    dst = posixpath.normpath(p['dest'])
+    arc = '/' + posixpath.normpath(p['archive']).lstrip('/')
+    dst = '/' + posixpath.normpath(p['dest']).lstrip('/')
     if dst in OS_PROTECTED:
         say('crit', f'refusing to extract directly over system directory {dst}')
         return

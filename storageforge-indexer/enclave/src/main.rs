@@ -48,9 +48,23 @@ const MAX_SIGN_DATA: usize = 256 << 10;
 const BAD_LIMIT: u32 = 5;
 // One connection is served at a time, so one that goes quiet is dropped: a client that holds its connection open cannot hold the others out.
 const IDLE_SECS: i64 = 5;
+// ... and one that sends a frame a byte at a time is dropped too: a frame has this long, from its first byte to its last.
+const FRAME_SECS: u64 = 15;
 const VERIFIER: &[u8] = b"storageforge-vault-v1";
 // Argon2id costs the enclave may be asked for: enough to be worth something, and never so much that one request stalls it for good.
 const KDF_MEMORY_KIB: std::ops::RangeInclusive<u32> = 8 * 1024..=1024 * 1024;
+
+/// What the enclave keeps free beyond the memory Argon2id works in, in KiB (32 MiB).
+const KDF_MEMORY_MARGIN_KIB: u64 = 32 * 1024;
+
+/// MemAvailable from /proc/meminfo text, in KiB.
+fn parse_mem_available(text: &str) -> Option<u64> {
+    text.lines().find_map(|l| l.strip_prefix("MemAvailable:")).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
+}
+
+fn mem_available_kib() -> Option<u64> {
+    parse_mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
 const KDF_TIME: std::ops::RangeInclusive<u32> = 1..=10;
 const KDF_LANES: std::ops::RangeInclusive<u32> = 1..=16;
 // Signatures per key per minute, and unlock attempts per minute. The limits live here, where the web app cannot change them.
@@ -258,6 +272,11 @@ struct State {
     /// else, so that the KEK can be derived again under a new salt on a schedule without anyone handing the secret over again.
     held: Option<Held>,
     next_held: Option<Held>,
+    /// A one-way fingerprint of the vault secret this enclave was first unlocked with (`pin_of`). It outlives `lock` and a
+    /// lock-down, so neither can be followed by an unlock under somebody else's secret: only a restart of the enclave forgets it.
+    pin: Option<[u8; 32]>,
+    /// unlocks refused because they were for another vault than `pin` names: someone holding the socket tried one
+    foreign_unlocks: u64,
     /// The enclave's own key for the channel, made as it starts: its public half is what a client pins.
     static_secret: Zeroizing<[u8; 32]>,
     static_public: [u8; 32],
@@ -773,6 +792,8 @@ impl State {
             started: Instant::now(),
             held: None,
             next_held: None,
+            pin: None,
+            foreign_unlocks: 0,
         }
     }
 
@@ -788,6 +809,14 @@ impl State {
         self.challenges.clear();
     }
 
+    /// What `pin` holds: HMAC-SHA256 keyed with the vault secret over a fixed label. It names the secret without being it. The
+    /// secret, not the KEK: the KEK changes with a new salt or the second lock, which whoever holds the secret may do from outside.
+    fn pin_of(secret: &[u8]) -> Result<[u8; 32], Refusal> {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).or_else(|_| no("crypto", "the secret is unusable"))?;
+        mac.update(b"storageforge:enclave-pin:v1");
+        Ok(mac.finalize().into_bytes().into())
+    }
+
     fn kek(&self) -> Result<&[u8; 32], Refusal> {
         match &self.kek {
             Some(k) => Ok(k),
@@ -800,7 +829,7 @@ impl State {
                "bad_requests": self.bad, "bad_limit": BAD_LIMIT, "signed": self.signed, "refused": self.refused, "released": self.released, "rotating": self.next.is_some(),
                "memory_locked": self.memory_locked, "pid1": self.pid1,
                "chain": self.chain.status(),
-               "auth_failed": self.auth_failed, "stepup_missing": self.stepup_missing, "policy_refused": self.policy_refused, "uptime": self.started.elapsed().as_secs(),
+               "auth_failed": self.auth_failed, "foreign_unlocks": self.foreign_unlocks, "stepup_missing": self.stepup_missing, "policy_refused": self.policy_refused, "uptime": self.started.elapsed().as_secs(),
                "second_lock": self.held.as_ref().is_some_and(|h| h.share.is_some()),
                "channel": {"noise": "Noise_NX_25519_AESGCM_SHA256", "key": B64.encode(self.static_public), "handshakes": self.handshakes},
                "tasks": self.tasks.iter().map(|(name, (_, signed, refused))| (name.to_string(), json!({"signed": signed, "refused": refused}))).collect::<serde_json::Map<String, Value>>(),
@@ -839,6 +868,11 @@ impl State {
         let params = argon2::Params::new(m, t, p, Some(32)).or_else(|_| bad("Argon2id refuses those costs"))?;
         let mut kek = Zeroizing::new([0u8; 32]);
         // the memory Argon2id works in is asked for here, so that not having it is an answer and not the end of the process
+        // Asked up to 1 GiB, more than the micro VM has, and the kernel may kill the process before an allocation fails: so the
+        // memory the kernel says is available is checked first, with a margin. Where it cannot be read, the reservation below decides.
+        if mem_available_kib().is_some_and(|free| u64::from(m) + KDF_MEMORY_MARGIN_KIB > free) {
+            return no("crypto", "not enough memory in the enclave for those Argon2id costs");
+        }
         let mut blocks: Vec<argon2::Block> = Vec::new();
         if blocks.try_reserve_exact(params.block_count()).is_err() {
             return no("crypto", "not enough memory in the enclave for those Argon2id costs");
@@ -869,6 +903,14 @@ impl State {
         if check.ct_eq(VERIFIER).unwrap_u8() != 1 {
             return no("auth", "wrong vault secret: the stored verifier did not authenticate");
         }
+        // The caller brings the verifier too, so a verifier that opens proves only that the caller made it. Once this enclave has
+        // been unlocked for a vault it takes no other: not over a running unlock, not after `lock`, not to lift a lock-down.
+        if let Some(pin) = &self.pin {
+            if Self::pin_of(&held.secret)?.ct_eq(pin).unwrap_u8() != 1 {
+                self.foreign_unlocks += 1;
+                return no("auth", "this enclave was unlocked with another vault secret since it started: restart the enclave to unlock with a different one");
+            }
+        }
         let audit = open(kek.as_ref(), &an, &act, b"storageforge:audit-key")?;
         // Whoever unlocks may ask for step-up, and showing one enrolled record turns it on: the records are sealed under this KEK,
         // so one that opens was made by this enclave's vault. Leaving them out cannot turn it off again before a restart.
@@ -893,6 +935,7 @@ impl State {
                 None => return no("stepup", "the enclave is locked down: unlocking it takes the vault secret and a step-up it checks itself, a password or a security key"),
             }
         }
+        self.pin = Some(Self::pin_of(&held.secret)?);
         self.kek = Some(kek);
         self.audit = Some(audit);
         self.held = Some(held);
@@ -1297,6 +1340,14 @@ impl State {
             (Self::kdf(&again.secret, again.share.as_ref().map(|s| s.as_slice()), v)?, again)
         } else {
             self.need_stepup(v)?;
+            // whoever turns the vault over to a new secret proves the one in force first: before anyone has enrolled a step-up,
+            // need_stepup asks nothing, and without this any caller on the socket could rewrap every DEK under a secret of its own
+            let Some(h) = &self.held else { return no("locked", "the enclave is locked") };
+            let current = Zeroizing::new(bytes(v, "current", 4096)?);
+            if current.as_slice().ct_eq(h.secret.as_slice()).unwrap_u8() != 1 {
+                self.auth_failed += 1;
+                return no("auth", "rotating to a new secret takes the vault secret in force, and that is not it");
+            }
             self.derive(v)?
         };
         self.next_held = Some(held);
@@ -1322,6 +1373,9 @@ impl State {
         let Some(next) = self.next.take() else { return no("state", "no rotation is under way") };
         let held = self.next_held.take();
         if commit {
+            if let Some(h) = &held {
+                self.pin = Some(Self::pin_of(&h.secret)?);
+            }
             self.kek = Some(next);
             self.held = held;
         }
@@ -1505,9 +1559,11 @@ impl State {
 
     /// One connection: the handshake, then requests answered in order until it closes, sends something no honest client sends,
     /// or goes quiet. Every frame after the handshake is encrypted, both ways.
-    fn serve(&mut self, mut conn: impl Read + Write) {
+    fn serve(&mut self, conn: impl Read + Write) {
+        let mut conn = Patient::new(conn, Duration::from_secs(FRAME_SECS));
         let Some((mut rx, mut tx)) = self.handshake(&mut conn) else { return };
         loop {
+            conn.next_frame();
             let sealed = match read_frame(&mut conn, 16, MAX_FRAME + 16) {
                 Ok(frame) => frame,
                 Err(FrameError::Size(_)) => {
@@ -1516,6 +1572,7 @@ impl State {
                 }
                 Err(FrameError::Io(_)) => return,
             };
+            conn.next_frame(); // what is done with the request (Argon2id takes seconds) is not the peer's time
             let Some(body) = rx.open(&sealed) else {
                 self.count_bad(); // changed on the way, or not encrypted for this connection
                 return;
@@ -1562,6 +1619,60 @@ impl State {
                 return;
             }
         }
+    }
+}
+
+/// A connection that gives a frame a byte at a time. The socket's timeout is per read, so a peer that sends a byte every few
+/// seconds would never reach it: this ends any read or write that comes after the frame's time is up.
+struct Patient<T> {
+    inner: T,
+    began: Option<Instant>,
+    budget: Duration,
+}
+
+impl<T> Patient<T> {
+    fn new(inner: T, budget: Duration) -> Self {
+        Patient { inner, began: None, budget }
+    }
+
+    /// The next frame starts its time with its first byte.
+    fn next_frame(&mut self) {
+        self.began = None;
+    }
+
+    fn check(&self) -> std::io::Result<()> {
+        match self.began {
+            Some(t) if t.elapsed() > self.budget => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "a frame took too long")),
+            _ => Ok(()),
+        }
+    }
+
+    fn started(&mut self, n: usize) {
+        if n > 0 && self.began.is_none() {
+            self.began = Some(Instant::now());
+        }
+    }
+}
+
+impl<T: Read> Read for Patient<T> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.check()?;
+        let n = self.inner.read(buf)?;
+        self.started(n);
+        Ok(n)
+    }
+}
+
+impl<T: Write> Write for Patient<T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.check()?;
+        let n = self.inner.write(buf)?;
+        self.started(n);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -1664,5 +1775,38 @@ fn main() {
             eprintln!("usage: storageforge-enclave --vsock PORT | --unix PATH [--token-seconds N]");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mem_available_is_read_from_meminfo_text() {
+        assert_eq!(super::parse_mem_available("MemTotal:  262144 kB\nMemAvailable:  123456 kB\n"), Some(123456));
+        assert_eq!(super::parse_mem_available("MemTotal:  262144 kB\n"), None);
+    }
+
+    use super::*;
+
+    /// Gives one byte per read, each after a pause: a peer that drips.
+    struct Drip(u64);
+    impl Read for Drip {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(self.0));
+            buf[0] = 1;
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn a_frame_that_drips_in_runs_out_of_time_though_no_read_does() {
+        let mut slow = Patient::new(Drip(30), Duration::from_millis(100));
+        let mut buf = [0u8; 64];
+        let got = slow.read_exact(&mut buf);
+        assert_eq!(got.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        // the next frame has its own time
+        slow.next_frame();
+        let mut few = [0u8; 2];
+        assert!(slow.read_exact(&mut few).is_ok());
     }
 }

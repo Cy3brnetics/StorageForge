@@ -172,7 +172,9 @@ t_nebula() { local ca=$1 lh=$2 state=${6:-present} cab64=${7:-} confb64=${8:-} d
   local conf=$d/config.yml
   if [[ $state == absent ]]; then
     if [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit && ! -e $conf && ! -e $d/host.crt ]]; then ok "no Nebula started by StorageForge is here"; return 0; fi
-    nebula_ours "$conf" || { conflict "$conf was not written by StorageForge: a Nebula somebody set up by hand is left alone"; return 0; }
+    # a missing config passes nebula_ours, so without our unit file the keys here may belong to a hand-made Nebula
+    if [[ -e $conf ]]; then nebula_ours "$conf" || { conflict "$conf was not written by StorageForge: a Nebula somebody set up by hand is left alone"; return 0; }
+    elif [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit ]]; then conflict "there is no $unit and no configuration written by StorageForge, only keys in $d: a Nebula somebody set up by hand is left alone"; return 0; fi
     act "stop $unit and remove it, $conf, the certificates and the host key in $d (nebula stays installed). The certificate stays good elsewhere until it ends: storageforge-index vault nebula-revoke $ca NAME revokes it" || return 0
     tun_unit_stop "$unit"
     rm -f "$conf" "$conf.sf-before" "$d/host.crt" "$d/host.crt.sf-before" "$d/host.key" "$d/host.pub" "$d/ca.crt" "$d/ca.crt.sf-before"

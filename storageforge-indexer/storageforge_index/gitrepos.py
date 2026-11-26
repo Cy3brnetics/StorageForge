@@ -664,7 +664,7 @@ def repo_history(db, host_name: str, path: str, max_commits: int = 50) -> dict:
             if line == '@@commits':
                 mode = 'commits'
                 continue
-            if line.startswith('error\t'):
+            if mode is None and line.startswith('error\t'):       # later, 'error' is just the name of a tag
                 return {'error': line.partition('\t')[2], 'tags': [], 'commits': [], 'changelog': []}
 
             if mode == 'tags' and line:

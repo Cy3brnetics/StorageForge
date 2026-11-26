@@ -196,7 +196,7 @@ def _spec(found: dict) -> dict:
             'sources': [found['root']] if is_snapper and found.get('root') else local, 'dst': None if is_snapper else found.get('root'),
             'backups': found.get('backups') or [], 'excludes': found.get('excludes') or [], 'levels': found.get('levels') or {}, 'lowest': found.get('lowest'), 'schedule': found.get('schedule') or [],
             'fstype': found.get('fstype') or '', 'mount': found.get('mount') or '', 'root_exists': found.get('root_exists'),
-            'sync_first': bool(found.get('sync_first')), 'logfile': found.get('logfile'), 'count': len(found.get('snapshots') or []),
+            'sync_first': bool(found.get('sync_first')), 'relative': found.get('relative'), 'logfile': found.get('logfile'), 'count': len(found.get('snapshots') or []),
             'fit': fit(found), 'keep': ' '.join(f'{k}={v}' for k, v in (found.get('levels') or {}).items())}
 
 
@@ -381,7 +381,8 @@ def script(j: dict, verb: str) -> str:
             return HEAD + _rs_guard(spec) + f'rsnapshot -c {q(conf)} configtest\nrsnapshot -c {q(conf)} -t {q(low)}\n'
         if verb == 'log':
             tail = f'[[ -r {q(spec["logfile"])} ]] && tail -n 200 {q(spec["logfile"])}\n' if spec.get('logfile') else 'echo "(its config sets no logfile)"\n'
-            return f'journalctl -u {q(unit + "-*")} -n 100 --no-pager -o short-iso 2>&1 || true\n{tail}'
+            # the logfile is named by the config: only one that nobody but root could have written is followed as root
+            return HEAD + f'journalctl -u {q(unit + "-*")} -n 100 --no-pager -o short-iso 2>&1 || true\n(conf_ok {q(conf)}) && {tail}'
         if verb == 'snapshots':
             root = _safe_path(spec['root'], 'snapshot root')
             return (f'find {q(root)} -mindepth 1 -maxdepth 1 -type d -printf \'%f\\t%T@\\n\' | while IFS=$\'\\t\' read -r n t; do '
@@ -455,11 +456,23 @@ def original_of(spec: dict, rel: str) -> str:
         raise ValueError('pick a file or folder to restore')
     if spec['tool'] == 'snapper':
         return f'{spec["root"].rstrip("/")}/{rel}'
-    for b in spec.get('backups') or []:
-        dst = b['dst'].strip('/')
+    # rsnapshot's rsync_long_args decides the layout: with --relative a source /etc/ is stored under dst/etc/. The import
+    # records which (spec['relative']); a job imported before that has None and keeps the guess: a path under
+    # dst/<the source's own path> can only be that layout, so it is tried first, and the longest matching dst wins.
+    relative = spec.get('relative')
+    lines = [(b, b['dst'].strip('/')) for b in spec.get('backups') or []]
+    if relative is not False:
+        for b, dst in sorted(lines, key=lambda x: -len(x[1])):
+            src = b['src'].strip('/')
+            under = f'{dst}/{src}'.strip('/')
+            if src and b['src'].startswith('/') and (rel == under or rel.startswith(under + '/')):
+                return '/' + rel[len(dst):].lstrip('/')
+    for b, dst in sorted(lines, key=lambda x: -len(x[1])):
         if rel == dst or rel.startswith(dst + '/'):
             if not b['src'].startswith('/'):
                 raise ValueError(f'{b["src"]} is on another host: restore it there from {b["dst"]} by hand')
+            if relative is True:
+                continue        # --relative puts it under dst/<source path>, which was tried above
             return b['src'].rstrip('/') + rel[len(dst):]
     raise ValueError('that path is not inside any backup line of this job: open one of its folders')
 
@@ -501,7 +514,8 @@ def retention(db, conn: Conn, jid: str, keep: dict, actor: str) -> dict:
         conf = q(_safe_path(spec['config'], 'config'))
         body = HEAD + f'conf_ok {conf}\ncp -p -- {conf} {conf}.sf-bak\ntmp=$(mktemp)\n'
         for lv, n in keep.items():
-            body += (f'''LEVEL={q(lv)} KEEP={q(str(n))} awk -F'\\t' -v OFS='\\t' '($1 == "retain" || $1 == "interval") && $2 == ENVIRON["LEVEL"] {{ $3 = ENVIRON["KEEP"] }} {{ print }}' {conf} >"$tmp" && cat "$tmp" >{conf}\n''')
+            # fields split on runs of tabs, as rsnapshot reads them; a level that matched no line is a failed run, not a changed config
+            body += (f'''LEVEL={q(lv)} KEEP={q(str(n))} awk -F'\\t+' -v OFS='\\t' '($1 == "retain" || $1 == "interval") && $2 == ENVIRON["LEVEL"] {{ $3 = ENVIRON["KEEP"]; hit = 1 }} {{ print }} END {{ exit !hit }}' {conf} >"$tmp" && cat "$tmp" >{conf} || {{ cat {conf}.sf-bak >{conf}; rm -f "$tmp"; die {q("no retain line for " + lv + " in the config: it is back as it was")}; }}\n''')
         body += (f'rm -f "$tmp"\nif ! rsnapshot -c {conf} configtest; then cat {conf}.sf-bak >{conf}; die "rsnapshot refused it: the config is back as it was"; fi\n'
                  f'echo "retention set (the old config is {spec["config"]}.sf-bak)"\n')
     res = deploy.run(db, j['runner'], body, kind='job-action', ref=f'{jid}:retention', mode='apply', actor=actor, timeout=120)
@@ -512,34 +526,66 @@ def retention(db, conn: Conn, jid: str, keep: dict, actor: str) -> dict:
     return res
 
 
+# Two passes over the config. The first remembers the options on each backup line and where the last retain line is, so the
+# second can keep both: a backup line the request still has keeps its extra fields, and a retain level it does not
+# mention stays as it is. Only the counts of the levels it names change, and a level the config lacks is added in order.
 _RSNAPSHOT_EDIT_AWK = r"""BEGIN {
   nr = split(ENVIRON["SF_RETAIN"], rets, "\n")
   nb = split(ENVIRON["SF_BACKUPS"], baks, "\n")
   ne = split(ENVIRON["SF_EXCLUDES"], excs, "\n")
   set_ex = ENVIRON["SF_SET_EXCLUDES"] == "1"
   ret_kw = "retain"
+  for (i = 1; i <= nr; i++) if (rets[i] != "") { split(rets[i], rp, "\t"); newn[rp[1]] = rp[2] }
+}
+FNR == NR {
+  if ($0 ~ /^[A-Za-z_]+[ \t]/) {
+    n = split($0, w, /[ \t]+/)
+    if (w[1] == "backup" && n >= 3) {
+      src = w[2]; dst = w[3]; gsub(/\/+$/, "", src); gsub(/\/+$/, "", dst)
+      extra = ""; for (i = 4; i <= n; i++) extra = extra "\t" w[i]
+      opts[src "\t" dst] = extra
+    }
+    if (w[1] == "retain" || w[1] == "interval") { last_ret = FNR; have[w[2]] = 1 }
+  }
+  next
 }
 {
   k = ""
   if ($0 ~ /^[A-Za-z_]+[ \t]/) { split($0, kw, /[ \t]+/); k = kw[1] }
   if (k == "snapshot_root") { print "snapshot_root\t" ENVIRON["SF_ROOT"]; done_root = 1; next }
   if (k == "retain" || k == "interval") {
-    if (!done_ret) { ret_kw = k; for (i = 1; i <= nr; i++) if (rets[i] != "") print ret_kw "\t" rets[i]; done_ret = 1 }
+    ret_kw = k; done_ret = 1
+    add_levels(k, rank(kw[2]))
+    if (kw[2] in newn) print k "\t" kw[2] "\t" newn[kw[2]]; else print
+    if (FNR == last_ret) add_levels(k, 1000)
     next
   }
   if (k == "exclude" && set_ex) next
   if (k == "backup") {
     if (set_ex && !done_exc) { for (i = 1; i <= ne; i++) if (excs[i] != "") print "exclude\t" excs[i]; done_exc = 1 }
-    if (!done_bak) { for (i = 1; i <= nb; i++) if (baks[i] != "") print "backup\t" baks[i]; done_bak = 1 }
+    if (!done_bak) { emit_backups(); done_bak = 1 }
     next
   }
   print
+}
+function rank(l) { return l == "hourly" ? 1 : l == "daily" ? 2 : l == "weekly" ? 3 : l == "monthly" ? 4 : l == "yearly" ? 5 : 99 }
+function add_levels(k, below,   i, rp) {      # levels the config lacks go in before the first one that runs less often, as rsnapshot wants them
+  for (i = 1; i <= nr; i++) if (rets[i] != "") {
+    split(rets[i], rp, "\t")
+    if (!(rp[1] in have) && !(rp[1] in seen) && rank(rp[1]) < below) { print k "\t" rets[i]; seen[rp[1]] = 1 }
+  }
+}
+function emit_backups(   i, bp, src, dst) {
+  for (i = 1; i <= nb; i++) if (baks[i] != "") {
+    split(baks[i], bp, "\t"); src = bp[1]; dst = bp[2]; gsub(/\/+$/, "", src); gsub(/\/+$/, "", dst)
+    print "backup\t" baks[i] opts[src "\t" dst]
+  }
 }
 END {
   if (!done_root) print "snapshot_root\t" ENVIRON["SF_ROOT"]
   if (!done_ret) for (i = 1; i <= nr; i++) if (rets[i] != "") print ret_kw "\t" rets[i]
   if (set_ex && !done_exc) for (i = 1; i <= ne; i++) if (excs[i] != "") print "exclude\t" excs[i]
-  if (!done_bak) for (i = 1; i <= nb; i++) if (baks[i] != "") print "backup\t" baks[i]
+  if (!done_bak) emit_backups()
 }"""
 
 
@@ -623,25 +669,26 @@ def edit_job(db, conn: Conn, jid: str, body: dict, actor: str) -> dict:
         HEAD + f'conf_ok {conf}\ncp -p -- {conf} {conf}.sf-bak\ntmp=$(mktemp)\n'
         f'SF_ROOT={q(sf_root)} SF_RETAIN={q(sf_retain)} SF_BACKUPS={q(sf_backups)} '
         f'SF_EXCLUDES={q(sf_excludes)} SF_SET_EXCLUDES={q(sf_set_excludes)} '
-        f'awk {q(_RSNAPSHOT_EDIT_AWK)} {conf} >"$tmp" && cat "$tmp" >{conf}\n'
+        f'awk {q(_RSNAPSHOT_EDIT_AWK)} {conf} {conf} >"$tmp" && cat "$tmp" >{conf}\n'
         'rm -f "$tmp"\n'
         f'if ! rsnapshot -c {conf} configtest; then cat {conf}.sf-bak >{conf}; die "rsnapshot refused it: the config is back as it was"; fi\n'
         f'echo "updated {spec["config"]} (the old config is {spec["config"]}.sf-bak)"\n'
     )
     res = deploy.run(db, j['runner'], script_body, kind='job-action', ref=f'{jid}:edit', mode='apply', actor=actor, timeout=120)
     if res['status'] == 'ok':
+        levels = {**(spec.get('levels') or {}), **clean_keep}      # a level the request leaves out is still in the config
         local = [b['src'] for b in clean_backups if b['src'].startswith('/')]
         found_like = {
             'tool': 'rsnapshot', 'config': spec['config'], 'root': root,
             'fstype': spec.get('fstype'), 'mount': spec.get('mount'),
             'root_exists': spec.get('root_exists'), 'backups': clean_backups,
-            'levels': clean_keep, 'schedule': spec.get('schedule') or [], 'readable': True,
+            'levels': levels, 'schedule': spec.get('schedule') or [], 'readable': True,
         }
         spec.update({
             'root': root, 'dst': root, 'backups': clean_backups,
             'src': local[0] if local else None, 'sources': local,
-            'levels': clean_keep, 'lowest': next(iter(clean_keep), spec.get('lowest')),
-            'keep': ' '.join(f'{k}={v}' for k, v in clean_keep.items()),
+            'levels': levels, 'lowest': spec.get('lowest') or next(iter(levels), None),
+            'keep': ' '.join(f'{k}={v}' for k, v in levels.items()),
             'excludes': clean_excludes, 'fit': fit(found_like),
         })
         conn.execute('UPDATE jobs SET name = :n, spec_json = :s WHERE job_id = :j',

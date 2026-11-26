@@ -160,7 +160,10 @@ def dir_index(conn: Conn, host: str | None = None, mounts: list[int] | None = No
     at, acc, total = None, None, None      # a folder's files mostly arrive together: one dict lookup per run of them
     while rows := cur.fetchmany(50_000):
         for mid, dir_id, name, size, is_dir, is_link in rows:
-            parent = dirs[dir_id][1]
+            d = dirs.get(dir_id)
+            if d is None:        # a scan committed a folder after the folders were read: the next build has it
+                continue
+            parent = d[1]
             if dir_id != at:
                 at, acc, total = dir_id, None, raw.setdefault(dir_id, [0, 0])
             total[0] += size or 0

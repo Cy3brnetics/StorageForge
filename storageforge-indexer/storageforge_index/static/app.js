@@ -50,7 +50,9 @@ const activeNodes = () => S.nodes.filter(active);
 const activeEdges = () => S.edges.filter((e) => active(e.s) && active(e.t));
 
 async function loadGraph({ background = false } = {}) {
+  const fresh = latest('graph');
   const g = await getJSON('/api/graph' + (S.host ? `?host=${encodeURIComponent(S.host)}` : ''));
+  if (!fresh()) return;
   const old = S.byId;
   S.byId = new Map(); S.adj = new Map();
   S.nodes = g.nodes.map((n, i) => {
@@ -721,7 +723,11 @@ function showTab(name) {
   if (name === 'notifications') loadNotifications();
   if (name === 'copies') loadCopies();
   if (name === 'moves') loadMoves();
-  if (name === 'changes') loadChanges();
+  if (name === 'changes') {
+    const pid = window.CHANGES_LINK_PLAN || null;
+    window.CHANGES_LINK_PLAN = null;
+    loadChanges(pid);
+  }
   if (name === 'git') loadGit();
   if (name === 'rebuild') {
     const sub = window.REBUILD_LINK_SUB || REBUILD_SUB;
@@ -1067,7 +1073,7 @@ async function loadHosts() {
   sel.value = S.host;
 }
 document.addEventListener('sf:scan', () => { afterScanRefresh(false); });
-$('#host').addEventListener('change', () => { $('#toplanner').href = '/planner' + (S.host ? `#overview@${encodeURIComponent(S.host)}` : ''); });
+$('#host').addEventListener('change', () => { $('#toplanner').href = '/planner' + ($('#host').value ? `#overview@${encodeURIComponent($('#host').value)}` : ''); });
 $('#host').addEventListener('change', async () => { S.host = $('#host').value; S.focus = null; S.selected = null; S.byId = new Map(); T.sel = null; routeSync(); await Promise.all([loadGraph(), loadDesigns()]); });
 $('#hops').addEventListener('change', () => { S.hops = Number($('#hops').value); if (S.focus) applyFocus(); });
 $('#reset').addEventListener('click', () => { for (const n of S.nodes) n.fixed = false; alpha = 0.5; setFocus(null); S.selected = null; renderSummary(); fit(); });

@@ -361,6 +361,8 @@ struct Tracked {
 pub struct Reader {
     dirs: Vec<PathBuf>,
     files: HashMap<String, Tracked>,
+    /// File ids of journals read to their end and closed: not opened again, and no descriptor kept for them.
+    finished: std::collections::HashSet<String>,
     /// The last number handed over, per seqnum_id.
     last: HashMap<String, u64>,
     start: Option<Resume>,
@@ -383,7 +385,7 @@ impl Reader {
     /// written from now on when there is none.
     pub fn new(dirs: Vec<PathBuf>, start: Option<Resume>) -> Reader {
         let at_tail = start.is_none();
-        Reader { dirs, files: HashMap::new(), last: HashMap::new(), start, at_tail, held: 0, unreadable: 0 }
+        Reader { dirs, files: HashMap::new(), last: HashMap::new(), start, at_tail, held: 0, unreadable: 0, finished: Default::default() }
     }
 
     fn discover(&mut self) {
@@ -405,7 +407,7 @@ impl Reader {
                 self.unreadable += 1;
                 continue;
             };
-            if self.files.contains_key(&file.header.file_id) {
+            if self.files.contains_key(&file.header.file_id) || self.finished.contains(&file.header.file_id) {
                 continue;
             }
             let mut tracked = Tracked { pos: Position::default(), peeked: Default::default(), done: false, file };
@@ -515,7 +517,7 @@ impl Reader {
             self.last.insert(e.seqnum_id.clone(), e.seqnum);
             out.push((e, missing));
         }
-        // an archived file read to its end is let go; its file id stays known, so it is not read twice
+        // an archived file read to its end is let go and closed; its file id stays known, so it is not read twice
         for t in self.files.values_mut() {
             if t.file.header.state == 2 && t.peeked.is_empty() {
                 let mut probe = t.pos;
@@ -523,6 +525,12 @@ impl Reader {
                     t.done = true;
                 }
             }
+        }
+        // a finished file's descriptor is closed: plugins have few, and a deleted journal stays on disk while one is open
+        let finished: Vec<String> = self.files.iter().filter(|(_, t)| t.done && t.peeked.is_empty()).map(|(id, _)| id.clone()).collect();
+        for id in finished {
+            self.files.remove(&id);
+            self.finished.insert(id);
         }
         out
     }

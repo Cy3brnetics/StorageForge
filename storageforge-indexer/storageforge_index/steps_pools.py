@@ -43,15 +43,17 @@ zp_shape() { zpool status -P -- "$1" 2>/dev/null | awk -v p="$1" '$1 == "config:
 # every leaf of the pool with the top-level vdev it is in: "mirror-0 /dev/sdb1", "disk /dev/sdc1", "log /dev/nvme0n1p1"
 zp_leaves() { zpool status -P -- "$1" 2>/dev/null | awk -v p="$1" '$1 == "config:" {c = 1; next} !c || NF == 0 || $1 == "NAME" {next} $1 == "errors:" {exit} {match($0, /^[ \t]*/); ind = RLENGTH} $1 == p && !base {base = ind; sec = "data"; next} ind == base {sec = $1; next} sec != "data" {print sec, $1; next} ind == base + 2 {t = $1; if (t !~ /^(mirror|raidz|draid|replacing|spare)/) {print "disk", $1; t = ""}; next} t != "" {print t, $1}'; }
 # zp_find POOL NAME: the top-level vdev NAME is in (a path, a short name such as sdb, or a guid), or nothing
-zp_find() { local pool=$1 want=$2 r top leaf
+zp_find() { local pool=$1 want=$2 r top leaf whole=0
   r=$want; [[ $want == /* ]] || [[ $want =~ ^[0-9]+$ ]] || r=/dev/$want
   [[ -e $r ]] && r=$(readlink -f -- "$r")
+  # only a whole disk stands for its partitions: /dev/sda1 is not /dev/sda10, and /dev/nvme0n1p1 is not /dev/nvme0n1p10
+  if [[ $r != *[0-9] || $r =~ (nvme[0-9]+n[0-9]+|mmcblk[0-9]+|loop[0-9]+|nbd[0-9]+)$ ]]; then whole=1; fi
   while read -r top leaf; do
     [[ -n $leaf ]] || continue
     [[ $leaf == "$want" ]] && { echo "$top"; return 0; }
     [[ -e $leaf ]] && leaf=$(readlink -f -- "$leaf")
     # zpool puts a whole disk it was given in a partition of its own: /dev/sdb is in the pool as /dev/sdb1
-    if [[ $leaf == "$r" || $leaf =~ ^${r}p?[0-9]+$ ]]; then echo "$top"; return 0; fi
+    if [[ $leaf == "$r" ]] || { ((whole)) && [[ $leaf =~ ^${r}p?[0-9]+$ ]]; }; then echo "$top"; return 0; fi
   done < <(zp_leaves "$pool"; zpool status -g -- "$pool" 2>/dev/null | awk -v p="$pool" '$1 == "config:" {c = 1; next} c && $1 ~ /^[0-9]+$/ {print "guid", $1}')
   return 1
 }

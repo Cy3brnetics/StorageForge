@@ -9,7 +9,9 @@ worse, so a chatty service can't push errors out. Lines are one row each: time, 
 The journal holds what programs chose to print, which can include passwords, so known secret shapes are removed before a
 line is stored. That catches common forms, not every form. It is also the host's own word: anyone on the host can write
 to it, so a line says what was logged, not that it happened. `ident` is whatever the writer called itself; `unit`, `uid`,
-`comm` and `exe` are journald's own account of who wrote the line, which a writer that is not root cannot choose.
+`comm` and `exe` are journald's own account of who wrote the line, which a writer that is not root cannot choose. Of those, a process can
+still rename itself, so `comm` is display text only: log rules and prepared fixes go by `unit`, or by `exe` when a line has no unit
+(logrules.who_wrote).
 
 What is kept is decided by when a line arrived, never by the time the host stamped on it: a host with a wrong or lying clock
 cannot have its lines deleted as they are stored, or push other lines out with ones stamped ahead. Each host has a rate

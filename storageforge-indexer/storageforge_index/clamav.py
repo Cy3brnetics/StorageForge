@@ -208,6 +208,8 @@ if [[ -e $q/file ]]; then
 fi
 [[ ! -L $path ]] || { conflict "$path is a symlink now: scan again"; exit 1; }
 [[ -f $path ]] || { conflict "$path is gone, or not a regular file"; exit 1; }
+real=$(realpath -e -- "$path" 2>/dev/null) || real=''
+[[ $real == "$path" ]] || { conflict "$path goes through a symlinked folder (it is ${real:-unreadable}): scan again"; exit 1; }
 if ((SYSTEM == 0)); then
   case $path in /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/usr/*|/boot/*|/etc/*)
     conflict "$path is a system path: moving it can stop this host from booting. Allow system paths to go ahead"; exit 1 ;;
@@ -260,8 +262,10 @@ if ((APPLY == 0)); then
 fi
 mode=$(sed -n 's/^mode=//p' "$q/meta") owner=$(sed -n 's/^owner=//p' "$q/meta")
 [[ $mode =~ ^[0-7]{3,4}$ && $owner =~ ^[0-9]+:[0-9]+$ ]] || { conflict "the quarantine record is damaged: restore it by hand from $q"; exit 1; }
-mv -- "$q/file" "$path"
-chown "$owner" "$path"; chmod "$mode" "$path"
+# owner and mode while the file is still in the root-only quarantine: after the move, the path is in a folder its owner can
+# write, and a chown by path there follows whatever symlink was put in its place
+chown -- "$owner" "$q/file"; chmod -- "$mode" "$q/file"
+mv -T -- "$q/file" "$path"
 rm -f "$q/meta"; rmdir "$q"
 ok "restored"
 echo "RESTORED $QID"

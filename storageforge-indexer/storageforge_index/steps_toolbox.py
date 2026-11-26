@@ -43,6 +43,16 @@ tb_account() { # account tool: the account that runs one rootless tool, with no 
   act "make the account $1, which runs $2 and nothing else (no shell, home @HOME@/$2)" || return 0
   try useradd --system --user-group --create-home --home-dir "@HOME@/$2" --shell /usr/sbin/nologin --comment "StorageForge Toolbox $2" "$1"
 }
+tb_hand_over() { # folder owner: what secret-file made there before the account existed (owned by root) goes to the account
+  local f
+  [[ -d $1 ]] || return 0
+  if [[ $(stat -c %U -- "$1") != "$2" ]] && act "hand $1 to $2"; then chown "$2:$2" -- "$1"; fi
+  for f in "$1"/*; do
+    [[ -f $f && ! -L $f && $(stat -c %U -- "$f") != "$2" ]] || continue
+    act "hand $f to $2" && chown "$2:$2" -- "$f"
+  done
+  return 0
+}
 tb_podman_ok() { # Quadlet came with Podman 4.4
   local v maj min
   v=$(podman --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+" | head -n 1)
@@ -84,6 +94,7 @@ tb_container() { local tool=$1 rootless=$2 unit=$3 acct=$4 dirs=$5 ports=$6 imag
     sc=(systemctl)
   fi
   tb_owned "$dirs" "$owner"
+  [[ -z $owner ]] || tb_hand_over "@DATA_ROOT@/$tool/secrets" "$owner"
   if [[ -n $sock ]] && ((rootless)); then # a panel that runs containers: the Podman socket of its own account, never root
     if "${sc[@]}" is-active --quiet podman.socket 2>/dev/null; then ok "the Podman socket of $acct is on"
     elif act "switch on the Podman socket of $acct (podman.socket), which only that account and $tool reach"; then
@@ -403,7 +414,7 @@ t_tool_data_remove() { local tool=$1 confirm=$2 verdict=$3 why=$4 dirs=$5 d
   for d in ${dirs//,/ }; do t_trash "$d"; done
   return 0
 }
-""".replace('@HOME@', toolbox.TOOLS_HOME)
+""".replace('@HOME@', toolbox.TOOLS_HOME).replace('@DATA_ROOT@', toolbox.DATA_ROOT)
 
 
 def _label(method: str) -> str:

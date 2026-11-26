@@ -447,13 +447,15 @@ impl Ctl {
             self.keep(SEEN_FILE, Seen { counter: m.counter, sha256: digest.clone() }.line().trim_end())?;
         }
         let dir = self.host.manifest_dir();
-        // The files of a plugin this manifest takes out go with it: the agent takes anything in its plugin folder that its manifest
+        // The files of a plugin this manifest takes out or replaces go with it: the agent takes anything in its plugin folder that its manifest
         // does not account for as tampering (roadmap 11.3). Only the files of plugins the manifest in force named are taken away;
         // anything else found there stays, for the check from outside to find.
         if let Ok(old) = read_small(&dir.join(MANIFEST_FILE), manifest::MAX_MANIFEST) {
             if let Ok(old) = serde_json::from_slice::<Manifest>(&old) {
                 let plugins = self.host.state_dir().join("plugins");
-                for gone in old.plugins.iter().filter(|e| plugin::is_name(&e.name) && !m.plugins.iter().any(|n| n.name == e.name)) {
+                // a plugin that stays under its name with a new descriptor (a new release of it) goes too: its old files would no
+                // longer be the ones the manifest names, and the agent would take them for tampering and wipe its key at the next start
+                for gone in old.plugins.iter().filter(|e| plugin::is_name(&e.name) && !m.plugins.iter().any(|n| n.name == e.name && n.descriptor == e.descriptor)) {
                     for file in [runner::descriptor_file(&gone.name), runner::signature_file(&gone.name), runner::program_file(&gone.name)] {
                         let _ = std::fs::remove_file(plugins.join(&file));
                         let _ = std::fs::remove_file(plugins.join(format!("{file}.new")));
@@ -625,8 +627,11 @@ impl Ctl {
         self.pinned_agent()?;
         let mut stopped = false;
         if let Some((kind, spec)) = self.recorded() {
-            self.act(&runtime::stop(kind, &spec))?;
-            stopped = true;
+            // A container that cannot be stopped (its folder is gone, say) must not keep the key from being deleted.
+            match self.act(&runtime::stop(kind, &spec)) {
+                Ok(()) => stopped = true,
+                Err(e) => self.notes.push(format!("the container could not be stopped: {}", e.why)),
+            }
         }
         let state = self.host.state_dir();
         let why = format!("wiped by the controller: {}", runner::plain(reason));
@@ -634,7 +639,8 @@ impl Ctl {
             self.notes.push(e);
         }
         if unsafe { libc::geteuid() } == 0 {
-            let _ = std::os::unix::fs::chown(state.join(wipe::WIPED_FILE), Some(self.agent.uid), Some(self.agent.gid));
+            // lchown: the folder is the agent's to write in, and a symlink put in place of the marker must not hand its target over
+            let _ = std::os::unix::fs::lchown(state.join(wipe::WIPED_FILE), Some(self.agent.uid), Some(self.agent.gid));
         }
         let _ = std::fs::remove_file(self.file("agent.pub"));
         Ok(json!({"wiped": true, "stopped": stopped}))

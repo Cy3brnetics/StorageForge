@@ -51,7 +51,8 @@ rt_restore_test() { # name tool repo keyfile source scratch sample: restore the 
   command -v "$RT_TOOL" >/dev/null || { rt_done failed "$RT_TOOL is not installed here"; return 0; }
   [[ -r $key ]] || { rt_done failed "the repository key is not on this host"; return 0; }
   [[ -d $source ]] || { rt_done failed "$source is not a folder here, and it is what the restore is compared with"; return 0; }
-  install -d -m 0700 -- "$RT_SCRATCH" || { rt_done failed "could not make $RT_SCRATCH"; return 0; }
+  # a folder that is there is not ours to chmod: only the sf-restore-XXXXXX folder inside it is made private
+  [[ -d $RT_SCRATCH ]] || install -d -m 0700 -- "$RT_SCRATCH" || { rt_done failed "could not make $RT_SCRATCH"; return 0; }
   RT_WORK=$(mktemp -d "$RT_SCRATCH/sf-restore-XXXXXX") || { RT_WORK=; rt_done failed "could not make a scratch folder in $RT_SCRATCH"; return 0; }
   case $RT_TOOL in
     restic)

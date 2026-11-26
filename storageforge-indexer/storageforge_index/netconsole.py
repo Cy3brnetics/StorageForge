@@ -35,6 +35,7 @@ DEFAULT_SOURCE_PORT = 6665      # and what it sends from
 MAX_PACKET = 2048               # the kernel sends at most about 1,000 bytes of message in one packet
 PACKETS_PER_SEC, BURST = 50, 1000
 FLUSH_SECS, BATCH_LINES = 2.0, 500
+MAX_KEPT = 5000          # lines a host keeps waiting for a database that would not take them
 RELOAD_SECS = 30
 _EXTENDED = re.compile(r'(\d{1,3}),(\d{1,20}),(\d{1,20}),([^;]{0,40});(.*)', re.S)
 STATE = {'listening': None, 'unknown': 0, 'last_unknown': None, 'last_unknown_at': None, 'limited': 0, 'error': None}
@@ -166,7 +167,11 @@ class Receiver:
     def take(self, data: bytes, peer: tuple, now: float) -> str:
         """'taken', 'unknown', 'limited', 'too-big' or 'empty': what became of one packet."""
         if now - self.loaded_at >= RELOAD_SECS:
-            self.reload(now)
+            try:
+                self.reload(now)
+            except Exception:       # a database that is busy or down for a moment must not end the receiver: keep the sources it knew and try again later
+                errlog.trace()
+                self.loaded_at = now
         try:
             who = (_address(str(peer[0])), int(peer[1]))
         except (ValueError, TypeError, IndexError):
@@ -204,18 +209,43 @@ class Receiver:
         pending, counted, self.pending, self.counted, self.flushed_at = self.pending, self.counted, {}, {}, now
         if not pending and not counted:
             return 0
-        conn = self.db.connect()
-        stored = 0
+        stored, error = 0, None
         try:
-            for host, lines in pending.items():
-                stored += hostlogs.store(conn, host, {'state': 'ok', 'lines': lines, 'cut': False}, now, via='netconsole', counts=counts)
-            with conn.tx():
-                for host, (packets, dropped) in counted.items():
-                    conn.execute('UPDATE netconsole_sources SET packets = packets + :p, dropped = dropped + :d, last_at = CASE WHEN :p > 0 THEN :t ELSE last_at END WHERE host = :h',
-                                 {'p': packets, 'd': dropped, 't': int(now), 'h': host})
+            conn = self.db.connect()
+        except Exception as exc:
+            self._keep(pending, counted)
+            raise exc
+        try:
+            for host, lines in list(pending.items()):
+                try:
+                    stored += hostlogs.store(conn, host, {'state': 'ok', 'lines': lines, 'cut': False}, now, via='netconsole', counts=counts)
+                    del pending[host]
+                except Exception as exc:                # one host failing must not drop the others' lines
+                    error = error or exc
+            try:
+                with conn.tx():
+                    for host, (packets, dropped) in counted.items():
+                        conn.execute('UPDATE netconsole_sources SET packets = packets + :p, dropped = dropped + :d, last_at = CASE WHEN :p > 0 THEN :t ELSE last_at END WHERE host = :h',
+                                     {'p': packets, 'd': dropped, 't': int(now), 'h': host})
+                counted = {}
+            except Exception as exc:
+                error = error or exc
         finally:
             conn.close()
+            if error is not None:
+                self._keep(pending, counted)
+        if error is not None:
+            raise error
         return stored
+
+    def _keep(self, pending: dict, counted: dict) -> None:
+        """Put back what a failed flush did not store, so the next flush tries again. A host keeps at most MAX_KEPT lines, the newest."""
+        for host, lines in pending.items():
+            self.pending[host] = (lines + self.pending.get(host, []))[-MAX_KEPT:]
+        for host, (packets, dropped) in counted.items():
+            c = self.counted.setdefault(host, [0, 0])
+            c[0] += packets
+            c[1] += dropped
 
 
 def serve(db: Database, sock: socket.socket, stop: threading.Event | None = None, wake=None):
@@ -232,6 +262,8 @@ def serve(db: Database, sock: socket.socket, stop: threading.Event | None = None
             if stop and stop.is_set():
                 break
             time.sleep(0.5)
+        except Exception:
+            errlog.trace()
         now = time.time()
         if r.due(now):
             try:

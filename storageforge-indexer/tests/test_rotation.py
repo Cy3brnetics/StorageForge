@@ -104,8 +104,8 @@ class Rotation(unittest.TestCase):
         actions = [e['action'] for e in AuditLog(self.db, self.conn, None).tail(10)]
         self.assertIn('rotate.key', actions)
 
-    def test_one_host_that_will_not_take_it_leaves_the_old_key_working_everywhere(self):
-        self.fleet.refuse = {'pc'}
+    def test_no_host_taking_the_new_key_leaves_the_old_key_working_everywhere(self):
+        self.fleet.refuse = {'nas', 'pc'}
         r = rotation.apply(self.db, self.conn, 'test')
         fleet = next(x for x in r['results'] if x['key'] == 'fleet')
         self.assertFalse(fleet['ok'])

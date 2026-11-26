@@ -138,6 +138,8 @@ def walk(chain_rules: list[dict], by_chain: dict, flow: dict, state: dict, depth
                 state.setdefault('fenced', []).append({'only': rule['not_saddr'], 'rule': _label(rule)})
             else:
                 state['unknown'].append(_label(rule) + ': a rule for everyone but some sources')
+                # an accept for everyone but some sources lets nearly everyone in, so a closed answer past it is open to doubt
+                state['may_allow'] = state.get('may_allow') or action == 'accept' or bool(action and action.startswith('jump:'))
             continue
         if got == 'source':
             if action == 'accept':
@@ -316,10 +318,10 @@ def listener_item(lsn: dict, net: dict, fw: dict | None) -> dict:
     paths = []
     for iface, cls in ifaces:
         fam = _family(lsn['addr']) if lsn['scope'] != 'any' else ('ip6' if ':' in lsn['addr'] else 'ip')
-        if lsn['addr'] == '*':
-            fam = 'ip'
-        flow = {'proto': lsn['proto'], 'port': lsn['port'], 'iif': iface['name'], 'daddr': lsn['addr'] if lsn['scope'] != 'any' else None, 'family': fam}
-        paths.append((_input_path(fw, flow), cls, iface['name']))
+        # a '*' socket is dual-stack on Linux, so both families can reach it and the wider answer counts
+        for f in (('ip', 'ip6') if lsn['addr'] == '*' else (fam,)):
+            flow = {'proto': lsn['proto'], 'port': lsn['port'], 'iif': iface['name'], 'daddr': lsn['addr'] if lsn['scope'] != 'any' else None, 'family': f}
+            paths.append((_input_path(fw, flow), cls, iface['name']))
     level, rule, why, reached = _level_for(paths)
     fenced = sorted({str(f['only']) for res, _, _ in paths for f in res.get('fenced') or []})
     return {**item, 'level': level, 'rule': rule, 'why': why, 'reached_on': reached, **({'fenced_to': fenced} if fenced else {})}
@@ -385,10 +387,12 @@ def forwards_of(device: str, fw: dict, wan: list[str], net: dict) -> list[dict]:
         target = rule.get('to_port') or port
         outside = rule.get('iif') is None or any(_ifname_match(rule['iif'], w) for w in wan) if wan else rule.get('iif') is None
         oif = next((i['name'] for i in net.get('interfaces') or [] for a in i.get('addresses') or [] if a.get('prefix') is not None and _addr_in(rule['to_addr'], a['ip'], a['prefix'])), None)
-        flow = {'proto': str(rule.get('proto') or 'tcp').split(',')[0], 'port': target, 'iif': str(rule.get('iif') or (wan[0] if wan else '')).split(',')[0] or None, 'oif': oif, 'daddr': rule['to_addr'], 'family': _family(rule['to_addr']) or 'ip', 'dnat': True}
-        res = kernel_path(fw, 'forward', flow) if target else {'verdict': 'unknown', 'rule': None, 'unknown': ['a forward with no port'], 'sources': [], 'may_allow': True}
-        verdict = 'unknown' if res['verdict'] == 'unknown' or (res['verdict'] != 'accept' and res.get('may_allow')) else res['verdict']
-        out.append({'device': device, 'proto': flow['proto'], 'outside_port': port, 'to_addr': rule['to_addr'], 'to_port': target, 'iif': rule.get('iif'), 'from_wan': bool(outside), 'verdict': verdict, 'sources': res.get('sources') or [], 'rule': res.get('rule'), 'nat_rule': rule.get('comment') or _label(rule), 'why': res.get('unknown') or []})
+        # a TCP/UDP forward is one forward for each protocol
+        for proto in str(rule.get('proto') or 'tcp').split(','):
+            flow = {'proto': proto, 'port': target, 'iif': str(rule.get('iif') or (wan[0] if wan else '')).split(',')[0] or None, 'oif': oif, 'daddr': rule['to_addr'], 'family': _family(rule['to_addr']) or 'ip', 'dnat': True}
+            res = kernel_path(fw, 'forward', flow) if target else {'verdict': 'unknown', 'rule': None, 'unknown': ['a forward with no port'], 'sources': [], 'may_allow': True}
+            verdict = 'unknown' if res['verdict'] == 'unknown' or (res['verdict'] != 'accept' and res.get('may_allow')) else res['verdict']
+            out.append({'device': device, 'proto': flow['proto'], 'outside_port': port, 'to_addr': rule['to_addr'], 'to_port': target, 'iif': rule.get('iif'), 'from_wan': bool(outside), 'verdict': verdict, 'sources': res.get('sources') or [], 'rule': res.get('rule'), 'nat_rule': rule.get('comment') or _label(rule), 'why': res.get('unknown') or []})
     return out
 
 

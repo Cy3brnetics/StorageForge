@@ -142,10 +142,15 @@ def problems(conn: Conn, now: float | None = None) -> dict:
     for host, checked_at, check_json, enrolled_at in conn.all("""SELECT host, checked_at, check_json, enrolled_at FROM agents
                                                                  WHERE enabled = 1 AND state = 'running' AND fingerprint IS NOT NULL"""):
         last = _loads(check_json) or {}
-        since = checked_at if last.get('ok') else None
-        if since is None and checked_at is not None and enrolled_at and now - enrolled_at > UNCHECKED_SECS:
-            out[f'agent-unchecked:{host}'] = ('agent-unchecked', host, f'The agent on {host} could not be checked from outside',
-                                              f'the last try said: {str(last.get("error") or "")[:300]}', 'warn')
+        if checked_at is None:
+            continue
+        # One check that could not run is not news: it is when the last one that did run, or the enrolment, is older than UNCHECKED_SECS,
+        # or when nothing has tried at all for that long.
+        last_ok = last.get('last_ok') or (checked_at if last.get('ok') else None)
+        failing = not last.get('ok') and now - (last_ok or enrolled_at or now) > UNCHECKED_SECS
+        if failing or now - checked_at > UNCHECKED_SECS:
+            said = f'the last try said: {str(last.get("error") or "")[:300]}' if not last.get('ok') else f'no check has run since {time.strftime("%Y-%m-%d %H:%M", time.localtime(checked_at))}'
+            out[f'agent-unchecked:{host}'] = ('agent-unchecked', host, f'The agent on {host} could not be checked from outside', said, 'warn')
     rows = conn.all("""SELECT a.host, a.fingerprint, a.manifest_sha, a.updated_at, a.endpoint, h.machine_id, p.last_seen, p.claims_json
                        FROM agents a LEFT JOIN hosts h ON h.hostname = a.host LEFT JOIN agent_peers p ON p.fingerprint = a.fingerprint
                        WHERE a.enabled = 1 AND a.state = 'running' AND a.fingerprint IS NOT NULL""")
