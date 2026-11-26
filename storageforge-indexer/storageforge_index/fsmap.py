@@ -9,7 +9,7 @@ from __future__ import annotations
 import posixpath
 
 from .db import Conn
-from .moves import _path, _subtree_sql, _under, find_host, hosts, mount_of, subtree
+from .moves import _path, _under, find_host, first_level, hosts, mount_of, subtree
 
 NETWORK = {'nfs': 'nfs', 'nfs4': 'nfs', 'cifs': 'smb', 'smb3': 'smb', 'smbfs': 'smb', 'fuse.sshfs': 'sshfs',
            'fuse.rclone': 'rclone', '9p': 'virtfs', 'virtiofs': 'virtfs'}
@@ -177,20 +177,7 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
         raise LookupError(f'{host_name} has not been scanned')
     path = _path(path or '/', 'path')
     m = mount_of(h, path)
-    children: dict[str, dict] = {}
-    if m and m['state'] == 'indexed':
-        where, p = _subtree_sql(path, m['target'])
-        base = path.rstrip('/') + '/'
-        for parent, size, n in conn.all(f"""SELECT d.path, coalesce(sum(f.file_size_bytes), 0), count(*)
-                                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id WHERE {where} GROUP BY d.path""", {'m': m['id'], **p}):
-            if parent == path or not parent.startswith(base):
-                continue
-            first = parent[len(base):].split('/', 1)[0]
-            c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': 0})
-            c['bytes'] += size
-            c['entries'] += n
-        for name, size in _dir_rows(conn, m, path):
-            children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
+    children = first_level(conn, m, path) if m and m['state'] == 'indexed' else {}
     _add_mounts_below(h, path, children)
     files, more = _files_at(conn, m, path) if m and m['state'] == 'indexed' else ([], 0)
     exps = exports_of(conn, h['name'])

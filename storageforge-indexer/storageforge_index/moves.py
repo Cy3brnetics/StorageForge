@@ -314,6 +314,26 @@ def subtree(conn: Conn, mount: dict, path: str) -> dict:
     return {'entries': n, 'bytes': min(size, used) if used else size, 'files': files}
 
 
+def first_level(conn: Conn, m: dict, path: str) -> dict[str, dict]:
+    """The folders directly under path on an indexed mount, {name: {name, bytes, entries}}: one pass over the subtree, rolled up to
+    the first level, and the folders at path that hold nothing. For Moves (browse) and the file map (fsmap.browse)."""
+    where, p = _subtree_sql(path, m['target'])
+    base = path.rstrip('/') + '/'
+    children: dict[str, dict] = {}
+    for parent, size, n in conn.all(f"""SELECT d.path, coalesce(sum(f.file_size_bytes), 0), count(*)
+                                        FROM file_records f JOIN directories d ON d.dir_id = f.dir_id WHERE {where} GROUP BY d.path""", {'m': m['id'], **p}):
+        if parent == path or not parent.startswith(base):
+            continue
+        first = parent[len(base):].split('/', 1)[0]
+        c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': 0})
+        c['bytes'] += size
+        c['entries'] += n
+    for (name,) in conn.all("""SELECT f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
+                               WHERE d.mount_id = :m AND d.path = :p AND f.is_directory""", {'m': m['id'], 'p': path}):
+        children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
+    return children
+
+
 def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
     """Subfolders of path on a host, with indexed sizes: one pass over the subtree, rolled up to the first level."""
     hs = hosts(conn)
@@ -322,21 +342,7 @@ def browse(conn: Conn, host_name: str, path: str = '/') -> dict:
         raise ValueError(f'{host_name} has not been scanned')
     path = _path(path or '/', 'path')
     m = mount_of(h, path)
-    children: dict[str, dict] = {}
-    if m and m['state'] == 'indexed':
-        where, p = _subtree_sql(path, m['target'])
-        base = path.rstrip('/') + '/'
-        for parent, size, n in conn.all(f"""SELECT d.path, coalesce(sum(f.file_size_bytes), 0), count(*)
-                                            FROM file_records f JOIN directories d ON d.dir_id = f.dir_id WHERE {where} GROUP BY d.path""", {'m': m['id'], **p}):
-            if parent == path or not parent.startswith(base):
-                continue
-            first = parent[len(base):].split('/', 1)[0]
-            c = children.setdefault(first, {'name': first, 'bytes': 0, 'entries': 0})
-            c['bytes'] += size
-            c['entries'] += n
-        for (name,) in conn.all("""SELECT f.filename FROM file_records f JOIN directories d ON d.dir_id = f.dir_id
-                                   WHERE d.mount_id = :m AND d.path = :p AND f.is_directory""", {'m': m['id'], 'p': path}):
-            children.setdefault(name, {'name': name, 'bytes': 0, 'entries': 0})
+    children = first_level(conn, m, path) if m and m['state'] == 'indexed' else {}
     for mm in h['mounts']:                                  # mounts directly below: their own filesystems
         rel = mm['target'][len(path.rstrip('/')) + 1:] if _under(mm['target'], path) and mm['target'] != path else ''
         if rel and '/' not in rel and mm['state'] != 'gone':
