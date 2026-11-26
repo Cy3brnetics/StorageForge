@@ -223,7 +223,8 @@ class MoreCollected(Collected):
         s = inframeasure._sections(out)
         for section in ('nebula_conf', 'netmaker_json', 'swan_sas', 'swan_conns', 'openvpn_pki', 'ziti_status', 'tp_status', 'tp_nodes', 'tp_conf', 'tp_login', 'boundary_targets', 'boundary_conf', 'pomerium_conf'):
             self.assertTrue(s.get(section), f'{section} was collected')
-        self.assertEqual(bool(s.get('nebula_cert')), bool(REAL_NEBULA_CERT))
+        # every section ends in the blank line that starts the next one, so an empty section is [''], and is true as a list
+        self.assertEqual(any(s.get('nebula_cert', [])), bool(REAL_NEBULA_CERT))
         self.assertEqual([x for x in s['tp_status'] if x], ['"name": "teleport.lab"', '"version": "18.2.1"', 'Cluster: teleport.lab', 'Version: 18.2.1'])
         self.assertNotIn('ca.key', out, 'no key file is opened or named')
 
