@@ -90,6 +90,33 @@ class Watch(Base):
         self.assertNotIn('security-agent-claim:nas', got)
         self.assertIn('agent-manifest:nas', got)
 
+    def deliver(self, host, manifest):
+        self.conn.execute("""INSERT INTO agent_deliveries (host, fingerprint, counter, manifest, signature, plugins_json, updated_at)
+                             VALUES (:h, :f, 1, :m, 's', '[]', 0)""", {'h': host, 'f': 'SHA256:' + host, 'm': manifest})
+
+    def test_a_manifest_that_cannot_be_read_costs_no_other_host_its_alerts(self):
+        """One host's stored manifest that is not JSON, or is JSON of another shape, stopped the scan plugin's alerts for every host
+        (agentscan.problems parsed it unguarded) or every agent alert there is (agentwatch._with_plugin took any JSON for an object)."""
+        for text in ('{not json', '[1]', '"text"', '7', '{"plugins": 5}', '{"plugins": {"name": "scan"}}', '{"plugins": [5, null, "scan"]}'):
+            with self.subTest(manifest=text):
+                self.conn.execute('DELETE FROM agents')
+                self.conn.execute('DELETE FROM agent_deliveries')
+                self.enroll('nas', updated=time.time() - 3600)
+                self.enroll('web', endpoint=None)
+                self.enroll('bad', endpoint=None)
+                self.conn.execute("UPDATE agents SET mode = 'monitoring' WHERE host IN ('web', 'bad')")
+                self.deliver('web', json.dumps({'plugins': [{'name': 'scan'}]}))
+                self.deliver('bad', text)
+                with mock.patch('storageforge_index.errlog.trace') as trace:
+                    got = agentwatch.problems(self.conn)
+                trace.assert_not_called()
+                self.assertIn('agent-silent:nas', got)
+                self.assertIn('agent-scan-old:web', got, 'a monitoring-only host that sent no inventory is still named')
+                self.assertNotIn('agent-scan-old:bad', got, 'a manifest that cannot be read names no plugin')
+                self.assertEqual(sfagent.plugins_of(self.conn, 'bad'), [])
+                self.assertEqual(sfagent.plugins_of(self.conn, 'web'), ['scan'])
+                self.assertEqual(agentwatch.plugins_by_host(self.conn), {'web': ['scan'], 'bad': []})
+
     def test_the_notification_center_hears_of_it(self):
         self.enroll(updated=time.time() - 3600)
         self.assertIn('agent-silent:nas', alerts.problems(self.conn))

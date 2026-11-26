@@ -82,14 +82,22 @@ def events(conn: Conn, host: str, since: int, kinds: tuple) -> dict:
     return {k: int(n or 0) for k, n in rows}
 
 
+def plugins_by_host(conn: Conn, host: str | None = None) -> dict:
+    """{host: the plugins its delivered manifest names, in the manifest's order}, for every host with a manifest or for one. A manifest
+    that is not JSON, or not the object with a list of plugins that a manifest is, names none: one host's bad row costs no other host
+    its alerts."""
+    out = {}
+    rows = conn.all('SELECT host, manifest FROM agent_deliveries') if host is None else conn.all('SELECT host, manifest FROM agent_deliveries WHERE host = :h', {'h': host})
+    for h, manifest in rows:
+        m = _loads(manifest)
+        plugins = m.get('plugins') if isinstance(m, dict) else None
+        out[h] = [str(e.get('name')) for e in plugins if isinstance(e, dict)] if isinstance(plugins, list) else []
+    return out
+
+
 def _with_plugin(conn: Conn, name: str) -> set:
     """The hosts whose delivered manifest names the plugin."""
-    out = set()
-    for host, manifest in conn.all('SELECT host, manifest FROM agent_deliveries'):
-        m = _loads(manifest) or {}
-        if any(isinstance(e, dict) and e.get('name') == name for e in (m.get('plugins') or [])):
-            out.add(host)
-    return out
+    return {host for host, names in plugins_by_host(conn).items() if name in names}
 
 
 def silent_beats(conn: Conn, now: float | None = None) -> list[str]:

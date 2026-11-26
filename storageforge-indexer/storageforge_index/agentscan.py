@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import time
 
+from .agentwatch import plugins_by_host
 from .db import Conn, loads
 
 MOST_PARTS = 64
@@ -150,14 +151,14 @@ def view(conn: Conn, host: str) -> dict | None:
 def problems(conn: Conn, now: float | None = None) -> dict:
     now = int(now or time.time())
     out = {}
+    plugins = plugins_by_host(conn)
     for host, mode in conn.all("SELECT host, mode FROM agents WHERE enabled = 1 AND state = 'running'"):
         r = _row(conn, host)
         if r and (r['compared'] or {}).get('differs'):
             out[f'agent-scan-disagree:{host}'] = ('agent-scan-disagree', host, f'The agent\'s scan and the SSH scan disagree about {host}',
                                                   f'{LABEL}, against what the SSH scan measured: ' + '; '.join(r['compared']['differs'])[:500], 'warn')
         if mode == 'monitoring':
-            plugins = json.loads(conn.scalar('SELECT manifest FROM agent_deliveries WHERE host = :h', {'h': host}) or '{}').get('plugins') or []
-            if any(isinstance(p, dict) and p.get('name') == 'scan' for p in plugins) and (not r or now - (r['received_at'] or 0) > STALE_SECS):
+            if 'scan' in plugins.get(host, ()) and (not r or now - (r['received_at'] or 0) > STALE_SECS):
                 out[f'agent-scan-old:{host}'] = ('agent-scan-old', host, f'{host} has not sent its inventory',
                                                  f'a monitoring-only host is read through its agent alone, and its scan plugin has sent nothing for {STALE_SECS // 3600} hours', 'warn')
     return out

@@ -38,7 +38,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 
-from . import agenttunnel, deploy
+from . import agenttunnel, agentwatch, deploy
 from .db import Database
 from .remote import REFUSE_APPLIANCE, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
@@ -482,11 +482,7 @@ def view(conn) -> list[dict]:
 
 def plugins_of(conn, name: str) -> list[str]:
     """The plugins the manifest last signed for the host names."""
-    text = conn.scalar('SELECT manifest FROM agent_deliveries WHERE host = :h', {'h': name})
-    try:
-        return [str(e.get('name')) for e in (json.loads(text).get('plugins') or []) if isinstance(e, dict)] if text else []
-    except (ValueError, AttributeError):
-        return []
+    return agentwatch.plugins_by_host(conn, name).get(name, [])
 
 
 def _save(conn, name: str, actor: str, **fields):
