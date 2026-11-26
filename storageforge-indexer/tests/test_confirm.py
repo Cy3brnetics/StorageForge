@@ -16,6 +16,15 @@ from storageforge_index import confirm, deploy
 from storageforge_index.db import Database
 
 
+class JsonlDictsTests(unittest.TestCase):
+    def test_keeps_objects_and_skips_the_rest(self):
+        text = '\n'.join(['', '  ', 'garbage', '[1, 2]', '"str"', '{bad json', '  {"a": 1}  ', '{' * 100000,
+                           '[' * 100000, '\t{"b": 2}'])
+        self.assertEqual(list(confirm.jsonl_dicts(text)), [{'a': 1}, {'b': 2}])
+        self.assertEqual(list(confirm.jsonl_dicts(None)), [])
+        self.assertEqual(list(confirm.jsonl_dicts('')), [])
+
+
 class ConfirmTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='sf-conf-'))

@@ -29,6 +29,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from . import site
 from . import deploy, moves, snapjobs
+from .confirm import jsonl_dicts
 from .db import Conn
 from .jobscript import JOB_SCRIPT
 from .remote import known_host_entries
@@ -735,12 +736,8 @@ def ingest_scan(conn: Conn, host: str, text: str) -> int:
     """Run lines a scan read from /var/lib/storageforge/jobs/*/runs.jsonl: the fallback when reports could not post."""
     mine = {r[0] for r in conn.all('SELECT job_id FROM jobs WHERE lower(runner_host) = lower(:h)', {'h': host})}
     n = 0
-    for line in (text or '').splitlines():
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(r, dict) and isinstance(r.get('job'), str) and r['job'] in mine:
+    for r in jsonl_dicts(text):
+        if isinstance(r.get('job'), str) and r['job'] in mine:
             try:
                 n += ingest(conn, r, 'scan')
             except ValueError:

@@ -17,6 +17,7 @@ import re
 import shlex
 import time
 import traceback
+from collections.abc import Iterator
 
 from . import deploy
 from .db import Conn, Database
@@ -26,19 +27,27 @@ TASK_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}')     # what moves.slug
 MAX_LOG = 256 << 10
 
 
+def jsonl_dicts(text: str | None) -> Iterator[dict]:
+    """The JSON objects of a host's JSON-lines run log, one per line: blank lines, lines that are not an
+    object, bad JSON and nesting too deep to parse are skipped, so one bad line never stops a scan."""
+    for line in (text or '').splitlines():
+        line = line.strip()
+        if not line.startswith('{'):
+            continue
+        try:
+            r = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(r, dict):
+            yield r
+
+
 def ingest_tasks(conn: Conn, host: str, text: str) -> int:
     """Ingest storage task runs read by a scan from /var/lib/storageforge/tasks/."""
     n = 0
     now = int(time.time())
-    for line in (text or '').splitlines():
-        line = line.strip()
-        if not line or not line.startswith('{'):
-            continue
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(r, dict) or not r.get('task') or 'started' not in r:
+    for r in jsonl_dicts(text):
+        if not r.get('task') or 'started' not in r:
             continue
         task = str(r['task'])[:100]
         try:
@@ -67,15 +76,8 @@ def ingest_runs(conn: Conn, host: str, text: str) -> list[dict]:
     now = int(time.time())
     confirmed = []
     seen_nonces = set()
-    for line in (text or '').splitlines():
-        line = line.strip()
-        if not line or not line.startswith('{'):
-            continue
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(r, dict) or not r.get('nonce'):
+    for r in jsonl_dicts(text):
+        if not r.get('nonce'):
             continue
         nonce = str(r['nonce'])
         seen_nonces.add(nonce)

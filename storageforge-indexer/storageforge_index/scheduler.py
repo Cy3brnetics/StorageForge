@@ -18,6 +18,7 @@ from typing import Any
 
 from . import site
 from . import alerts, changes, moves, receiving, schedscript, tasks
+from .confirm import jsonl_dicts
 from .db import Conn, epoch
 from .moves import find_host, host_slug, hosts, slug
 from .scriptkit import HELPERS, longest_gap
@@ -1075,12 +1076,8 @@ def ingest_scan_schedules(conn: Conn, host: str, text: str) -> int:
     if not text:
         return 0
     added = 0
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith('{'):
-            continue
+    for rec in jsonl_dicts(text):
         try:
-            rec = json.loads(line)
             sid = int(rec.get('schedule_id') or 0)
             started = int(rec.get('started_at') or 0)
         except Exception:
