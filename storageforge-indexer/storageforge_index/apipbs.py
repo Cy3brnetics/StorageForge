@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 
-from .apipve import _b, _data, _i, _items, _s
+from .apiparse import _b, _data, _i, _items, _s
 
 MAX_SNAPSHOTS = 5000
 STALE_BACKUP = 7 * 86400

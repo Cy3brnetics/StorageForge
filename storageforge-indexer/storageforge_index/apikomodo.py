@@ -18,11 +18,10 @@ Each parse_ function takes the JSON text of one answer and never raises.
 """
 from __future__ import annotations
 
-import json
 from urllib.parse import urlsplit
 
 from .apidockhand import compare, map_nodes, problems, workloads  # noqa: F401  the panel views are the same for every panel
-from .apipve import _b, _i, _s
+from .apiparse import _b, _i, _list, _load, _s
 
 FETCHED = '2026-11-20'
 SOURCES = ['https://github.com/moghtech/komodo/blob/main/client/core/rs/src/api/mod.rs (POST /read, /write, /execute; X-Api-Key and X-Api-Secret)',
@@ -78,20 +77,6 @@ def action_steps(action: str, spec: dict, user: str) -> list[dict]:
 
 
 # ── parsers ───────────────────────────────────────────────────────────
-def _load(text):
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-
-
-def _list(text) -> tuple[list, bool]:
-    doc = _load(text)
-    if not isinstance(doc, list):
-        return [], True
-    return [x for x in doc if isinstance(x, dict)], False
-
-
 def _info(x: dict) -> dict:
     return x.get('info') if isinstance(x.get('info'), dict) else {}
 

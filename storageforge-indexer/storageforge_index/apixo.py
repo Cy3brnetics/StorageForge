@@ -21,7 +21,7 @@ import json
 import re
 import time
 
-from .apipve import _b, _i, _s
+from .apiparse import _b, _i, _list, _load, _s
 
 FETCHED = '2026-11-20'
 SOURCES = ['https://docs.xen-orchestra.com/automation/restapi (authentication with the authenticationToken cookie, tokens, fields=, collections)',
@@ -104,20 +104,6 @@ def action_steps(action: str, spec: dict, user: str) -> list[dict]:
 
 
 # ── parsers ───────────────────────────────────────────────────────────
-def _load(text):
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-
-
-def _list(text) -> tuple[list, bool]:
-    doc = _load(text)
-    if not isinstance(doc, list):
-        return [], True
-    return [x for x in doc if isinstance(x, dict)], False
-
-
 def _uuid(v):
     return v if isinstance(v, str) and re.fullmatch(r'[0-9A-Za-z_-]{1,64}', v) else None
 

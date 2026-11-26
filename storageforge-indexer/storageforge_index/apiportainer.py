@@ -18,10 +18,8 @@ and never raises.
 """
 from __future__ import annotations
 
-import json
-
 from .apidockhand import compare, map_nodes, problems, workloads  # noqa: F401  the panel views are the same for every panel
-from .apipve import _i, _s
+from .apiparse import _i, _list, _load, _s
 
 FETCHED = '2026-11-20'
 SOURCES = ['https://docs.portainer.io/api/access (access tokens: My account, Access tokens; X-API-Key; the token has its user rights)',
@@ -76,20 +74,6 @@ def action_steps(action: str, spec: dict, user: str) -> list[dict]:
 
 
 # ── parsers ───────────────────────────────────────────────────────────
-def _load(text):
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-
-
-def _list(text) -> tuple[list, bool]:
-    doc = _load(text)
-    if not isinstance(doc, list):
-        return [], True
-    return [x for x in doc if isinstance(x, dict)], False
-
-
 def parse_me(text: str) -> dict:
     doc = _load(text)
     doc = doc if isinstance(doc, dict) else {}

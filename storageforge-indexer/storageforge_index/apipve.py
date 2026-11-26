@@ -14,52 +14,12 @@ of an answer and never raises: an entry it cannot read is dropped and counted, a
 """
 from __future__ import annotations
 
-import json
 import time
+
+from .apiparse import _b, _data, _f, _i, _items, _s
 
 MAX_BACKUPS = 5000           # per read: past that the rest is left out and the read says so
 VERIFY_STALE = 30 * 86400
-
-
-def _data(text):
-    try:
-        doc = json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-    return doc.get('data') if isinstance(doc, dict) else None
-
-
-def _s(v, n: int = 200):
-    return v[:n] if isinstance(v, str) else None
-
-
-def _i(v):
-    if isinstance(v, bool):
-        return int(v)
-    if isinstance(v, (int, float)) and v == v and abs(v) < 1e19:
-        return int(v)
-    if isinstance(v, str) and v.isdigit() and len(v) < 19:
-        return int(v)
-    return None
-
-
-def _f(v):
-    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e19 else None
-
-
-def _b(v):
-    if isinstance(v, bool):
-        return v
-    if v in (0, 1, '0', '1'):
-        return str(v) == '1'
-    return None
-
-
-def _items(text) -> tuple[list, bool]:
-    data = _data(text)
-    if not isinstance(data, list):
-        return [], True
-    return [x for x in data if isinstance(x, dict)], False
 
 
 def parse_version(text: str) -> dict:

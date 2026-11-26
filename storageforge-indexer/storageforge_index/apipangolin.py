@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 
-from .apipve import _b, _i, _s
+from .apiparse import _b, _i, _s
 
 FETCHED = '2026-11-20'
 SOURCES = ['https://docs.pangolin.net/manage/integration-api (organization keys, root keys, the permissions selector, Bearer)',

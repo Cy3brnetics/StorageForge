@@ -20,16 +20,8 @@ import json
 import time
 
 from . import apiguide
+from .apiparse import _data
 from .db import Conn, loads
-
-
-def _data(text: str):
-    """The 'data' of a Proxmox API answer, or None when the text is not one."""
-    try:
-        doc = json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-    return doc.get('data') if isinstance(doc, dict) else None
 
 
 def parse_permissions(text: str) -> dict:

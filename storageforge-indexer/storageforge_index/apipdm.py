@@ -17,7 +17,7 @@ never raises.
 from __future__ import annotations
 
 from .apipbs import parse_snapshots
-from .apipve import _b, _data, _f, _i, _items, _s
+from .apiparse import _b, _data, _f, _i, _items, _s
 
 MAX_SNAPSHOTS = 5000
 

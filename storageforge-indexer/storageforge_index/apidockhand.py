@@ -21,10 +21,9 @@ Field names are those of the @openapi blocks in Dockhand's own routes (github.co
 """
 from __future__ import annotations
 
-import json
 import re
 
-from .apipve import _b, _i, _s
+from .apiparse import _b, _i, _list, _load, _s, _when
 
 FETCHED = '2026-11-20'
 SOURCES = ['https://github.com/Finsys/dockhand/blob/main/src/lib/server/api-tokens.ts (dh_ Bearer tokens, expiry, the token is its user, free edition: everyone is effectively admin)',
@@ -84,20 +83,6 @@ def action_steps(action: str, spec: dict, user: str) -> list[dict]:
 
 
 # ── parsers ───────────────────────────────────────────────────────────
-def _load(text):
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-
-
-def _list(text) -> tuple[list, bool]:
-    doc = _load(text)
-    if not isinstance(doc, list):
-        return [], True
-    return [x for x in doc if isinstance(x, dict)], False
-
-
 def parse_license(text: str) -> dict:
     """{'enforces_roles', 'valid', 'may_manage'}: the key, when it comes back, only says the token may manage the license. It is dropped."""
     doc = _load(text)
@@ -110,7 +95,6 @@ def parse_license(text: str) -> dict:
 
 def parse_tokens(text: str, prefix: str | None = None) -> dict:
     """{'expire': epoch, 0 for none, None when the token in use is not listed}: only the entry whose tokenPrefix is the one in use."""
-    from .apitruenas import _when
     items, _ = _list(text)
     for x in items:
         if prefix and x.get('tokenPrefix') == prefix:

@@ -18,6 +18,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The `\NNN` octal escapes of fstab, mountinfo and findmnt are decoded by one function, `remote.unoctal`, in place of copies in the fstab readers of payloads and the host config history and in the findmnt reader. A design version's size text is written by `capacity.fmt_bin`; it is the same text up to 1024 PiB, and a size beyond that now reads in EiB where it read in thousands of PiB (BE-15).
 - The three hash terms of a folder's fingerprint are written once, in `folders.file_term`, `folders.folder_print` and `folders.child_term`, for the per-mount folder index and the per-subtree compare of folder copies. The per-file loop of the mount index keeps its file term inline for speed, with a comment that points at it (BE-20).
 - The first-level folders under a path, with their sizes, are listed by one query, `moves.first_level`, for the Moves folder picker and the file map. Each keeps its own handling of mounts below the path and its own answer for a host that was never scanned (BE-21).
+- The platform readers share one module, `apiparse`, for loading JSON answers, taking the list or the `data` of an envelope, the bounded readers of untrusted values and the date reader, in place of copies in Xen Orchestra, TrueNAS, Dockhand, Portainer, Komodo and the Proxmox readers and read-backs. Pangolin keeps its own envelope reader, which needs `data` to be an object and reads the page total (BE-16).
 
 ## 0.6.2 — 2026-11-26
 

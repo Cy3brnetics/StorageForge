@@ -28,7 +28,7 @@ import json
 import re
 import time
 
-from .apipve import _b, _i, _s
+from .apiparse import _b, _i, _list, _load, _s, _when
 
 FETCHED = '2026-11-20'
 SOURCES = ['https://api.truenas.com/v25.10/jsonrpc.html (JSON-RPC 2.0 over WebSocket, TrueNAS API v25.10.5)',
@@ -109,35 +109,6 @@ def action_steps(action: str, spec: dict, user: str) -> list[dict]:
 
 
 # ── parsers: the JSON text of one result each ─────────────────────────
-def _load(text):
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError, RecursionError):
-        return None
-
-
-def _list(text) -> tuple[list, bool]:
-    doc = _load(text)
-    if not isinstance(doc, list):
-        return [], True
-    return [x for x in doc if isinstance(x, dict)], False
-
-
-def _when(v):
-    """A TrueNAS date: {"$date": ms} as its JSON encoder writes datetimes, an ISO string, or epoch seconds."""
-    if isinstance(v, dict) and _i(v.get('$date')) is not None:
-        return _i(v['$date']) // 1000
-    if isinstance(v, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?', v.strip()):
-        from datetime import datetime, timezone
-        try:
-            d = datetime.fromisoformat(v.strip().replace('Z', '+00:00'))
-        except ValueError:
-            return None
-        return int((d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp())
-    n = _i(v)
-    return n if n is not None and n < 1 << 40 else None
-
-
 def _prop(v):
     """A ZFS property as pool.dataset.query gives it: {"parsed": ..., "rawvalue": ...}, or a bare value."""
     if isinstance(v, dict):
