@@ -32,6 +32,7 @@ if [ -z "$key" ] && [ ! -s "$STATE/tailscaled.state" ]; then
   idle
 fi
 case $NAME in ''|-*|*[!A-Za-z0-9-]*) say "not a host name: $NAME"; exit 2 ;; esac
+case $UPSTREAM in https+insecure://?*|https://?*|http://?*) ;; *) say "not an address to serve: $UPSTREAM"; exit 2 ;; esac
 
 # A tun device puts tailscale0 in this network, which is what lets the server reach tailnet hosts. Without one the UI is still
 # served (tailscaled answers it itself), but connections out to tailnet addresses would go the LAN way and fail.
@@ -90,7 +91,7 @@ key=''
 say "joined as $NAME ($(tailscale --socket="$SOCK" ip -4 2>/dev/null || echo 'no IPv4 yet'))"
 
 if tailscale --socket="$SOCK" serve --bg --https=443 "$UPSTREAM"; then
-  say "web UI on the tailnet: https://$NAME.<your tailnet>.ts.net"
+  say "web UI on the tailnet: https://$NAME.<your tailnet>.ts.net, passed to $UPSTREAM"
 else
   say "the web UI is not served on the tailnet: turn on MagicDNS and HTTPS certificates in the Tailscale admin console, then restart this container"
 fi

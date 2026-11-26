@@ -182,6 +182,8 @@ services:
     environment:
       STORAGEFORGE_TS_AUTHKEY: ${STORAGEFORGE_TS_AUTHKEY:-}          # or, better, a file: STORAGEFORGE_TS_AUTHKEY_FILE
       STORAGEFORGE_TS_HOSTNAME: ${STORAGEFORGE_TS_HOSTNAME:-storageforge}
+      # where the tailnet's requests go: the proxy by its compose name, or its published port where that name does not resolve
+      STORAGEFORGE_TS_UPSTREAM: ${STORAGEFORGE_TS_UPSTREAM:-https+insecure://proxy:8443}
     volumes:
       - sf-tailscale:/var/lib/tailscale                                # the node, so the key is needed only once
       - ${STORAGEFORGE_TS_AUTHKEY_FILE:-/dev/null}:/run/ts-authkey:ro
