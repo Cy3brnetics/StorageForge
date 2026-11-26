@@ -23,6 +23,7 @@ import shlex
 
 from . import changes, toolbox
 from .changes import F
+from .scriptkit import RELOAD_SYSTEMD
 
 ARGS = ('name', 'tool', 'repo', 'secret', 'source', 'scratch', 'sample', 'schedule')
 TOOLS = ('restic', 'borg')
@@ -83,11 +84,11 @@ rt_restore_test() { # name tool repo keyfile source scratch sample: restore the 
   rt_done ok "$RT_COMPARED files compared, their SHA-256 match$( ((RT_ABSENT)) && echo "; $RT_ABSENT older files are not in the backup (an exclude rule?)")"
 }
 rt_schedule() { # name tool repo keyfile source scratch sample schedule: a script of the same function and a timer, or none
-  local name=$1 schedule=$8 script=@RTLIB@/restore-test-$1.sh unit=@UNITS@/sf-restore-test-$1 new changed=0
+  local name=$1 schedule=$8 script=@RTLIB@/restore-test-$1.sh unit=@UNITS@/sf-restore-test-$1 new changed=0 p=${PROBLEMS:-0}
   if [[ $schedule == none ]]; then
     if [[ -e $unit.timer ]] && act "remove the timer of restore test $name"; then
       systemctl disable --now "sf-restore-test-$name.timer" >/dev/null 2>&1 || true
-      rm -f -- "$unit.timer" "$unit.service" "$script"; systemctl daemon-reload >/dev/null 2>&1 || true
+      rm -f -- "$unit.timer" "$unit.service" "$script"; reload_systemd || true
     fi
     return 0
   fi
@@ -114,7 +115,8 @@ RTEOF
   if [[ -f $unit.timer && $(cat "$unit.timer") == "$new" ]]; then :
   elif act "write $unit.timer ($schedule)"; then printf "%s\n" "$new" >"$unit.timer"; changed=1; fi
   if ((APPLY)); then
-    ((changed)) && { systemctl daemon-reload >/dev/null 2>&1 || true; }
+    # also when nothing was written now: a run that was refused the reload left units systemd has not read
+    reload_systemd || { ((${PROBLEMS:-0} > p)) || conflict "systemd did not reload: the timer of restore test $name is not turned on"; return 0; }
     if systemctl is-enabled --quiet "sf-restore-test-$name.timer" 2>/dev/null && ((!changed)); then ok "the $schedule timer of restore test $name is on"
     else try systemctl enable --now "sf-restore-test-$name.timer" >/dev/null && ok "restore test $name runs $schedule"; fi
   fi
@@ -178,7 +180,7 @@ def _ansible(t, conn=None):
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { echo "$*"; }\n'
             'later() { conflict "$*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
     words = [str(p.get(a) or '') for a in ARGS]
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + '\nt_restore_test ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
+    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + RELOAD_SYSTEMD + BASH + '\nt_restore_test ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
             'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
 
 

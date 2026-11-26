@@ -22,6 +22,7 @@ import shlex
 
 from . import changes, steps_runtime, steps_workloads, toolbox
 from .changes import F
+from .scriptkit import RELOAD_SYSTEMD
 
 INSTALL_ARGS = ('tool', 'method', 'sha', 'override', 'exposure', 'bind', 'allow_from')
 REMOVE_ARGS = ('tool', 'method')
@@ -152,7 +153,7 @@ tb_list() { # apt dnf zypper pacman: the list for this host
   case $RT_PM in apt-get) echo "$1" ;; dnf|yum) echo "$2" ;; zypper) echo "$3" ;; pacman) echo "$4" ;; *) echo ;; esac
 }
 tb_package() { local tool=$1 apt=$2 dnf=$3 zypper=$4 pacman=$5 units=$6 sock=$7 listen=$8 port=$9
-  local list p rc out want=() drop body u
+  local list p rc out want=() drop body u was
   rt_os
   list=$(tb_list "$apt" "$dnf" "$zypper" "$pacman")
   [[ -n $list ]] || { conflict "$tool has no package for ${RT_ID:-this system} ($RT_PM): choose another method"; return 0; }
@@ -175,8 +176,10 @@ tb_package() { local tool=$1 apt=$2 dnf=$3 zypper=$4 pacman=$5 units=$6 sock=$7 
     body=$(printf "[Socket]\nListenStream=\nListenStream=%s" "$listen")
     if [[ -f $drop && $(cat "$drop") == "$body" ]]; then ok "$sock listens on $listen only"
     elif act "make $sock listen on $listen only ($drop)"; then
+      # asked before the file is written: a drop-in systemd never read would pass for done on the next run
+      was=${PROBLEMS:-0}; reload_systemd || { ((${PROBLEMS:-0} > was)) || conflict "systemd did not reload: $drop is not written"; return 0; }
       mkdir -p -- "${drop%/*}"; printf "%s\n" "$body" >"$drop"; durable "$drop"
-      systemctl daemon-reload >/dev/null 2>&1 || true
+      reload_systemd || { ((${PROBLEMS:-0} > was)) || conflict "systemd did not reload, so $sock listens where it did. Once systemd reloads (daemon-reload): systemctl restart $sock"; return 0; }
       if systemctl is-active --quiet "$sock" 2>/dev/null; then try systemctl restart "$sock" || return 0; fi
     fi
   fi
@@ -374,7 +377,7 @@ tb_remove_package() { local tool=$1 apt=$2 dnf=$3 zypper=$4 pacman=$5 units=$6 s
   done
   if [[ -n $sock ]]; then
     drop=/etc/systemd/system/$sock.d/storageforge-listen.conf
-    [[ -e $drop ]] && act "remove $drop" && { rm -f -- "$drop"; systemctl daemon-reload >/dev/null 2>&1 || true; }
+    [[ -e $drop ]] && act "remove $drop" && { rm -f -- "$drop"; reload_systemd || true; }
   fi
   list=$(tb_list "$apt" "$dnf" "$zypper" "$pacman")
   for p in ${list//,/ }; do tb_pkg_has "$p" && have+=("$p"); done
@@ -467,7 +470,7 @@ def check_data_remove(conn, c, h, p, say):
     say('warn', f'moves {words[2] or "nothing"} into the host trash: the tool loses what it kept. Back it up first if you may want it again')
 
 
-ANSIBLE_HEAD = steps_workloads.ANSIBLE_HEAD + 'DESTRUCTIVE=1; CUR_DESTRUCTIVE=1\nt_trash() { local d=/.storageforge-trash/$STAMP; mkdir -p "$d${1%/*}" && mv -- "$1" "$d$1" && echo "changed: $1 moved to $d$1"; }\n'
+ANSIBLE_HEAD = steps_workloads.ANSIBLE_HEAD + RELOAD_SYSTEMD + 'DESTRUCTIVE=1; CUR_DESTRUCTIVE=1\nt_trash() { local d=/.storageforge-trash/$STAMP; mkdir -p "$d${1%/*}" && mv -- "$1" "$d$1" && echo "changed: $1 moved to $d$1"; }\n'
 
 
 def _ansible(fn: str, args: tuple, extra):

@@ -69,7 +69,7 @@ class RestoreTest(tts.Steps):
     def run_rt(self, apply, tool='restic', schedule='none', name='photos', **env):
         words = [name, tool, str(self.root / 'srv/backup/repo'), 'restic-photos', str(self.src), str(self.scratch), '100', schedule]
         call = 't_restore_test ' + ' '.join(f"'{w}'" for w in words)
-        e = {'PATH': f'{self.bin}:{self.real}', 'FAKE': str(self.fake), 'LOG': str(self.fake / 'log'), 'HOME': str(self.tmp), 'SF_SECRET_DIR': str(self.secrets),
+        e = {'PATH': f'{self.bin}:{self.real}', 'FAKE': str(self.fake), 'LOG': str(self.fake / 'log'), 'HOME': str(self.tmp), 'SF_SECRET_DIR': str(self.secrets), 'DEAD_MOUNT': '', 'RELOAD_FAILS': '',
              'SNAPTIME': self.snaptime if tool == 'restic' else time.strftime('%a, %Y-%m-%d %H:%M:%S', time.localtime(time.time() - 60)), **env}
         p = subprocess.run([str(self.real / 'bash'), '-c', tts.HARNESS + f'APPLY={int(apply)}\n' + self.bash() + '\n' + call + '\nexit $((PROBLEMS > 0))\n'],
                            capture_output=True, text=True, timeout=60, env=e)
@@ -136,6 +136,36 @@ class RestoreTest(tts.Steps):
         self.assertIn('systemctl enable --now sf-restore-test-photos.timer', self.log())
         out = self.run_rt(True, schedule='none')
         self.assertFalse((self.root / 'etc/systemd/system/sf-restore-test-photos.timer').exists())
+
+    def test_a_dead_network_mount_stops_the_timer_before_systemd_is_reloaded(self):
+        """A plain daemon-reload waits on a hard NFS or CIFS mount whose server is gone, and every login then waits on systemd."""
+        self.assertNotIn('systemctl daemon-reload', steps_restoretest.BASH, 'every reload goes through reload_systemd')
+        out = self.run_rt(True, schedule='weekly', DEAD_MOUNT='1')
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        self.assertNotIn('runs weekly', out)
+        self.assertNotIn('daemon-reload', self.log())
+        self.assertNotIn('systemctl enable', self.log())
+        out = self.run_rt(True, schedule='weekly', RELOAD_FAILS='1')
+        self.assertIn('conflict: systemd did not reload: the timer of restore test photos is not turned on', out, 'a reload that fails for another reason is a problem too')
+        self.assertNotIn('systemctl enable', self.log())
+        # the units are on disk and systemd has not read them: the next run reloads although it writes nothing
+        out = self.run_rt(True, schedule='weekly')
+        self.assertIn('is the restore test this plan makes', out)
+        self.assertIn('restore test photos runs weekly', out)
+        self.assertLess(self.log().index('systemctl daemon-reload'), self.log().index('systemctl enable --now sf-restore-test-photos.timer'))
+        # a changed schedule on a timer that is on already is the same: refused, then read on the next run
+        out = self.run_rt(True, schedule='daily', DEAD_MOUNT='1')
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        (self.fake / 'log').unlink()
+        out = self.run_rt(True, schedule='daily')
+        self.assertIn('ok: the daily timer of restore test photos is on', out)
+        self.assertIn('systemctl daemon-reload', self.log())
+        # removing the timer goes on, and says the reload it could not make
+        (self.fake / 'log').unlink()
+        out = self.run_rt(True, schedule='none', DEAD_MOUNT='1')
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        self.assertFalse((self.root / 'etc/systemd/system/sf-restore-test-photos.timer').exists())
+        self.assertNotIn('daemon-reload', self.log())
 
     def test_the_adapter_shows_the_last_verified_restore(self):
         self.run_rt(True)

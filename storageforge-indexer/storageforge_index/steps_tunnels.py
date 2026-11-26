@@ -28,6 +28,7 @@ import shlex
 
 from . import changes
 from .changes import F
+from .scriptkit import RELOAD_SYSTEMD
 
 NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 SITE_ID = re.compile(r'[A-Za-z0-9_-]{4,64}')
@@ -54,12 +55,12 @@ tun_secret_take() { # the one line of $1 into $2, mode 600, without it passing t
 }
 tun_unit_stop() { local unit=$1
   systemctl disable --now "$unit" >/dev/null 2>&1 || true
-  rm -f "${SF_UNIT_DIR:-/etc/systemd/system}/$unit"; systemctl daemon-reload >/dev/null 2>&1 || true
+  rm -f "${SF_UNIT_DIR:-/etc/systemd/system}/$unit"; reload_systemd || true      # stopped and removed all the same: reload_systemd has said what it left undone
 }
-tun_unit_start() { # $1 unit name, $2 its text, $3 restart when it already runs
-  local unit=$1 file=${SF_UNIT_DIR:-/etc/systemd/system}/$1 i
+tun_unit_start() { # $1 unit name, $2 its text, $3 restart when it already runs. 2: reload_systemd refused the reload and has said why
+  local unit=$1 file=${SF_UNIT_DIR:-/etc/systemd/system}/$1 i p=${PROBLEMS:-0}
   if [[ ! -e $file || $(cat "$file") != "$2" ]]; then printf "%s\n" "$2" >"$file.new" && chmod 0644 "$file.new" && mv -f "$file.new" "$file" || return 1; fi
-  systemctl daemon-reload >/dev/null 2>&1 || true
+  reload_systemd || { ((${PROBLEMS:-0} > p)) && return 2; return 1; }      # 1 when the reload itself failed, which reload_systemd does not report
   systemctl enable "$unit" >/dev/null 2>&1 || true
   if [[ -n ${3:-} ]]; then systemctl restart "$unit" >/dev/null 2>&1 || return 1; else systemctl start "$unit" >/dev/null 2>&1 || return 1; fi
   for i in 1 2 3 4 5 6; do sleep "${SF_TUNNEL_WAIT:-1}"; systemctl is-active --quiet "$unit" || return 1; done      # one that starts and falls over is not running
@@ -92,7 +93,7 @@ t_cloudflare_tunnel() { local secret=$1 state=${2:-present} f tok bin unit=stora
     tun_secret_take "$f" "$tok" || { conflict "the file at $f does not hold a tunnel token: one line of letters and digits"; return 0; }
     changed=1
   fi
-  if ! tun_unit_start "$unit" "[Unit]
+  tun_unit_start "$unit" "[Unit]
 Description=Cloudflare Tunnel, started by StorageForge with its token read from a file
 After=network-online.target
 Wants=network-online.target
@@ -103,9 +104,9 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target" "$changed"; then
-    conflict "cloudflared did not stay running: journalctl -u $unit says why (a token Cloudflare does not know is the usual reason)"; return 0
-  fi
+WantedBy=multi-user.target" "$changed" || {
+    (($? == 2)) || conflict "cloudflared did not stay running: journalctl -u $unit says why (a token Cloudflare does not know is the usual reason)"; return 0
+  }
   rm -f -- "$f"
   ok "the tunnel runs as $unit. Its token is in $tok and on no command line; the copy in $f is removed"
 }
@@ -136,7 +137,7 @@ t_pangolin_site() { local secret=$1 id=$2 endpoint=$3 state=${4:-present} f conf
   # the secret goes from one file into the other through cat: it is an argument of nothing
   ( umask 077; { printf "{\"id\":\"%s\",\"secret\":\"" "$id"; cat "$conf.secret"; printf "\",\"endpoint\":\"%s\"}\n" "$endpoint"; } >"$conf.new" ) || { rm -f "$conf.new" "$conf.secret"; conflict "could not write $conf"; return 0; }
   rm -f "$conf.secret"; chmod 0600 "$conf.new"; mv -f "$conf.new" "$conf"; changed=1
-  if ! tun_unit_start "$unit" "[Unit]
+  tun_unit_start "$unit" "[Unit]
 Description=Pangolin site (Newt), started by StorageForge with its secret read from a file
 After=network-online.target
 Wants=network-online.target
@@ -148,9 +149,9 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target" "$changed"; then
-    conflict "Newt did not stay running: journalctl -u $unit says why (a wrong secret, an endpoint it cannot reach, or a Newt too old to read CONFIG_FILE)"; return 0
-  fi
+WantedBy=multi-user.target" "$changed" || {
+    (($? == 2)) || conflict "Newt did not stay running: journalctl -u $unit says why (a wrong secret, an endpoint it cannot reach, or a Newt too old to read CONFIG_FILE)"; return 0
+  }
   rm -f -- "$f"
   ok "Newt runs as $unit for site $id. Its secret is in $conf and on no command line; the copy in $f is removed"
 }
@@ -190,7 +191,7 @@ def _check_newt(conn, c, h, p, say):
 
 
 HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { echo "info: $*"; }\n'
-        'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
+        'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n' + RELOAD_SYSTEMD)
 
 
 def _ansible(fn: str, args: tuple):

@@ -88,6 +88,9 @@ finished() { if ((${APPLY:-0} && MISSING)); then echo "${Y}$MISSING step(s) not 
 host_slug() { local n=${1%%.*}; n=$(tr 'A-Z' 'a-z' <<<"$n" | tr -cd 'a-z0-9_-'); echo "${n:-unknown}"; }
 human() { numfmt --to=iec-i --suffix=B "${1:-0}" 2>/dev/null || echo "$1 B"; }
 """
+# reload_systemd alone, for an Ansible task: it carries the functions it calls and not all of HELPERS. It needs a conflict().
+RELOAD_SYSTEMD = HELPERS[HELPERS.index('reload_systemd() {'):HELPERS.index('\n}\n', HELPERS.index('reload_systemd() {')) + 3]
+
 
 # The receiving side of a btrfs or ZFS send. In storageforge-job (needs ETC, VAR, LOCKS) this is all a send's job key can reach, through its
 # forced command, as root. A send on the same host runs the same verbs here, with RECV_LOCAL=1. A signed deploy wrote the conf, which says

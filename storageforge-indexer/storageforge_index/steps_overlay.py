@@ -30,6 +30,7 @@ import time
 
 from . import changes, nebulaca, overlaykeys, steps_tunnels
 from .changes import F
+from .scriptkit import RELOAD_SYSTEMD
 
 NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 HOSTNAME = re.compile(r'[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?')
@@ -211,7 +212,7 @@ t_nebula() { local ca=$1 lh=$2 state=${6:-present} cab64=${7:-} confb64=${8:-} d
   fi
   [[ -e $conf ]] && cp -p "$conf" "$conf.sf-before"
   mv -f "$new" "$conf"; durable "$conf" "$d/ca.crt"
-  if ! tun_unit_start "$unit" "[Unit]
+  tun_unit_start "$unit" "[Unit]
 Description=Nebula, started by StorageForge with a certificate its CA issued
 After=network-online.target
 Wants=network-online.target
@@ -222,9 +223,9 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target" 1; then
-    conflict "Nebula did not stay running: journalctl -u $unit says why"; return 0
-  fi
+WantedBy=multi-user.target" 1 || {
+    (($? == 2)) || conflict "Nebula did not stay running: journalctl -u $unit says why"; return 0
+  }
   ok "Nebula runs as $unit from $conf${lh:+, as a lighthouse: others must reach its UDP port, which this step does not open in a firewall}"
 }
 
@@ -398,7 +399,7 @@ def _check_nebula(conn, c, h, p, say):
 
 
 HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { echo "info: $*"; }\n'
-        'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
+        'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n' + RELOAD_SYSTEMD)
 
 
 def _ansible(fn: str, args: tuple, args_of=None):

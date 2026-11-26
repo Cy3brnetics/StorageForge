@@ -25,6 +25,8 @@ info() { echo "info: $*"; }; doing() { echo "doing: $*"; }; durable() { :; }; la
 act() { if ((APPLY)); then echo "doing: $*"; return 0; else echo "would: $*"; return 1; fi; }
 try() { "$@" || { conflict "failed: $*"; return 1; }; }
 t_trash() { echo "trash: $1"; mv -- "$1" "$FAKE/trash/"; }
+# the reload guard of scriptkit.HELPERS, as a stand-in: DEAD_MOUNT is a hard network mount whose server is gone
+reload_systemd() { if [[ -n ${DEAD_MOUNT:-} ]]; then conflict "/mnt/dead is not answering: reloading systemd now would block logins"; return 1; fi; [[ -z ${RELOAD_FAILS:-} ]] && systemctl daemon-reload; }
 PROBLEMS=0 DESTRUCTIVE=1 CUR_DESTRUCTIVE=1
 '''
 REAL = ('bash', 'python3', 'env', 'awk', 'grep', 'sed', 'cat', 'head', 'tail', 'tr', 'mktemp', 'rm', 'mkdir', 'install', 'printf', 'wc', 'cut', 'sort', 'cmp', 'diff',
@@ -55,6 +57,8 @@ esac''',
 
 
 class Steps(Base):
+    more_env: dict = {}
+
     def setUp(self):
         super().setUp()
         self.host('box', 'apt', ['podman'])
@@ -91,7 +95,7 @@ class Steps(Base):
 
     def run_fn(self, apply, fn, words):
         call = fn + ' ' + ' '.join(shlex.quote(w) for w in words)
-        env = {'PATH': f'{self.bin}:{self.real}', 'FAKE': str(self.fake), 'LOG': str(self.fake / 'log'), 'RT_ROOT': str(self.root), 'HOME': str(self.tmp)}
+        env = {'PATH': f'{self.bin}:{self.real}', 'FAKE': str(self.fake), 'LOG': str(self.fake / 'log'), 'RT_ROOT': str(self.root), 'HOME': str(self.tmp)} | self.more_env
         p = subprocess.run([str(self.real / 'bash'), '-c', HARNESS + f'APPLY={int(apply)}\n' + self.bash() + '\n' + call + '\nexit $((PROBLEMS > 0))\n'],
                            capture_output=True, text=True, timeout=60, env=env)
         return p.stdout + p.stderr
@@ -155,6 +159,44 @@ class Steps(Base):
         self.assertIn('ok: cockpit.socket listens on 127.0.0.1:9090 only', out)
         out = self.install(True, 'cockpit', exposure='management', bind='10.0.0.5')
         self.assertIn('ListenStream=10.0.0.5:9090', (self.root / 'etc/systemd/system/cockpit.socket.d/storageforge-listen.conf').read_text())
+
+    def test_a_dead_network_mount_stops_the_socket_step_before_anything_is_written(self):
+        """A plain daemon-reload waits on a hard NFS or CIFS mount whose server is gone, and every login then waits on systemd."""
+        self.assertNotIn('systemctl daemon-reload', steps_toolbox.BASH, 'every reload of the system manager goes through reload_systemd')
+        drop = self.root / 'etc/systemd/system/cockpit.socket.d/storageforge-listen.conf'
+        self.more_env = {'DEAD_MOUNT': '1'}
+        out = self.install(True, 'cockpit')
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        self.assertFalse(drop.exists(), 'a drop-in systemd never read would pass for done on the next run')
+        self.assertNotIn('daemon-reload', self.log())
+        self.assertNotIn('systemctl enable --now cockpit.socket', self.log(), 'not started on the address the package ships with')
+        self.more_env = {'RELOAD_FAILS': '1'}
+        out = self.install(True, 'cockpit')
+        self.assertIn('conflict: systemd did not reload', out, 'a reload that fails for another reason is a problem too')
+        self.assertFalse(drop.exists())
+        self.more_env = {}
+        out = self.install(True, 'cockpit')
+        self.assertEqual(drop.read_text(), '[Socket]\nListenStream=\nListenStream=127.0.0.1:9090\n')
+        self.assertIn('systemctl daemon-reload', self.log())
+        self.assertIn('systemctl enable --now cockpit.socket', self.log())
+        # removal goes on, and says the reload it could not make
+        toolbox.stage(self.conn, 'box', 'cockpit', 'test')
+        (self.fake / 'log').unlink()
+        self.more_env = {'DEAD_MOUNT': '1'}
+        t = {'host': 'box', 'type': 'tool-remove', 'params': {'tool': 'cockpit', 'method': 'package'}}
+        out = self.run_fn(True, 't_tool_remove', self.swap(['cockpit', 'package'] + toolbox.remove_words(self.conn, t)))
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        self.assertFalse(drop.exists())
+        self.assertNotIn('daemon-reload', self.log())
+        self.assertIn('remove -y -qq cockpit', self.log())
+
+    def test_the_ansible_tasks_carry_the_reload_guard(self):
+        for kind in ('tool-install', 'tool-remove', 'restore-test'):
+            t = {'host': 'box', 'type': kind, 'params': {'tool': 'cockpit', 'method': 'package', 'name': 'photos', 'schedule': 'weekly'}}
+            cmd = changes.EXTRA[kind]['ansible'](t)['ansible.builtin.shell']['cmd']
+            self.assertIn('\nreload_systemd() {', cmd, kind + ': a task that calls it without carrying it stops with: command not found')
+            self.assertIn('timeout -k 1 5 stat', cmd, kind)
+            self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, capture_output=True, text=True).stderr, '', kind)
 
     def binary_entry(self, sha, extra=""):
         text = (f'format: 1\nid: tinybin\nrevision: 1\nname: Tiny\ncategory: monitoring\nsummary: A program.\ninstall:\n  methods:\n'

@@ -139,6 +139,8 @@ set -euo pipefail
 ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*"; PROBLEMS=$((PROBLEMS + 1)); }
 info() { echo "info: $*"; }; act() { if ((APPLY)); then echo "doing: $*"; return 0; else echo "would: $*"; return 1; fi; }
 try() { "$@" || { conflict "failed: $*"; return 1; }; }
+# the reload guard of scriptkit.HELPERS, as a stand-in: DEAD_MOUNT is a hard network mount whose server is gone
+reload_systemd() { if [[ -n ${DEAD_MOUNT:-} ]]; then conflict "/mnt/dead is not answering: reloading systemd now would block logins"; return 1; fi; [[ -z ${RELOAD_FAILS:-} ]] && systemctl daemon-reload; }
 PROBLEMS=0
 '''
 
@@ -180,9 +182,9 @@ esac''')
         p.write_text('#!/bin/bash\n' + body + '\n')
         p.chmod(0o755)
 
-    def step(self, apply, fn, *args):
+    def step(self, apply, fn, *args, **more):
         call = fn + ' ' + ' '.join(f"'{a}'" for a in args)
-        env = {**os.environ, 'PATH': f'{self.d}/bin:{os.environ["PATH"]}', 'SF_SECRET_DIR': str(self.d / 'secrets'), 'SF_UNIT_DIR': str(self.d / 'units'), 'SF_CLOUDFLARED_DIR': str(self.d / 'cf'),
+        env = {**os.environ, **more, 'PATH': f'{self.d}/bin:{os.environ["PATH"]}', 'SF_SECRET_DIR': str(self.d / 'secrets'), 'SF_UNIT_DIR': str(self.d / 'units'), 'SF_CLOUDFLARED_DIR': str(self.d / 'cf'),
                'SF_NEWT_DIR': str(self.d / 'newt'), 'SF_SYSTEMD_RUN': str(self.d / 'run'), 'SF_TUNNEL_WAIT': '0'}
         got = subprocess.run(['bash', '-c', HARNESS + f'APPLY={int(apply)}\n' + steps_tunnels.BASH + '\n' + call + '\nexit $((PROBLEMS > 0))\n'], capture_output=True, text=True, timeout=60, env=env)
         return got.returncode, got.stdout + got.stderr
@@ -279,6 +281,53 @@ esac''')
         self.assertEqual(code, 0, out)
         self.assertEqual(list((self.d / 'cf').iterdir()) + list((self.d / 'units').iterdir()), [])
         self.assertIn('systemctl disable --now storageforge-cloudflared.service', self.read('calls'))
+
+    def test_a_dead_network_mount_stops_the_tunnel_before_systemd_is_reloaded(self):
+        """A plain daemon-reload waits on a hard NFS or CIFS mount whose server is gone, and every login then waits on systemd."""
+        self.assertNotIn('systemctl daemon-reload', steps_tunnels.BASH, 'every reload goes through reload_systemd')
+        (self.d / 'fake' / 'accepts').write_text(TOKEN)
+        (self.d / 'secrets' / 'cf-token').write_text(TOKEN)
+        code, out = self.step(True, 't_cloudflare_tunnel', 'cf-token', 'present', DEAD_MOUNT='1')
+        self.assertEqual(code, 1, out)
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        self.assertNotIn('did not stay running', out, 'cloudflared was never started: the reload is the one thing that is said')
+        self.assertEqual(out.count('conflict:'), 1, out)
+        calls = self.read('calls')
+        for word in ('daemon-reload', 'enable', 'start'):
+            self.assertNotIn(f'systemctl {word}', calls)
+        self.assertTrue((self.d / 'secrets' / 'cf-token').exists(), 'kept for the next attempt')
+        code, out = self.step(True, 't_cloudflare_tunnel', 'cf-token', 'present')
+        self.assertEqual(code, 0, out)
+        self.assertIn('systemctl daemon-reload', self.read('calls'))
+        # leaving: the unit is stopped and removed all the same, and the reload that was not made is said
+        before = self.read('calls').count('systemctl daemon-reload')
+        code, out = self.step(True, 't_cloudflare_tunnel', 'cf-token', 'absent', DEAD_MOUNT='1')
+        self.assertEqual(code, 1, out)
+        self.assertIn('conflict: /mnt/dead is not answering', out)
+        self.assertIn('the tunnel no longer runs from here', out)
+        self.assertEqual(list((self.d / 'cf').iterdir()) + list((self.d / 'units').iterdir()), [])
+        self.assertEqual(self.read('calls').count('systemctl daemon-reload'), before)
+
+    def test_a_reload_that_fails_for_another_reason_does_not_pass_for_a_running_tunnel(self):
+        (self.d / 'fake' / 'accepts').write_text(TOKEN)
+        (self.d / 'secrets' / 'cf-token').write_text(TOKEN)
+        code, out = self.step(True, 't_cloudflare_tunnel', 'cf-token', 'present', RELOAD_FAILS='1')
+        self.assertEqual((code, out.count('conflict:')), (1, 1), out)
+        self.assertIn('conflict: cloudflared did not stay running', out)
+        self.assertNotIn('systemctl enable', self.read('calls'))
+
+    def test_a_dead_network_mount_stops_newt_too(self):
+        (self.d / 'secrets' / 'pg-site').write_text(SITE_SECRET)
+        code, out = self.step(True, 't_pangolin_site', 'pg-site', '2ix2t8xk22ubpfy', 'https://pangolin.example.com', 'present', DEAD_MOUNT='1')
+        self.assertEqual((code, out.count('conflict:')), (1, 1), out)
+        self.assertNotIn('systemctl enable', self.read('calls'))
+
+    def test_the_ansible_task_carries_the_reload_guard(self):
+        for kind, params in (('cloudflare-tunnel', {'secret': 'cf-token', 'state': 'present'}), ('pangolin-site', {'secret': 'pg-site', 'state': 'absent'})):
+            cmd = changes.EXTRA[kind]['ansible']({'type': kind, 'host': 'nas', 'params': params})['ansible.builtin.shell']['cmd']
+            self.assertIn('\nreload_systemd() {', cmd, 'a task that calls it without carrying it stops with: command not found')
+            self.assertIn('timeout -k 1 5 stat', cmd, 'the guard itself, not a plain reload under its name')
+            self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, capture_output=True, text=True).stderr, '')
 
     # ── Newt ──
     def test_newt_reads_its_secret_from_a_configuration_file(self):

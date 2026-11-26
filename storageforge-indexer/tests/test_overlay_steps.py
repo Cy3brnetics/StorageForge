@@ -68,6 +68,8 @@ PRELUDE = r'''set -euo pipefail
 ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*"; PROBLEMS=$((PROBLEMS + 1)); }
 info() { echo "info: $*"; }; act() { if ((APPLY)); then echo "doing: $*"; return 0; else echo "would: $*"; return 1; fi; }
 try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { :; }
+# the reload guard of scriptkit.HELPERS, as a stand-in: DEAD_MOUNT is a hard network mount whose server is gone
+reload_systemd() { if [[ -n ${DEAD_MOUNT:-} ]]; then conflict "/mnt/dead is not answering: reloading systemd now would block logins"; return 1; fi; [[ -z ${RELOAD_FAILS:-} ]] && systemctl daemon-reload; }
 PROBLEMS=0
 '''
 PLAIN = ('bash', 'sh', 'cat', 'grep', 'sed', 'tr', 'head', 'tail', 'awk', 'rm', 'mkdir', 'chmod', 'mv', 'cp', 'cmp', 'sleep', 'uname', 'mktemp', 'base64', 'touch', 'env', 'id', 'chown',
@@ -1061,6 +1063,8 @@ class NebulaJoin(Vaulted):
         self.assertEqual(steps_overlay._nebula_args(self.conn, self.task(inbound='tcp/22; id')), ['', ''])
         cmd = changes.EXTRA['nebula']['ansible'](self.task(), self.conn)['ansible.builtin.shell']['cmd']
         self.assertIn('t_nebula home', cmd)
+        self.assertIn('\nreload_systemd() {', cmd, 'tun_unit_start reloads through it: the task carries the guard')
+        self.assertIn('timeout -k 1 5 stat', cmd)
         self.assertIn(base64.b64encode(self.ca_pem.encode()).decode(), cmd)
 
 
