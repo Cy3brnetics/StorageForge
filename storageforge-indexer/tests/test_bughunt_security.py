@@ -46,6 +46,7 @@ class Receiver(unittest.TestCase):
             agentreceiver.read_batch(json.dumps(batch, ensure_ascii=False).encode())
 
 
+@unittest.skipIf(dbfactory.PG, 'backups are of SQLite databases (PostgreSQL: pg_dump)')
 class Restore(Base):
     def test_restore_refuses_while_a_server_holds_the_lock(self):
         made = backup.create(self.db, 'essentials', self.tmp)

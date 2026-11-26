@@ -26,21 +26,21 @@ ME = moves.host_slug(socket.gethostname())
 
 def _seed_hosts(conn):
     now = 1700000000
-    for hid, name, addr, pkgs in (
-        (1, ME, '127.0.0.1', 'tar\nzstd\nxz-utils\nrsync\n'),
-        (2, 'weaknas', '10.0.0.21', 'tar\nrsync\n'),
-        (3, 'beefybox', '10.0.0.99', 'tar\nzstd\nxz-utils\nrsync\n'),
+    for name, addr, pkgs in (
+        (ME, '127.0.0.1', 'tar\nzstd\nxz-utils\nrsync\n'),
+        ('weaknas', '10.0.0.21', 'tar\nrsync\n'),
+        ('beefybox', '10.0.0.99', 'tar\nzstd\nxz-utils\nrsync\n'),
     ):
         conn.execute(
-            """INSERT INTO hosts (host_id, hostname, ssh_host, ssh_user, ssh_port, ip_address, created_at, last_scanned_at,
+            """INSERT INTO hosts (hostname, ssh_host, ssh_user, ssh_port, ip_address, created_at, last_scanned_at,
                                   inventory_json)
-               VALUES (:id, :n, :a, 'root', 22, :a, :t, :t, :inv)""",
-            {'id': hid, 'n': name, 'a': addr, 't': now, 'inv': json.dumps({'os_release': 'ID=debian', 'packages': 'pm apt-get\n' + ''.join('have ' + tool + '\n' for tool in pkgs.replace('xz-utils', 'xz').splitlines())})},
+               VALUES (:n, :a, 'root', 22, :a, """ + conn.ts(':t') + ', ' + conn.ts(':t') + """, :inv)""",
+            {'n': name, 'a': addr, 't': now, 'inv': json.dumps({'os_release': 'ID=debian', 'packages': 'pm apt-get\n' + ''.join('have ' + tool + '\n' for tool in pkgs.replace('xz-utils', 'xz').splitlines())})},
         )
         conn.execute(
             """INSERT INTO mounts (host_id, mount_point, source, filesystem_type, total_bytes, used_bytes, scan_state, mount_options)
-               VALUES (:id, '/', '/dev/sda1', 'ext4', 1099511627776, 10737418240, 'skipped', 'rw')""",
-            {'id': hid},
+               SELECT host_id, '/', '/dev/sda1', 'ext4', 1099511627776, 10737418240, 'skipped', 'rw' FROM hosts WHERE hostname = :n""",
+            {'n': name},
         )
 
 
@@ -300,6 +300,7 @@ class ArchiveStepsAndOffloadTests(unittest.TestCase):
         self.assertIn('storageforge-deploy@10.0.0.21\tarchive-raw', calls_txt)
         self.assertIn('storageforge-deploy@10.0.0.99\tcompress', calls_txt)
 
+    @unittest.skipIf(dbfactory.PG, 'this drives a SQLite file through --db; the archive plans on PostgreSQL are covered by the other tests here')
     def test_cli_archive_subcommands(self):
         parser = cli.build_parser()
         # Same-host with --compress-host creates a Moves plan with worker offload

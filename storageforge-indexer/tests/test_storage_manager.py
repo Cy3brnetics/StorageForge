@@ -40,7 +40,7 @@ class PartitionManagerAndSecureErase(unittest.TestCase):
         self.db.migrate(self.conn)
         inv = {'lsblk': _lsblk_fixture()}
         with self.conn.tx():
-            self.conn.execute("INSERT INTO hosts (hostname, ip_address, inventory_json, last_scanned_at) VALUES ('nas', '10.0.0.10', :i, 1)", {'i': json.dumps(inv)})
+            self.conn.execute(f"INSERT INTO hosts (hostname, ip_address, inventory_json, last_scanned_at) VALUES ('nas', '10.0.0.10', :i, {self.conn.ts('1')})", {'i': json.dumps(inv)})
             hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'nas'")
             self.conn.execute("INSERT INTO mounts (host_id, mount_point, source, filesystem_type, scan_state) VALUES (:h, '/', '/dev/sda1', 'ext4', 'indexed')", {'h': hid})
             self.conn.execute("INSERT INTO mounts (host_id, mount_point, source, filesystem_type, scan_state) VALUES (:h, '/mnt/logs', '/dev/sdb2', 'xfs', 'indexed')", {'h': hid})

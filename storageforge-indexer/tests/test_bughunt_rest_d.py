@@ -45,6 +45,7 @@ class Alerts(Db):
         self.assertIsNone(alerts.routed(cfg, 'warn', 'web01:/data'))
 
 
+@unittest.skipIf(dbfactory.PG, 'this drives a SQLite file through --db; retire on PostgreSQL is covered by the rest of the suite')
 class HostsRemove(Db):
     def test_a_different_case_still_meets_the_running_scan(self):
         self.conn.execute("INSERT INTO hosts (hostname, ssh_host) VALUES ('Nas', 'nas')")

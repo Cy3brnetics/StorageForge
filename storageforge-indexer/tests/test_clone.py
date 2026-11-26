@@ -18,6 +18,7 @@ try:
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
 from storageforge_index import changes, clone, hostconfig, moves, pkglist, steps_clone
+from storageforge_index.db import loads
 
 CANARY = '$(touch${IFS}/tmp/CANARY)`id`"q;x'
 HARNESS = r'''
@@ -361,7 +362,7 @@ complete
         cfg = hostconfig.parse_configs(f'/etc/sysctl.d/99-sf.conf\t{sysctl}\n')
         self.assertIn('/etc/sysctl.d/99-sf.conf', cfg['files'])
         hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-01'")
-        inv = json.loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))
+        inv = loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))      # PostgreSQL gives the dict
         inv['configs']['files']['/etc/crypttab'] = 'cryptdata UUID=1111 none luks\n'
         self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE host_id = :h", {'i': json.dumps(inv), 'h': hid})
         built = clone.build(self.conn, 'web-01', 'web-copy')
@@ -387,7 +388,7 @@ complete
         client.post('/api/login', json={'username': 'alice', 'password': 'a long enough password'})
         # Add services to web-01 inventory so cutover can plan timers=True
         hid = self.conn.scalar("SELECT host_id FROM hosts WHERE hostname = 'web-01'")
-        inv = json.loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))
+        inv = loads(self.conn.scalar("SELECT inventory_json FROM hosts WHERE host_id = :h", {'h': hid}))      # PostgreSQL gives the dict
         inv['services'] = {'init': 'systemd', 'enabled': [{'unit': 'borgmatic.timer', 'preset': 'enabled'}]}
         self.conn.execute("UPDATE hosts SET inventory_json = :i WHERE host_id = :h", {'i': json.dumps(inv), 'h': hid})
         r_rep = client.get('/api/clone/report?source=web-01&target=web-copy')
