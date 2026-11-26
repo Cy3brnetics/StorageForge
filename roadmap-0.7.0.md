@@ -54,30 +54,30 @@ The order goes from what is wrong today, to the small shared pieces everything e
 
 | Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-11** | One splitter for the `@@section` output of host and device scripts (netfacts, OpenWrt, pfSense, the infrastructure reading) | Duplicate | |
-| **BE-12** | One module for SSH wire strings and key fingerprints, in place of copies in eight modules. Signature checking keeps its own refusals | Duplicate | |
-| **BE-13** | One reader of a host's pinned keys in `known_hosts`, in place of four `ssh-keygen -F` parsers | Duplicate | |
-| **BE-14** | One pair of functions for *is this path under that folder* and *which mount holds this path* | Duplicate | |
-| **BE-15** | One fstab octal decoder, and the design versions' size text from `capacity.fmt_bin` | Duplicate | |
-| **BE-16** | One module for reading platform JSON answers: the envelope loaders, list filters, bounded scalar readers and date normaliser copied in eight API modules | Duplicate | |
-| **BE-17** | The three Proxmox readers share one version parser | Duplicate | |
-| **BE-18** | One parser for the *ports to publish* text, with one record shape, behind the what-if, the Terraform export and the firewall step | Duplicate | |
-| **BE-19** | One function hides a network-language secret in compiled output | Duplicate | |
-| **BE-20** | The folder fingerprint's hash terms are written once, for the per-mount index and the per-subtree compare | Duplicate | |
-| **BE-21** | One query lists the first-level folders under a path with their sizes, for Moves and the file map | Duplicate | |
-| **BE-22** | One `ufw` opener for the NFS and SMB script and the other share kinds | Duplicate | |
-| **BE-23** | SQLite-or-PostgreSQL spellings (`ts`, `jsonp`) live on the connection, and the agent's writes into scan tables stop calling `Database.sync_mounts` with a stand-in for `self` | Duplicate | |
-| **BE-24** | One function for a host's short name, and one host-name pattern | Duplicate | |
-| **BE-25** | One reader of a host's JSON-lines run log, for confirmations, jobs and schedules | Duplicate | |
-| **BE-26** | A test reads the protocol constants written once in Python and once in Rust and fails when they differ | Duplicate | |
-| **BE-27** | Kernel lines from netconsole and pstore are built by one `hostlogs` function, and the side-source status row is written in one place | Duplicate | |
-| **BE-28** | The agent's record queue has one *forget these records* and one batch size | Duplicate | |
-| **BE-29** | The Proxmox steps share their VMID lookup and their new-VMID check | Duplicate | |
-| **BE-30** | One function returns all containers of a host (scan stacks and rootless Podman), for Workloads and the Toolbox adapters | Duplicate | |
-| **BE-31** | One place answers *which plugins does a host's manifest name*, and the label `reported by agent` is defined once | Duplicate | |
-| **BE-32** | One function turns a typed host name into the scanned host, behind the three known-host checks, each keeping its own error | Duplicate | |
-| **BE-33** | One lookup for *the interface that carries this address*, and one list of the controller's addresses | Duplicate | |
-| **BE-34** | The device adapters take their gateway list and their mask-to-prefix from `netfacts` | Duplicate | |
+| **BE-11** | One splitter for the `@@section` output of host and device scripts (netfacts, OpenWrt, pfSense, the infrastructure reading) | Duplicate | `f58c306` |
+| **BE-12** | One module for SSH wire strings and key fingerprints, in place of copies in eight modules. Signature checking keeps its own refusals | Duplicate | `0ff1819` |
+| **BE-13** | One reader of a host's pinned keys in `known_hosts`, in place of four `ssh-keygen -F` parsers | Duplicate | `d239985` |
+| **BE-14** | One pair of functions for *is this path under that folder* and *which mount holds this path* | Duplicate | `9ca05b4` |
+| **BE-15** | One fstab octal decoder, and the design versions' size text from `capacity.fmt_bin` | Duplicate | `f8f70d7` |
+| **BE-16** | One module for reading platform JSON answers: the envelope loaders, list filters, bounded scalar readers and date normaliser copied in eight API modules | Duplicate | `2881207` |
+| **BE-17** | The three Proxmox readers share one version parser | Duplicate | `0a6eb05` |
+| **BE-18** | One parser for the *ports to publish* text, with one record shape, behind the what-if, the Terraform export and the firewall step | Duplicate | `31a11d7, a5537bf` |
+| **BE-19** | One function hides a network-language secret in compiled output | Duplicate | `2d60e83` |
+| **BE-20** | The folder fingerprint's hash terms are written once, for the per-mount index and the per-subtree compare | Duplicate | `e5608df` |
+| **BE-21** | One query lists the first-level folders under a path with their sizes, for Moves and the file map | Duplicate | `9d6e01e` |
+| **BE-22** | One `ufw` opener for the NFS and SMB script and the other share kinds | Duplicate | `ab15e7e` |
+| **BE-23** | SQLite-or-PostgreSQL spellings (`ts`, `jsonp`) live on the connection, and the agent's writes into scan tables stop calling `Database.sync_mounts` with a stand-in for `self` | Duplicate | `2592286` |
+| **BE-24** | One function for a host's short name, and one host-name pattern | Duplicate | `8bf734f` |
+| **BE-25** | One reader of a host's JSON-lines run log, for confirmations, jobs and schedules | Duplicate | `474e70f` |
+| **BE-26** | A test reads the protocol constants written once in Python and once in Rust and fails when they differ | Duplicate | `c55651b` |
+| **BE-27** | Kernel lines from netconsole and pstore are built by one `hostlogs` function, and the side-source status row is written in one place | Duplicate | `edce31d` |
+| **BE-28** | The agent's record queue has one *forget these records* and one batch size | Duplicate | `f6b5634` |
+| **BE-29** | The Proxmox steps share their VMID lookup and their new-VMID check | Duplicate | `ac4f3d7` |
+| **BE-30** | One function returns all containers of a host (scan stacks and rootless Podman), for Workloads and the Toolbox adapters | Duplicate | `971cd24` |
+| **BE-31** | One place answers *which plugins does a host's manifest name*, and the label `reported by agent` is defined once | Duplicate | `bea7b58` |
+| **BE-32** | One function turns a typed host name into the scanned host, behind the three known-host checks, each keeping its own error | Duplicate | `da40044, a8a377b` |
+| **BE-33** | One lookup for *the interface that carries this address*, and one list of the controller's addresses | Duplicate | `d0f1c36` |
+| **BE-34** | The device adapters take their gateway list and their mask-to-prefix from `netfacts` | Duplicate | `bcc78c9` |
 
 ## 0.6.4: One script kit
 
