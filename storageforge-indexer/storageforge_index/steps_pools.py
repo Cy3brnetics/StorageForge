@@ -20,9 +20,8 @@ import shlex
 
 from . import changes
 from .changes import CONFIRM, CONFIRM_ALL, DEVICES, F
+from .secretstore import NAME as SECRET, SECRET_DIR, secret_ok
 
-SECRET_DIR = '/run/storageforge/secrets'
-SECRET = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 MAPPER = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')
 MD_NAME = re.compile(r'[A-Za-z0-9_-]{1,32}')
 LEAF = re.compile(r'/dev/[A-Za-z0-9/_.:+-]+|[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}')      # a device path, a name zpool status prints, or a guid
@@ -528,8 +527,7 @@ def _check_luks_names(p, say, *, secret='secret'):
         say('crit', f'{p["name"]} is not a mapping name: letters, digits, . _ and -')
         good = False
     for key in (secret, 'new_secret'):
-        if p.get(key) and not SECRET.fullmatch(p[key]):
-            say('crit', f'{p[key]} is not a secret name: letters, digits, . _ and -')
+        if p.get(key) and not secret_ok(p, say, key):
             good = False
     return good
 

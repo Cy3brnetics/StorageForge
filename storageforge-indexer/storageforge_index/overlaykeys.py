@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from . import alerts, nebulaca
+from .secretstore import NAME as SECRET_NAME
 
 SETTING = 'nebula_cas'
 DIR = nebulaca.DIR
@@ -32,7 +33,6 @@ HS_TAGS = re.compile(r'tag:[a-z0-9][a-z0-9-]{0,62}(,tag:[a-z0-9][a-z0-9-]{0,62})
 HS_EXPIRY = re.compile(r'[0-9]{1,4}[mhd]')
 HS_KEY = re.compile(r'[A-Za-z0-9_-]{16,200}')
 CONTAINER = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
-SECRET_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
 
 # What runs on the host, as root. Nothing in these is a value somebody typed: the names are fixed.
 # A key that is there without its public half was not made here, and is left alone.

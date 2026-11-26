@@ -38,9 +38,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .secretstore import NAME as SECRET_NAME
+
 PARAM_KEY = re.compile(r'[a-z][a-z0-9_]{0,40}')
 PARAM_VALUE = re.compile(r'[^\x00-\x1f\x7f]{0,2000}')
-SECRET_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')     # as secretstore.NAME
 
 
 @dataclass

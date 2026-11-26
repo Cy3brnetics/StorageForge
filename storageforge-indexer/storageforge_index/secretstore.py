@@ -30,8 +30,8 @@ import time
 
 from .vault import NotReleased, StepUpNeeded, VaultError, VaultLocked, present_token, presented_token
 
-NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
-SECRET_DIR = '/run/storageforge/secrets'
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')     # the one rule for a secret's name: the vault, plan steps, shares and vault send-secret
+SECRET_DIR = '/run/storageforge/secrets'                 # where vault send-secret and sf_secrets_in put a secret on a host (as root)
 USERNAME = 'secret'                     # what marks a row of device_credentials as a step's secret, since vault secret-add
 MARK = 'SF-SECRETS 1'
 
@@ -49,6 +49,15 @@ KINDS = {
 
 class SecretError(ValueError):
     pass
+
+
+def secret_ok(p: dict, say, field: str = 'secret') -> bool:
+    """A plan step's check of its secret field: says crit and returns False when p[field] is not a name the vault holds and the plan
+    delivers (NAME), so a step does not pass the check and then find nothing on the host."""
+    if NAME.fullmatch(str(p.get(field) or '')):
+        return True
+    say('crit', f'{p.get(field) or ""} is not a secret name: letters, digits, . _ and -, starting with a letter or digit, up to 64')
+    return False
 
 
 def kinds() -> list[dict]:

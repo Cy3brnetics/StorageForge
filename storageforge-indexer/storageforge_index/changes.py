@@ -24,6 +24,7 @@ import time
 from . import receiving, site
 from .db import Conn
 from .moves import _fmt, _path, find_host, host_slug, hosts, mount_of, slug, subtree
+from .secretstore import NAME as _SECRET_NAME
 from .scriptkit import FSTAB_ERRORS, HELPERS, RECEIVE_KIT, REMOTE, SEND_KIT, comments, host_name, one_line
 from .tasks import HOST_RE
 
@@ -206,7 +207,7 @@ CHECKS = {
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
     'vmid': re.compile(r'[1-9]\d{2,8}'),    # a Proxmox VMID: 100 to 999999999
     'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'unit': re.compile(r'[A-Za-z0-9:_.@-]{1,200}\.service'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
-    'secret': re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}'),     # a vault secret's name (secretstore.NAME)
+    'secret': _SECRET_NAME,     # a vault secret's name
     'zfs-snapshot': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}@[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'),
     'btrfs-device': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+|\d{1,5}|missing'), 'size': re.compile(r'\d{1,12}(\.\d{1,3})?[KMGTP]'), 'number': re.compile(r'\d{1,7}'),
     'mkfs': re.compile(r'[a-z_]+=[A-Za-z0-9_.+:-]+(,[a-z_]+=[A-Za-z0-9_.+:-]+)*'),

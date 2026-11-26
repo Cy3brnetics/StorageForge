@@ -437,7 +437,16 @@ class Checks(Db):
         self.assertIn(('crit', '/dev/sdf is in use: mounted at /srv/x'), self.said('luks-format', device='/dev/sdf', name='x', secret='k', wipe=True))
         self.assertIn(('crit', '/dev/mapper/data-crypt is mounted at /srv/c: unmount it first'), self.said('luks-close', name='data-crypt'))
         self.assertIn(('crit', 'the new key is the key it has'), self.said('luks-add-key', device='/dev/sdd', secret='k', new_secret='k'))
-        self.assertIn(('crit', 'a:b is not a secret name: letters, digits, . _ and -'), self.said('luks-open', device='/dev/sdd', name='x', secret='a:b'))
+        self.assertIn(('crit', 'a:b is not a secret name: letters, digits, . _ and -, starting with a letter or digit, up to 64'), self.said('luks-open', device='/dev/sdd', name='x', secret='a:b'))
+
+    def test_a_secret_name_the_plan_would_not_deliver_is_critical_in_every_step_that_reads_one(self):
+        # _x passes the plan's name field, and secretstore.plan_secrets skips it: each step's check says so instead of passing
+        crit = ('crit', '_x is not a secret name: letters, digits, . _ and -, starting with a letter or digit, up to 64')
+        for kind, more in (('luks-open', {'device': '/dev/sdd', 'name': 'x'}), ('luks-add-key', {'device': '/dev/sdd', 'secret': 'k', 'new_secret': '_x'}),
+                           ('tailscale', {}), ('cloudflare-tunnel', {'state': 'absent'}), ('pangolin-site', {'state': 'absent'}),
+                           ('netbird', {}), ('openziti', {'identity': 'web-1'})):
+            self.assertIn(crit, self.said(kind, **{'secret': '_x', **more}), kind)
+        self.assertNotIn(crit[0], [lvl for lvl, _ in self.said('tailscale', secret='tailscale-key')])
 
     def test_every_device_step_is_destructive_and_gated_in_the_playbook(self):
         for kind in ('zfs-add', 'zfs-replace', 'zfs-attach', 'md-add', 'md-replace', 'md-grow', 'luks-format'):

@@ -15,12 +15,14 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ### Changed
 
 - **The Ansible task of a bridge, VLAN, MTU, SSH option, AppArmor, SELinux or AppArmor setup, NTS time, WireGuard, workload action or removal, or ZFS rollback step carries only the Bash it runs.** Each such task held about 500 lines of other steps' functions, because the pattern that cut out one helper ran to the end of the text; the tasks of the network address, bond, route and DHCP steps held their interface guard twice. The tasks now carry the function they run and each helper it calls once, and do the same on the host.
+- **A secret name that starts with a dot, a dash or an underscore is refused by the check of the Tailscale, Cloudflare Tunnel, Pangolin site, NetBird, OpenZiti and LUKS steps, and by `vault send-secret` and `vault secret-add`.** Those steps and commands allowed such a name, but the vault never stores one and a plan's apply never delivers one, so the step passed its check and then found no secret on the host. The message now says a name starts with a letter or digit. Both commands now refuse such a name as a usage error, exit code 2, where they failed with 1 (`vault secret-add` after reading stdin, `vault send-secret` after looking the name up).
 - **A step parameter missing from a saved plan reaches the step's Bash function in an Ansible export as an empty word, not the word `None`.** This happened in the exports of the LUKS, network, infrastructure, libvirt, VM, VM from ISO, ZFS hold and disk image steps, for a plan saved before a field was added.
 
 ### Internal
 
 - The Ansible task that runs a step's Bash function is built by `changes.shell_task`, its parameters become words by `changes.words_of`, and helper functions are cut out of a Bash text by `changes.bash_fn`, in place of copies in 28 step modules. Each task still carries every helper it runs (BE-35).
 - The first line of an exported step's Bash (`APPLY=1` and the `ok`, `missing`, `conflict` and silent `info` helpers) comes from `changes.ansible_head` in the eight step modules that wrote it out identically: Tailscale, VM disk folder, secret file, desktop, OS install, rclone mount, netconsole and container runtime. The exported text is unchanged (BE-36).
+- The secrets folder on a host (`secretstore.SECRET_DIR`) and the rule for a secret's name (`secretstore.NAME`) are defined once, and the check of a step's secret field is one `secretstore.secret_ok`, in place of copies in the Tailscale, tunnel, overlay, LUKS, secret file, share and Nebula modules, the plan field check and the CLI. Generated scripts are unchanged (BE-38).
 
 ## 0.6.3.1 — 2026-11-26
 

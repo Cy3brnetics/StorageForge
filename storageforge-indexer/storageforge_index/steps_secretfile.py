@@ -16,8 +16,8 @@ import shlex
 
 from . import changes
 from .changes import F
+from .secretstore import NAME
 
-NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
 ACCOUNT = re.compile(r'[a-z_][a-z0-9_.-]{0,31}')
 MODE = re.compile(r'0?[0-7]{3}')
 ARGS = ('secret', 'path', 'owner', 'group', 'mode', 'state', 'prepare')

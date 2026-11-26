@@ -31,12 +31,11 @@ import time
 from . import changes, nebulaca, overlaykeys, steps_tunnels
 from .changes import F
 from .scriptkit import RELOAD_SYSTEMD
+from .secretstore import NAME, SECRET_DIR, secret_ok
 
-NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 HOSTNAME = re.compile(r'[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?')
 URL = re.compile(r'https?://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:[0-9]{1,5})?')
 ZT_NETWORK = re.compile(r'[0-9a-f]{16}')
-SECRET_DIR = '/run/storageforge/secrets'
 NETBIRD_ARGS = ('secret', 'management_url', 'hostname', 'state')
 ZEROTIER_ARGS = ('network', 'state')
 NEBULA_ARGS = ('ca', 'lighthouse', 'lighthouses', 'port', 'inbound', 'state')
@@ -273,11 +272,7 @@ t_openziti() { local secret=$1 name=$2 state=${3:-present} f d id unit=ziti-edge
 """
 
 
-def _secret_ok(p, say) -> bool:
-    if not NAME.fullmatch(p['secret']):
-        say('crit', f'{p["secret"]} is not a secret name: letters, digits, . _ and -')
-        return False
-    return True
+_secret_ok = secret_ok
 
 
 def _secret_note(h, p, say, what: str, after: str):

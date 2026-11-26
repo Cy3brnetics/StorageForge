@@ -1102,14 +1102,12 @@ def _vault(args, unlock=True):
     return db, conn, v
 
 
-SECRET_NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
-SECRET_DIR = '/run/storageforge/secrets'
-
-
 def _send_secret(db, conn, v, args) -> int:
     """The secret goes on ssh's stdin and into a file on the host's /run (memory): never on a command line, in a script
     or in a log. sudo -n: the login needs sudo without a password, as deploys do."""
-    if not SECRET_NAME.fullmatch(args.name) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,253}', args.host) or args.host.startswith('-'):
+    from . import secretstore
+    d = secretstore.SECRET_DIR          # where a plan step reads it
+    if not secretstore.NAME.fullmatch(args.name) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,253}', args.host) or args.host.startswith('-'):
         print('a secret name, and a host name or address, please', file=sys.stderr)
         return 2
     user = args.user or conn.scalar('SELECT ssh_user FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h', {'h': args.host})
@@ -1127,19 +1125,18 @@ def _send_secret(db, conn, v, args) -> int:
     if args.key:
         argv += ['-i', str(Path(args.key).expanduser()), '-o', 'IdentitiesOnly=yes']
     target = f'{user}@{args.host}' if user else args.host
-    remote = (f'sudo -n sh -c \'umask 077; mkdir -p {SECRET_DIR} && chmod 700 {SECRET_DIR} && cat > {SECRET_DIR}/{args.name}.part '
-              f'&& mv -f {SECRET_DIR}/{args.name}.part {SECRET_DIR}/{args.name}\'')
+    remote = (f'sudo -n sh -c \'umask 077; mkdir -p {d} && chmod 700 {d} && cat > {d}/{args.name}.part '
+              f'&& mv -f {d}/{args.name}.part {d}/{args.name}\'')
     p = subprocess.run(argv + ['--', target, remote], input=(cred['password'] + '\n').encode(), capture_output=True, timeout=60)
     del cred
     ok = p.returncode == 0
     _audit(db, conn, v, 'vault.secret_send', 'ok' if ok else 'failed', host=args.host, name=args.name)
     if ok:
-        from . import secretstore
         secretstore.delivered(conn, args.name, args.host, args.step or 'send-secret', 'send-secret')          # where a rotation sends the next value
     if not ok:
         print(f'could not write it on {args.host}: {p.stderr.decode(errors="replace").strip()[-300:]}', file=sys.stderr)
         return 1
-    print(f'{args.host}: {SECRET_DIR}/{args.name} written (mode 600, in memory: gone at reboot)')
+    print(f'{args.host}: {d}/{args.name} written (mode 600, in memory: gone at reboot)')
     return 0
 
 
@@ -1368,15 +1365,15 @@ def cmd_vault(args) -> int:
             return 0
         if a == 'secret-add':
             # a secret for a plan step to read on a host, such as a Tailscale auth key: from stdin, so it is in no shell history
-            if not SECRET_NAME.fullmatch(args.name):
-                print('a secret name is letters, digits, . _ and -, up to 64', file=sys.stderr)
+            from . import secretstore
+            if not secretstore.NAME.fullmatch(args.name):
+                print('a secret name is letters, digits, . _ and -, starting with a letter or digit, up to 64', file=sys.stderr)
                 return 2
             text = sys.stdin.read().strip()
             if not text or '\n' in text or len(text) > 4096:
                 print('give the secret on stdin, as one line', file=sys.stderr)
                 return 2
             policy = _secret_policy(args)
-            from . import secretstore
             try:
                 secretstore.put_given(v, conn, args.name, text, policy)
             except secretstore.SecretError as exc:      # the name is not a secret's, or a device credential or an API token holds it

@@ -29,11 +29,10 @@ import shlex
 from . import changes
 from .changes import F
 from .scriptkit import RELOAD_SYSTEMD
+from .secretstore import NAME, SECRET_DIR, secret_ok
 
-NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 SITE_ID = re.compile(r'[A-Za-z0-9_-]{4,64}')
 ENDPOINT = re.compile(r'https://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:[0-9]{1,5})?')
-SECRET_DIR = '/run/storageforge/secrets'
 CF_ARGS = ('secret', 'state')
 NEWT_ARGS = ('secret', 'site_id', 'endpoint', 'state')
 
@@ -167,8 +166,7 @@ def _secret_notes(h, p, say, what: str):
 
 
 def _check_cloudflared(conn, c, h, p, say):
-    if not NAME.fullmatch(p['secret']):
-        say('crit', f'{p["secret"]} is not a secret name: letters, digits, . _ and -')
+    if not secret_ok(p, say):
         return
     if p['state'] == 'absent':
         say('note', 'stops the tunnel StorageForge started here and removes its token file. The tunnel stays defined at Cloudflare, and cloudflared stays installed')
@@ -178,8 +176,7 @@ def _check_cloudflared(conn, c, h, p, say):
 
 
 def _check_newt(conn, c, h, p, say):
-    if not NAME.fullmatch(p['secret']):
-        say('crit', f'{p["secret"]} is not a secret name: letters, digits, . _ and -')
+    if not secret_ok(p, say):
         return
     if p['state'] == 'absent':
         say('note', 'stops the Newt StorageForge started here and removes its configuration. The site stays defined at the Pangolin server')

@@ -15,11 +15,10 @@ import shlex
 
 from . import changes
 from .changes import F
+from .secretstore import NAME, SECRET_DIR, secret_ok
 
-NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
 TAGS = re.compile(r'tag:[a-z0-9][a-z0-9-]{0,62}(,tag:[a-z0-9][a-z0-9-]{0,62}){0,9}')
 HOSTNAME = re.compile(r'[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?')
-SECRET_DIR = '/run/storageforge/secrets'
 SERVER = re.compile(r'https?://[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:[0-9]{1,5})?')
 ARGS = ('secret', 'tags', 'hostname', 'accept_routes', 'ssh', 'state', 'login_server')
 
@@ -78,8 +77,7 @@ t_tailscale() { local secret=$1 tags=$2 name=$3 routes=$4 tsssh=$5 state=${6:-pr
 
 
 def _check(conn, c, h, p, say):
-    if not NAME.fullmatch(p['secret']):
-        say('crit', f'{p["secret"]} is not a secret name: letters, digits, . _ and -')
+    if not secret_ok(p, say):
         return
     if p['tags'] and not TAGS.fullmatch(p['tags']):
         say('crit', 'tags are tag:name, separated by commas, up to 10')
