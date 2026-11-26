@@ -106,5 +106,16 @@ class Compose(unittest.TestCase):
         self.assertEqual(ts['image'].split(':')[1], d['services']['storageforge']['image'].split(':')[1])
 
 
+class EnvExample(unittest.TestCase):
+    def test_every_setting_the_compose_files_read_is_in_the_example(self):
+        import re
+        read = set()
+        for f in ROOT.glob('docker-compose*.yml'):
+            read |= set(re.findall(r'\$\{(STORAGEFORGE_[A-Z0-9_]+)', f.read_text()))
+        example = set(re.findall(r'^#?(STORAGEFORGE_[A-Z0-9_]+)=', (ROOT / '.env.example').read_text(), re.M))
+        self.assertEqual(read - example, set(), 'a compose setting is missing from .env.example')
+        self.assertEqual(example - read, set(), '.env.example names a setting no compose file reads')
+
+
 if __name__ == '__main__':
     unittest.main()

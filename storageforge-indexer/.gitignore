@@ -16,6 +16,7 @@ data/
 known_hosts
 .env
 .env.*
+!.env.example
 reports/lab-*.md
 /target/
 agent/out/
