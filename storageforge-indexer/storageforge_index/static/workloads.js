@@ -278,6 +278,21 @@ function wlReading(h) {
   if (!h) return [];
   return [['Read', h.containers_read_at ? fmtAgo(h.containers_read_at) : 'never'], ['Measured', h.measured_at ? `${fmtAgo(h.measured_at)}${h.measure_stale ? ' (old)' : ''}` : 'never']];
 }
+/* what the engine runs with: each value says whether daemon.json sets it or the engine's default holds. Podman has no daemon.json, so it is not marked. */
+function wlEngineRows(runtime, s) {
+  if (!s) return [];
+  if (s.daemon_json_read === undefined && !s.storage_driver) return [['Engine settings', 'not read yet: scan this host again']];
+  const dj = s.daemon_json || {}, docker = runtime === 'docker';
+  const mark = (key, v) => (v == null || v === '' ? null : docker && s.daemon_json_read ? `${v} (${key in dj ? 'set in daemon.json' : 'default'})` : v);
+  const opts = dj['log-opts'] && Object.entries(dj['log-opts']).map(([k, v]) => `${k}=${v}`).join(', ');
+  const mirrors = (s.registry_mirrors || []).join(', ');
+  return [['Data root', mark('data-root', s.root_dir)], ['Storage driver', mark('storage-driver', s.storage_driver)], ['Log driver', mark('log-driver', s.log_driver)],
+    ['Log options', opts ? `${opts} (set in daemon.json)` : docker && s.daemon_json_read ? 'none (default)' : null],
+    ...(docker ? [['Live restore', mark('live-restore', s.live_restore == null ? null : s.live_restore ? 'on' : 'off')], ['Registry mirrors', mirrors ? mark('registry-mirrors', mirrors) : docker && s.daemon_json_read ? 'none (default)' : null]] : []),
+    ['Cgroup driver', s.cgroup_driver],
+    ...(docker && !s.daemon_json_read ? [['daemon.json', 'not read: the scan user cannot open it, or it is over 64 KiB']] : []),
+    ...(s.daemon_json_error ? [['daemon.json', `could not be used: ${s.daemon_json_error}`]] : [])];
+}
 const wlLink = (href, label) => el('a', { class: 'btn sm', href }, label);
 
 function wlPanel() {
@@ -292,7 +307,8 @@ function wlPanel() {
     if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button('+ New', () => WL.onNew({ host: h.name, runtime: '' }), 'btn sm pri'), ...(h.runtimes || []).map((r) => button(`+ New ${r}`, () => WL.onNew({ host: h.name, runtime: r }), 'btn sm'))));
     out.push(wlLink(wlScanHref(h.name), 'Open host'));
   } else if (n.kind === 'runtime') {
-    out.push(wlDl([['Host', d.host], ['Workloads', d.count], ...wlReading(wlHostOf(d.host))]));
+    out.push(wlDl([['Host', d.host], ['Workloads', d.count], ...wlReading(wlHostOf(d.host)),
+      ...(d.runtime === 'docker' || d.runtime === 'podman' ? wlEngineRows(d.runtime, (wlHostOf(d.host) || {}).engine_settings) : [])]));
     if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button(`+ New ${d.runtime}`, () => WL.onNew({ host: d.host, runtime: d.runtime }), 'btn sm pri')));
   } else if (n.kind === 'stack') {
     out.push(wlDl([['Compose project', n.label], ['Host', d.host], ['Containers', d.items.map((w) => `${w.name}: ${w.state || '?'}`)]]));

@@ -65,6 +65,18 @@ done
 printf '@@engine\t%s\t%s\n' "${D##* }" "$how"
 [ -n "$D" ] || exit 0
 echo '@@root'; $D info --format '{{.DockerRootDir}}' 2>/dev/null || $D info --format '{{.Store.GraphRoot}}' 2>/dev/null
+# one line of the few fields wanted, each through json so an empty one is null; Podman has its own names for them
+echo '@@settings'
+if [ "${D##* }" = podman ]; then $D info --format '{"storage_driver":{{json .Store.GraphDriverName}},"log_driver":{{json .Host.LogDriver}},"cgroup_driver":{{json .Host.CgroupManager}}}' 2>/dev/null || true
+else $D info --format '{"storage_driver":{{json .Driver}},"log_driver":{{json .LoggingDriver}},"cgroup_driver":{{json .CgroupDriver}},"live_restore":{{json .LiveRestoreEnabled}},"registry_mirrors":{{json .RegistryConfig.Mirrors}}}' 2>/dev/null || true; fi
+if [ "${D##* }" = docker ]; then
+  # daemon.json is read the way the engine was reached: root may own the folder; a file over 64 KiB is not the one we want in the index
+  S=; [ "$how" = sudo ] && S='sudo -n'; f=/etc/docker/daemon.json
+  if $S test -e $f 2>/dev/null; then
+    dj=$($S head -c 65537 -- $f 2>/dev/null) && [ "${#dj}" -le 65536 ] && printf '@@daemonjson\n%s\n' "$dj" || echo '@@daemonjson-unreadable'
+  elif $S test -x /etc/docker 2>/dev/null; then echo '@@daemonjson'
+  else echo '@@daemonjson-unreadable'; fi
+fi
 echo '@@containers'; ids=$($D ps -aq); [ -n "$ids" ] && $D container inspect --format 'FMT_C' $ids
 if [ "${D##* }" = podman ]; then F='FMT_P'; else F='FMT_D'; fi
 echo '@@details'; [ -n "$ids" ] && $D container inspect --format "$F" $ids 2>/dev/null
@@ -86,7 +98,7 @@ done
 def _sections(text: str) -> dict:
     out, cur, buf = {}, None, []
     for line in text.splitlines():
-        if line.startswith('@@') and line[2:].split('\t')[0] in ('engine', 'root', 'containers', 'details', 'images', 'networks', 'volumes', 'sizes', 'end'):
+        if line.startswith('@@') and line[2:].split('\t')[0] in ('engine', 'root', 'settings', 'daemonjson', 'daemonjson-unreadable', 'containers', 'details', 'images', 'networks', 'volumes', 'sizes', 'end'):
             if cur:
                 out[cur] = '\n'.join(buf)
             head = line[2:].split('\t')
@@ -143,6 +155,37 @@ def _details(c: dict, d: dict, digests: dict) -> dict:
     return c
 
 
+DAEMON_KEYS = ('data-root', 'storage-driver', 'log-driver', 'log-opts', 'registry-mirrors', 'live-restore', 'default-address-pools')
+
+
+def _settings(sec: dict, engine: str) -> dict:
+    """The engine's answers plus the known keys of daemon.json: anything else in the file (hosts, TLS paths) is dropped here."""
+    got = {}
+    for line in (sec.get('settings') or '').splitlines():
+        if line.strip().startswith('{'):
+            try:
+                got = json.loads(line)
+            except ValueError:
+                pass
+    mirrors = got.get('registry_mirrors')
+    out = {'storage_driver': got.get('storage_driver') or None, 'log_driver': got.get('log_driver') or None,
+           'cgroup_driver': got.get('cgroup_driver') or None,
+           'live_restore': got.get('live_restore') if isinstance(got.get('live_restore'), bool) else None,
+           'registry_mirrors': [m for m in mirrors if isinstance(m, str)] if isinstance(mirrors, list) else [],
+           'daemon_json': None, 'daemon_json_read': False}
+    if engine == 'docker' and 'daemonjson' in sec:
+        raw = sec['daemonjson'].strip()
+        try:
+            doc = json.loads(raw) if raw else {}
+            if not isinstance(doc, dict):
+                raise ValueError('the top level is not an object')
+            out['daemon_json'] = {k: v for k, v in doc.items() if k in DAEMON_KEYS}
+        except ValueError as exc:
+            out['daemon_json_error'] = f'not valid JSON: {str(exc)[:120]}'
+        out['daemon_json_read'] = True
+    return out
+
+
 def parse_engine(text: str) -> dict:
     sec = _sections(text)
     details = {(d.get('id') or '')[:12]: d for d in _jsonl(sec.get('details', ''))}
@@ -170,7 +213,7 @@ def parse_engine(text: str) -> dict:
                 'project': (v.get('labels') or {}).get('com.docker.compose.project'),
                 'size': sizes.get(v.get('name'))} for v in _jsonl(sec.get('volumes', ''))]
     return {'engine': engine or None, 'access': how or None, 'root_dir': (sec.get('root') or '').strip() or None,
-            'containers': containers, 'volumes': volumes, 'networks': _jsonl(sec.get('networks', ''))}
+            'settings': _settings(sec, engine), 'containers': containers, 'volumes': volumes, 'networks': _jsonl(sec.get('networks', ''))}
 
 
 def _interp(text: str) -> bool:
@@ -305,9 +348,9 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
     with conn.tx():
         conn.execute('DELETE FROM docker_hosts WHERE host_id = :h', {'h': host_id})
         conn.execute("""INSERT INTO docker_hosts (host_id, engine, access, root_dir, containers_json, volumes_json,
-                            compose_json, scan_id, updated_at) VALUES (:h, :e, :a, :r, :c, :v, :cf, :s, :t)""",
+                            compose_json, settings_json, scan_id, updated_at) VALUES (:h, :e, :a, :r, :c, :v, :cf, :st, :s, :t)""",
                      {'h': host_id, 'e': data['engine'], 'a': data['access'], 'r': data['root_dir'],
-                      'c': json.dumps(data['containers']), 'v': json.dumps(data['volumes']), 'cf': json.dumps(compose),
+                      'c': json.dumps(data['containers']), 'v': json.dumps(data['volumes']), 'cf': json.dumps(compose), 'st': json.dumps(data['settings']),
                       's': scan_id, 't': int(time.time())})
     return {'engine': data['engine'], 'access': data['access'], 'containers': len(data['containers']),
             'running': sum(1 for c in data['containers'] if c['state'] == 'running'),
@@ -325,7 +368,7 @@ def _manager(path: str) -> str:
 
 
 def host_view(row) -> dict:
-    hostname, engine, access, root, cj, vj, fj, updated = row
+    hostname, engine, access, root, cj, vj, fj, updated, sj = row
     containers, volumes, compose = json.loads(cj), json.loads(vj), json.loads(fj)
     stacks: dict[str, dict] = {}
     for f in compose:
@@ -374,13 +417,14 @@ def host_view(row) -> dict:
     out.sort(key=lambda s: (order[s['state']], (s['project'] or '').lower()))
     unused = [v for v in volumes if v['name'] not in used_vols]
     return {'host': hostname, 'engine': engine, 'access': access, 'root_dir': root, 'updated_at': updated,
+            'engine_settings': {**(json.loads(sj) if sj else {}), 'root_dir': root} if engine else None,
             'stacks': out, 'volumes': volumes, 'unused_volumes': unused, 'containers': len(containers),
             'running': sum(1 for c in containers if c['state'] == 'running')}
 
 
 def listing(conn: Conn, host: str | None = None) -> list[dict]:
     rows = conn.all(f"""SELECT h.hostname, d.engine, d.access, d.root_dir, d.containers_json, d.volumes_json, d.compose_json,
-                               d.updated_at FROM docker_hosts d JOIN hosts h ON h.host_id = d.host_id
+                               d.updated_at, d.settings_json FROM docker_hosts d JOIN hosts h ON h.host_id = d.host_id
                         {'WHERE h.hostname = :h OR h.ip_address = :h' if host else ''} ORDER BY h.hostname""", {'h': host})
     return [host_view(r) for r in rows]
 
