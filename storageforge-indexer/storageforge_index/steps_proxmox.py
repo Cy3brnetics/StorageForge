@@ -144,7 +144,7 @@ t_pve_ct() { local vmid=$1 host=$2 tmpl=$3 store=$4 disk=${5:-8} cores=${6:-1} m
 # From an ISO already on the node, or from a catalog cloud image that is downloaded into a temporary folder, checked and imported. The folder is
 # removed on every way out. pve_vm_make reads this function locals, as every function it calls does in bash.
 t_pve_vm() { local vmid=$1 name=$2 source=$3 iso=$4 image=$5 store=$6 disk=${7:-32} cores=${8:-2} mem=${9:-2048} bridge=${10:-vmbr0} ostype=${11:-l26} user=${12:-admin} key=${13} onboot=${14} start=${15}
-  local tmp= rc=0
+  local tmp= made= rc=0
   command -v qm >/dev/null || { conflict "this host is not a Proxmox VE node: qm is not here"; return 0; }
   pve_free_vmid "$vmid" qm || return 0
   vmid=$PVE_VMID
@@ -159,13 +159,14 @@ t_pve_vm() { local vmid=$1 name=$2 source=$3 iso=$4 image=$5 store=$6 disk=${7:-
   fi
   act "create VM $vmid ($name) from ${iso:-$image} on $store: ${disk} GiB, $cores cores, ${mem} MiB, bridge $bridge" || return 0
   tmp=$(mktemp -d) || { conflict "could not make a temporary folder"; return 0; }
+  made=$(mktemp -d) || { rm -rf -- "$tmp"; conflict "could not make a temporary folder"; return 0; }
   # The folder is the subshell own: its EXIT trap removes it, whether the step ends or a conflict exits (an Ansible export does), and the trap
   # of the script around it is not touched. The subshell cannot count a problem for the script, so a failure is said once more here.
   ( trap 'rm -rf -- "$tmp"' EXIT; pve_vm_make ) || rc=$?
   # a failure after qm create leaves a VM that is not what was asked for: the one this run made is removed again
-  # (the mark is beside the temporary folder, not in it: the subshell trap removes the folder, and a conflict of an Ansible run ends the subshell)
-  if ((rc)) && [[ -e $tmp.created ]]; then pve_vm_undo; fi
-  rm -rf -- "$tmp" "$tmp.created"
+  # (the mark is in a second temporary folder of its own, not in the first: the subshell trap removes that one, and a conflict of an Ansible run ends the subshell)
+  if ((rc)) && [[ -e $made/created ]]; then pve_vm_undo; fi
+  rm -rf -- "$tmp" "$made"
   ((!rc)) || { conflict "VM $vmid ($name): the step stopped, see above"; return 0; }
   ok "created VM $vmid ($name)"
   # in the parent, so a failed start counts as a problem of the script
@@ -179,7 +180,7 @@ pve_vm_undo() { local cfg got
   got=$(awk '$1 == "name:" { print $2; exit }' <<<"$cfg")
   if [[ $got != "$name" ]]; then info "VM $vmid is named ${got:-nothing} now, not $name: it is left as it is"; return 0; fi
   if qm destroy "$vmid" --purge >/dev/null 2>&1; then ok "removed the half-made VM $vmid ($name) with qm destroy --purge"
-  else conflict "could not remove the half-made VM $vmid ($name): remove it in Proxmox, or with qm destroy $vmid --purge"; fi
+  else rm -rf -- "$tmp" "$made"; conflict "could not remove the half-made VM $vmid ($name): remove it in Proxmox, or with qm destroy $vmid --purge"; fi
   return 0
 }
 
@@ -189,7 +190,7 @@ pve_vm_make() { local url sums cos base keyf help unused
   if [[ $source == iso ]]; then
     args+=(--scsi0 "$store:$disk" --ide2 "$iso,media=cdrom" --boot "order=scsi0;ide2")
     try qm create "${args[@]}" >/dev/null || return 1
-    : >"$tmp.created"
+    : >"$made/created"
   else
     IFS=$'\t' read -r url sums cos < <(sf_vm_image "$image") || { conflict "no image $image in the catalog"; return 1; }
     base=$tmp/$(basename "$url")
@@ -198,10 +199,10 @@ pve_vm_make() { local url sums cos base keyf help unused
     help=$(qm help create 2>&1) || help=
     if grep -q import-from <<<"$help"; then
       try qm create "${args[@]}" --scsi0 "$store:0,import-from=$base" >/dev/null || return 1
-      : >"$tmp.created"
+      : >"$made/created"
     else
       try qm create "${args[@]}" >/dev/null || return 1
-      : >"$tmp.created"
+      : >"$made/created"
       try qm importdisk "$vmid" "$base" "$store" >/dev/null || return 1
       unused=$(qm config "$vmid" | awk '$1 == "unused0:" { print $2; exit }')
       [[ -n $unused ]] || { conflict "qm importdisk made no disk for $vmid"; return 1; }

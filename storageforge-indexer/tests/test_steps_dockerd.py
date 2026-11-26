@@ -169,6 +169,12 @@ class Check(Index):
         self.scan(settings={'storage_driver': 'overlay2'})
         self.assertFalse(any(lv == 'crit' for lv, t in self.items(data_root='/mnt/backup/docker')))
 
+    def test_a_system_folder_is_a_crit_as_a_whole_path_only(self):
+        self.scan()
+        for d in ('/srv', '/usr', '/var'):
+            self.assertTrue(any(lv == 'crit' and 'system folder' in t for lv, t in self.items(data_root=d)), d)
+        self.assertFalse(any('system folder' in t for lv, t in self.items(data_root='/srv/docker')))
+
     def test_the_number_of_log_files_is_one_to_a_hundred(self):
         self.scan()
         for bad in ('0', '101'):
@@ -629,6 +635,52 @@ exit 0
         out = self.report(data_root='/', log_max_size='')
         self.assertIn('cannot be /', out)
         self.assertEqual(self.calls('systemctl'), [])
+
+    # ── symlinks are followed before anything is decided ──
+    def link(self, name, target):
+        (self.work / name).symlink_to(target)
+        return str(self.work / name)
+
+    def test_a_symlink_to_the_root_or_a_system_folder_is_refused(self):
+        for target in ('/', '/var', '/usr'):
+            for move in ('1', ''):
+                with self.subTest(target=target, move=move):
+                    name = f'l{abs(hash((target, move)))}'
+                    self.assert_refused_untouched(self.export(data_root=self.link(name, target) + ('/x' if target != '/' else ''), move_data=move, log_max_size=''), 'system folder')
+        self.assert_refused_untouched(self.export(data_root=self.link('tovar', '/var') + '/lib', move_data='', log_max_size=''), 'system folder')
+
+    def test_every_system_folder_is_refused_as_a_whole_path(self):
+        for d in ('/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64', '/opt', '/proc', '/root', '/run', '/sbin', '/srv', '/sys', '/tmp', '/usr', '/var', '/var/lib'):
+            with self.subTest(d=d):
+                self.assert_refused_untouched(self.export(data_root=d, move_data='', log_max_size=''), 'system folder')
+
+    def test_the_report_refuses_a_symlink_to_the_root_and_changes_nothing(self):
+        out = self.report(data_root=self.link('rootlink', '/'), log_max_size='')
+        self.assertIn('to /, a system folder', out)
+        self.assertEqual((self.calls('systemctl'), self.calls('rsync'), self.backups()), ([], [], []))
+
+    def test_a_symlink_to_a_folder_with_content_is_refused_without_the_move(self):
+        full = self.work / 'full'
+        full.mkdir()
+        (full / 'photos').write_text('x')
+        self.assert_refused_untouched(self.export(data_root=self.link('tofull', full), move_data='', log_max_size=''), 'not empty')
+
+    def test_a_symlinked_parent_into_the_current_root_is_inside_it(self):
+        (self.old / 'sub').mkdir()
+        for move in ('1', ''):
+            with self.subTest(move=move):
+                self.assert_refused_untouched(self.export(data_root=self.link(f'intoold{move or 0}', self.old) + '/sub', move_data=move, log_max_size=''), 'inside')
+
+    def test_a_real_empty_folder_behind_a_symlinked_parent_is_used_as_its_resolved_path(self):
+        real = self.work / 'real'
+        real.mkdir()
+        r = self.export(data_root=self.link('par', real) + '/dockerdata', log_max_size='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.daemon()['data-root'], str(real / 'dockerdata'))
+        self.assertRegex(self.logged()[self.calls('rsync')[0]], r'rsync .* ' + str(self.old) + '/ ' + str(real / 'dockerdata') + '/ ')
+        self.assertIn('moved to ' + str(real / 'dockerdata'), r.stdout)
+        out = self.report(data_root=self.link('par2', real) + '/d2', log_max_size='')
+        self.assertIn('resolves to ' + str(real / 'd2'), out)
 
     def export_raw(self, data_root):
         """The script as a plan that skipped normalising would hold it."""

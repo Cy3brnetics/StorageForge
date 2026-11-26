@@ -17,6 +17,7 @@ LOG_DRIVERS = ['', 'json-file', 'local', 'journald', 'syslog', 'none']
 STORAGE_DRIVERS = ['', 'overlay2', 'btrfs', 'zfs', 'fuse-overlayfs']
 SETTINGS = ('data_root', 'log_driver', 'log_max_size', 'log_max_file', 'live_restore', 'registry_mirrors', 'storage_driver')
 ARGS = ('data_root', 'move_data', 'log_driver', 'log_max_size', 'log_max_file', 'live_restore', 'registry_mirrors', 'storage_driver')
+SYSTEM_DIRS = ('/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64', '/opt', '/proc', '/root', '/run', '/sbin', '/srv', '/sys', '/tmp', '/usr', '/var', '/var/lib')
 NETWORK_FS = ('nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', '9p', 'sshfs', 'fuse.sshfs', 'ceph', 'glusterfs', 'fuse.glusterfs', 'afs', 'lustre')
 
 # https URLs with no login in them (a login would reach the plan and daemon.json in the clear), separated by spaces
@@ -168,8 +169,11 @@ dd_move() {
   fi
 }
 
+# dd_system PATH: true for the root and the folders the system itself lives in, whole paths only (/var/lib/docker2 is not one).
+dd_system() { case $1 in @SYSDIRS@) return 0 ;; esac; return 1; }
+
 # dd_work: the whole step, reading and setting the locals of t_docker_daemon. tmp is its own temporary folder.
-dd_work() { local base new cur eff_root want d out vout help used avail par l hid drv_before= want_drv stopped=
+dd_work() { local base new cur eff_root want rwant d out vout help used avail par l hid drv_before= want_drv stopped=
   local dd_bak= moving=0 drift=0 changed=0
   want=${data_root%/}
   cur=$(docker info --format "{{.DockerRootDir}}" 2>/dev/null </dev/null) || cur=
@@ -178,16 +182,39 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
     info "docker did not answer as $(id -un): its data directory is taken as $cur"
   fi
   cur=${cur%/}
-  # the current directory asked for again is no change: no key is written for it, so nothing restarts
-  eff_root=$data_root
-  [[ -n $want && $want == "$cur" ]] && eff_root=
-  if [[ -n $want && $want != "$cur" ]]; then drift=1; [[ -n $move ]] && moving=1; fi
-  # a plan from the Changes page or the API is not stopped by a crit of the check, so the script itself refuses a folder docker must not be pointed at
+  # a plan from the Changes page or the API is not stopped by a crit of the check, so the script itself refuses a folder docker must not be pointed at.
+  # Links are followed first: every decision below, the copy and the file use the resolved path, which is the folder that would really be used.
   if [[ -n $data_root ]]; then
     if [[ -z $want ]]; then dd_conflict "the data directory cannot be /"; return 0; fi
     if [[ $data_root != /* || "$want/" == *//* || "$want/" == */../* || "$want/" == */./* ]]; then
       dd_conflict "the data directory $data_root is not an absolute path without .., . or double slashes"; return 0
     fi
+    rwant=$(readlink -m -- "$want") || rwant=
+    [[ -n $rwant ]] || { dd_conflict "could not resolve $want"; return 0; }
+    # the folder itself or any link on the way to it may lead to the root or to a system folder
+    par=$want
+    while [[ $par != / && -n $par ]]; do
+      if [[ -L $par ]]; then
+        l=$(readlink -m -- "$par") || l=
+        if dd_system "$l"; then dd_conflict "$want leads through $par to $l, a system folder: pick a folder of its own"; return 0; fi
+      fi
+      par=$(dirname -- "$par")
+    done
+    if dd_system "$want"; then dd_conflict "$want is a system folder: pick a folder of its own"; return 0; fi
+    if dd_system "$rwant"; then
+      if [[ $rwant == "$want" ]]; then dd_conflict "$want is a system folder: pick a folder of its own"
+      else dd_conflict "$want resolves to $rwant, a system folder: pick a folder of its own"; fi
+      return 0
+    fi
+    if [[ $rwant != "$want" ]]; then info "$want resolves to $rwant: that is the folder used"; fi
+    want=$rwant
+  fi
+  cur=$(readlink -m -- "$cur") || true
+  # the current directory asked for again is no change: no key is written for it, so nothing restarts
+  eff_root=$want
+  [[ -n $want && $want == "$cur" ]] && eff_root=
+  if [[ -n $want && $want != "$cur" ]]; then drift=1; [[ -n $move ]] && moving=1; fi
+  if [[ -n $data_root ]]; then
     if ((drift)); then
       case "$want/" in "$cur/"*) dd_conflict "$want is inside the current data directory $cur"; return 0 ;; esac
       case "$cur/" in "$want/"*) dd_conflict "the current data directory $cur is inside $want"; return 0 ;; esac
@@ -332,7 +359,7 @@ def _mask_rule() -> str:
     return src.replace("'", '"').rstrip()
 
 
-BASH = BASH.replace('@MASKRULE@', _mask_rule())
+BASH = BASH.replace('@MASKRULE@', _mask_rule()).replace('@SYSDIRS@', '|'.join(SYSTEM_DIRS))
 
 
 def _title(p):
@@ -363,6 +390,8 @@ def _check(conn, c, h, p, say):
         say('crit', f'Docker on {h["name"]} is a snap (its data is in {cur}): its settings are not in /etc/docker/daemon.json')
         return
     want = (p.get('data_root') or '').rstrip('/')
+    if want in SYSTEM_DIRS[1:]:
+        say('crit', f'{want} is a system folder: pick a folder of its own (the check cannot follow links, the script resolves them when it runs)')
     if p.get('data_root') and p['data_root'] == '/':
         say('crit', 'the data directory cannot be /')
     elif want and cur and want == cur:

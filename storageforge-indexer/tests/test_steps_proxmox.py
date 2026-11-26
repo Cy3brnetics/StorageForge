@@ -423,6 +423,15 @@ class Vm(CtRun):
                 self.assertIn('removed the half-made VM 106 (app-01)', r.stdout)
                 self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
 
+    def test_a_destroy_that_fails_leaves_no_temporary_folder_even_though_conflict_ends_the_run(self):
+        tmp, log = self.vm_stubs()
+        self.failing_qm(tmp, 'resize')
+        (tmp / 'qm').write_text((tmp / 'qm').read_text().replace('esac', '  destroy) exit 1 ;;\nesac'))
+        r = self.run_vm(tmp, source='image', iso='', image='debian13')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('could not remove the half-made VM 106', r.stderr)
+        self.assertEqual(list((tmp / 'tmpdir').iterdir()), [])
+
     def test_the_undo_leaves_a_vm_that_is_not_named_as_the_step_says(self):
         tmp, log = self.vm_stubs()
         self.failing_qm(tmp, 'resize', name='someone-else')
