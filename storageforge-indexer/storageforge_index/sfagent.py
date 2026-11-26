@@ -90,7 +90,8 @@ M=%(manager)s A=%(agent)s BIN=%(agentctl)s
 SIZE=%(size)s SHA=%(sha)s ACCEPT=%(accept)s
 refuse() { local code=$1; shift; echo "refused: $*" >&2; exit "$code"; }
 own() { if ((EUID == 0)); then chown "$@"; fi; }
-groups_of() { id -nG "$1" 2>/dev/null | tr " " "\n"; }
+# Not a pipe into grep -q: grep stops at the first match, the writer is then killed by SIGPIPE, and pipefail makes that a failure
+in_group() { local g; for g in $(id -nG "$1" 2>/dev/null); do [[ $g == "$2" ]] && return 0; done; return 1; }
 for c in useradd usermod install sha256sum visudo id mktemp head wc; do
   command -v "$c" >/dev/null 2>&1 || { echo "$c is missing: the agent needs a full userland and sudo (on Alpine: apk add shadow coreutils sudo)" >&2; exit 3; }
 done
@@ -99,7 +100,7 @@ done
 for u in "$M" "$A"; do
   if id "$u" >/dev/null 2>&1; then
     for g in %(root_groups)s; do
-      if groups_of "$u" | grep -qx "$g"; then
+      if in_group "$u" "$g"; then
         refuse 5 "$u is in the $g group, which is root on this host. Take it out of that group (gpasswd -d $u $g) and set the agent up again"
       fi
     done
@@ -107,7 +108,7 @@ for u in "$M" "$A"; do
 done
 if id "$A" >/dev/null 2>&1; then
   for g in sudo wheel admin root; do
-    if groups_of "$A" | grep -qx "$g"; then refuse 5 "$A is in the $g group. The agent runs as an account that can become nothing else"; fi
+    if in_group "$A" "$g"; then refuse 5 "$A is in the $g group. The agent runs as an account that can become nothing else"; fi
   done
 fi
 tmp=$(mktemp)
