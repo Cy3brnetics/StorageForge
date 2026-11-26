@@ -226,7 +226,7 @@ dd_work() { local base new cur eff_root want rwant d out vout help used avail pa
     if [[ $rwant != "$want" ]]; then info "$want resolves to $rwant: that is the folder used"; fi
     want=$rwant
   fi
-  cur=$(readlink -m -- "$cur") || cur=$cur
+  l=$(readlink -m -- "$cur") && cur=$l
   # the current directory asked for again is no change: no key is written for it, so nothing restarts
   eff_root=$want
   [[ -n $want && $want == "$cur" ]] && eff_root=
