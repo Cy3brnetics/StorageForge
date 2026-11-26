@@ -205,14 +205,17 @@ dev_of() { # the namespace of the subsystem NQN
   return 1
 }
 start() {
-  local dev= uuid n
+  local dev= uuid n rc
   modprobe nvme-tcp 2>/dev/null
   if ! dev_of >/dev/null; then nvme connect -t tcp -a "$ADDR" -s "$PORT" -n "$NQN" || return 1; fi
   for n in $(seq 1 30); do dev=$(dev_of) && break; sleep 1; done
   [[ -b $dev ]] || { echo "no namespace for $NQN after connecting" >&2; return 1; }
   udevadm settle 2>/dev/null || true
-  if [[ $FORMAT != none && -z $(blkid -p "$dev" 2>/dev/null) ]]; then "mkfs.$FORMAT" "$dev" || return 1; fi
-  uuid=$(blkid -p -o value -s UUID "$dev")
+  rc=0; blkid -p "$dev" >/dev/null 2>&1 || rc=$?
+  if ((rc == 2)); then       # blkid sees nothing at all on it: only then is it blank
+    if [[ $FORMAT != none ]]; then "mkfs.$FORMAT" "$dev" || return 1; udevadm settle 2>/dev/null || true; fi
+  elif ((rc != 0)); then echo "blkid could not read $dev (status $rc): not formatting it" >&2; return 1; fi
+  uuid=$(blkid -p -o value -s UUID "$dev" 2>/dev/null) || uuid=
   [[ -n $uuid ]] || { echo "$dev holds no filesystem: choose a format for the mount, or make one by hand" >&2; return 1; }
   mkdir -p "$TARGET"
   mountpoint -q "$TARGET" || mount ${OPTS:+-o "$OPTS"} "UUID=$uuid" "$TARGET"

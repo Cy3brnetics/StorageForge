@@ -1,6 +1,8 @@
 """NVMe over TCP shares through the share wizard's code (netshares.py, share_nvme.py): saved and checked like the other drivers, exactly
 one client mount, the script carries no secret, and runs as a report on the server and on the client."""
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -128,6 +130,59 @@ class NvmeShare(Fleet):
         r = subprocess.run(['bash', '-s', '--', '--report'], input=text, env=env, capture_output=True, text=True, timeout=120)
         self.assertIn('did not write', r.stdout)
         self.assertNotIn('command not found', r.stdout + r.stderr)
+
+    def run_start(self, blkid_rc, fmt='ext4'):
+        """The client helper's start, as the unit runs it, against stand-ins: blkid's bare probe ends with blkid_rc. Returns
+        (exit status, stderr, the stand-ins that were called). PATH holds the stand-ins only, so no real tool can run."""
+        if not hasattr(self, 'script_text'):
+            shares.save_export(self.db, self.conn, 'nas', SHARE, None, 'test')
+            self.script_text = shares.script(self.conn, 'nas')
+        m = re.search(r'^nvme_client_sh\(\) \{[^\n]*\n  cat <<"EOF"\n(.*?)\nEOF\n', self.script_text, re.S | re.M)
+        self.assertTrue(m, 'the client helper is not in the script')
+        body = m.group(1)
+        # the namespace is a plain file here, never a disk of the machine the test runs on
+        self.assertEqual(body.count('[[ -b $dev ]]'), 1)
+        body = body.replace('[[ -b $dev ]]', '[[ -e $dev ]]')
+        self.assertEqual(body.count('\ncase ${1:-} in'), 1)
+        body = body.replace('\ncase ${1:-} in', '\ndev_of() { echo "$DEV"; }\ncase ${1:-} in')
+        tmp = Path(tempfile.mkdtemp(dir=self.tmp))
+        bin_ = tmp / 'bin'
+        bin_.mkdir()
+        (tmp / 'disk').write_text('')
+        stubs = {
+            'blkid': 'case "$*" in *UUID*) if [ -e "$T/formatted" ] || [ "$BLKID_RC" = 0 ]; then echo 1b2c-3d4e; fi; exit 0 ;; esac\n'
+                     '[ "$BLKID_RC" = 0 ] && echo "$2: TYPE=\\"ext4\\""\nexit "$BLKID_RC"',
+            'mkfs.ext4': ': >"$T/formatted"', 'mkfs.xfs': ': >"$T/formatted"', 'mount': ': >"$T/mounted"', 'mountpoint': 'exit 1',
+            'seq': 'echo 1', 'mkdir': ':', 'modprobe': ':', 'udevadm': ':', 'nvme': ':', 'sleep': ':'}
+        for name, sh in stubs.items():
+            (bin_ / name).write_text(f'#!/bin/sh\necho {name} >>"$T/calls"\n{sh}\n')
+            (bin_ / name).chmod(0o755)
+        helper = f'set -u\nNQN=nqn.test\nADDR=10.0.0.1\nPORT=4420\nFORMAT={fmt}\nTARGET={tmp}/mnt\nOPTS=\nDEV={tmp}/disk\n{body}\n'
+        self.assertEqual(subprocess.run(['bash', '-n'], input=helper, text=True, capture_output=True).returncode, 0)
+        env = {'PATH': str(bin_), 'T': str(tmp), 'BLKID_RC': str(blkid_rc)}
+        r = subprocess.run([shutil.which('bash'), '-s', '--', 'start'], input=helper, env=env, capture_output=True, text=True, timeout=60)
+        calls = (tmp / 'calls').read_text().split() if (tmp / 'calls').exists() else []
+        return r.returncode, r.stderr, calls
+
+    def test_a_disk_blkid_could_not_read_is_never_formatted(self):
+        # 8 is an ambivalent probe (conflicting signatures), 4 a usage or read error: blkid prints nothing for either, as for a blank disk
+        for rc in (8, 4):
+            code, err, calls = self.run_start(rc)
+            self.assertNotIn('mkfs.ext4', calls, f'blkid status {rc}')
+            self.assertNotIn('mount', calls, f'blkid status {rc}')
+            self.assertNotEqual(code, 0, f'blkid status {rc}')
+            self.assertIn(f'status {rc}', err)
+            self.assertIn('not formatting', err)
+
+    def test_a_blank_disk_is_formatted_and_one_with_a_filesystem_is_mounted_as_it_is(self):
+        code, err, calls = self.run_start(2)
+        self.assertEqual((code, 'mkfs.ext4' in calls, 'mount' in calls), (0, True, True), err)
+        code, err, calls = self.run_start(0)
+        self.assertEqual((code, 'mkfs.ext4' in calls, 'mount' in calls), (0, False, True), err)
+        code, err, calls = self.run_start(2, fmt='none')
+        self.assertEqual((code != 0, 'mount' in calls), (True, False), err)
+        self.assertFalse([c for c in calls if c.startswith('mkfs')])
+        self.assertIn('holds no filesystem', err)
 
 
 if __name__ == '__main__':
