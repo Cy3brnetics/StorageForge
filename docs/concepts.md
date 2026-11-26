@@ -75,6 +75,10 @@ Every feature follows the same rules. When adding one, follow them too; the [aud
 14. **Everything is audited.** The audit log is append-only and hash-chained; `audit verify` finds an edited, deleted or reordered row.
 15. **A name proves nothing.** Hosts are pinned to their SSH host keys and machine id. A machine claiming an indexed name is refused, and a signed deploy runs only on the machine it was signed for.
 
+**Independence**
+
+16. **What StorageForge makes outlives it.** StorageForge is an SSH client with extras, and its hosts don't depend on it. A share, a pool, a schedule, a job, a tunnel or a firewall rule it set up keeps working when the controller is down, and still works if the controller and its database are gone for good. So everything put on a host is whole by itself: a generated script or unit carries its own helpers and calls nothing on the controller that it needs in order to work. Reporting back to the controller is extra, and a host that can't reach it carries on. (The owner, 2026-11-26.)
+
 ## Health colours
 
 The graph and topology colour every node by the 3-2-1 rule:

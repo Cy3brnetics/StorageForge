@@ -11,12 +11,13 @@ An item is `BE` and a number. Each was found either as a **bug in one copy** or 
 ## Rules for the release
 
 1. **Combining may improve behaviour, and stays backwards compatible** (the owner, 2026-11-26). Where copies differ, the shared code takes the better behaviour for every caller: the stricter check, the clearer message, the retry or the lock wait one copy had and the others lacked. It need not reproduce each copy byte for byte. What must keep working is what others depend on: a saved plan, schedule or design still loads and runs, an API route keeps its path, its fields and its status codes, a CLI command keeps its name and flags, a stored format is read as before, and a script already deployed on a host keeps working with the controller. A difference that is there on purpose (a security check, an error type a caller catches) stays. Every behaviour that changes gets a changelog line saying what changed.
-2. **A fix is its own commit,** apart from the consolidation that exposed it, with a test that failed before it.
-3. **Old names stay where tests or other modules use them,** as a one-line alias to the shared function. An alias is removed only when nothing reads it.
-4. **A boundary the design keeps apart is not combined:** the agent and SSH (roadmap 11.2), the enclave, the signed deploy run, the security actions and the change engine. *Will not be combined* lists what was looked at and left.
-5. **Each item passes its own tests and the light block before its commit,** and each version passes light, medium and heavy on SQLite before its tag. PostgreSQL runs where `STORAGEFORGE_TEST_PG` is set, and a version that was not run there says so in its changelog.
-6. **No item here is lab-tested until 0.7.0's lab run.** Versions before it ship as *built and unit-tested*. The items that change a generated script (0.6.2's BE-03, BE-04 and BE-09, and 0.6.4 and 0.6.8) are the ones the lab has to prove.
-7. The version, the changelog heading and the tag come last. Signing the tag and pushing are the owner's.
+2. **What lands on a host stays whole** ([Concepts](docs/concepts.md#the-rules), rule 16: what StorageForge makes outlives it). Code is shared in the controller, where scripts are generated. A generated script, unit or job still carries every helper it uses, and none gains a call to the controller, a file another script installed, or a library on the host that it needs in order to work. Two scripts may be built from one kit; they don't come to depend on each other.
+3. **A fix is its own commit,** apart from the consolidation that exposed it, with a test that failed before it.
+4. **Old names stay where tests or other modules use them,** as a one-line alias to the shared function. An alias is removed only when nothing reads it.
+5. **A boundary the design keeps apart is not combined:** the agent and SSH (roadmap 11.2), the enclave, the signed deploy run, the security actions and the change engine. *Will not be combined* lists what was looked at and left.
+6. **Each item passes its own tests and the light block before its commit,** and each version passes light, medium and heavy on SQLite before its tag. PostgreSQL runs where `STORAGEFORGE_TEST_PG` is set, and a version that was not run there says so in its changelog.
+7. **No item here is lab-tested until 0.7.0's lab run.** Versions before it ship as *built and unit-tested*. The items that change a generated script (0.6.2's BE-03, BE-04 and BE-09, and 0.6.4 and 0.6.8) are the ones the lab has to prove.
+8. The version, the changelog heading and the tag come last. Signing the tag and pushing are the owner's.
 
 ## Versions and checkpoints
 
@@ -162,7 +163,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | Item | Status |
 | :--- | :--- |
 | The audit of everything since 0.6.1, to the [audit rules](notebook/Audit%20rules/Audit%20rules.md), and its bugfix round | |
-| Every alias left by rule 3 that nothing reads any more is removed | |
+| Every alias left by rule 4 that nothing reads any more is removed | |
 | The full unit suites on SQLite and PostgreSQL | |
 | The full lab, every tier | |
 | The release, with every *not lab-tested* label listed in the notes | |
