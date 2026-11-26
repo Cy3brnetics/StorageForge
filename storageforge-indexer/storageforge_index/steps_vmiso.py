@@ -115,14 +115,7 @@ t_vm_iso() { local name=$1 iso=$2 url=$3 sum=$4 osinfo=$5 vcpus=${6:-2} ram=${7:
     file=${got% *}; sum=${got##* }; url="$(dirname "$sums")/$file"
   fi
   base="$dir/.storageforge-images/$file"
-  if [[ ! -f $base || $(cat "$base.ok" 2>/dev/null) != "$sum" ]]; then
-    doing "download $file"
-    curl -fsSL --retry 3 -o "$base.part" "$url" || { rm -f "$base.part"; conflict "could not download $url"; return 0; }
-    case ${#sum} in 64) have=$(sha256sum "$base.part") ;; *) have=$(sha512sum "$base.part") ;; esac
-    if [[ ${have%% *} != "$sum" ]]; then rm -f "$base.part"; conflict "$file does not match its checksum: not used"; return 0; fi
-    mv -f "$base.part" "$base"; printf "%s\n" "$sum" >"$base.ok"
-    ok "downloaded and checked $file"
-  fi
+  sf_vm_fetch "$url" "$sum" "" "$base" || return 0
   if [[ -n $osinfo ]] && ! virt-install --osinfo list 2>/dev/null | grep -wFc -- "$osinfo" >/dev/null; then
     info "this host does not know the OS $osinfo yet (its osinfo database is older): generic defaults"; osinfo=
   fi
@@ -217,7 +210,7 @@ def _ansible(t):
     call = ' '.join(q(w) for w in changes.words_of(p, ARGS))
     head = (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
-    return changes.shell_task(t, head + bash() + f'\nt_vm_iso {call}\n')
+    return changes.shell_task(t, head + changes.bash_fn(steps_vm.bash(), 'sf_vm_fetch') + bash() + f'\nt_vm_iso {call}\n')
 
 
 def _title(p):

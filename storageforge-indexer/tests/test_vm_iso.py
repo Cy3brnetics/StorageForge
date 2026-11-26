@@ -15,7 +15,7 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import changes, steps_vmiso
+from storageforge_index import changes, steps_vm, steps_vmiso
 from test_workload_steps import HARNESS
 
 
@@ -96,6 +96,13 @@ class Check(unittest.TestCase):
         self.assertEqual(subprocess.run(['bash', '-n'], input=changes.script(self.conn, plan), text=True).returncode, 0)
         self.assertIn('t_vm_iso', changes.ansible(self.conn, plan))
 
+    def test_an_export_carries_the_fetch_function_it_calls(self):
+        t = {'type': 'vm-iso', 'host': 'kvm', 'params': {'name': 'pve-lab', 'iso': 'debian13'}}
+        cmd = steps_vmiso._ansible(t)['ansible.builtin.shell']['cmd']
+        self.assertIn('sf_vm_fetch() {', cmd)
+        self.assertIn('sf_vm_fetch "$url" "$sum" "" "$base" || return 0', cmd)
+        self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, text=True).returncode, 0)
+
 
 class Script(unittest.TestCase):
     def setUp(self):
@@ -130,7 +137,8 @@ args=(); for a; do [[ $a == qemu:///system ]] && a=test:///default; args+=("$a")
         stub(self.bin, 'swtpm', ':')
 
     def run_fn(self, apply, *words, path_extra=''):
-        script = HARNESS + f'APPLY={int(apply)}\n' + steps_vmiso.bash() + '\nt_vm_iso ' + ' '.join(shlex.quote(w) for w in words) + '\nexit $((PROBLEMS > 0))\n'
+        # the download is steps_vm's sf_vm_fetch, which the plan script and the export carry beside t_vm_iso
+        script = HARNESS + f'APPLY={int(apply)}\n' + changes.bash_fn(steps_vm.bash(), 'sf_vm_fetch') + steps_vmiso.bash() + '\nt_vm_iso ' + ' '.join(shlex.quote(w) for w in words) + '\nexit $((PROBLEMS > 0))\n'
         return subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=120,
                               env={**os.environ, 'PATH': f'{self.bin}:{os.environ["PATH"]}', 'LOG': str(self.d / 'log'), 'FAKE': str(self.fake), 'VISO_ROOT': str(self.d / 'root')})
 

@@ -257,19 +257,7 @@ t_os_install() { local name=$1 image=$2 url=$3 sum=$4 disk=$5 size=$6 user=$7 ke
   act "install $name on $disk" || return 0
 
   install -d -m 0700 "$scratch/.storageforge-images"; base="$scratch/.storageforge-images/$(basename "$url")"; raw="$base.raw"
-  if [[ -z $sum ]]; then
-    sum=$(curl -fsSL --retry 3 "$sums" | { case $sums in (*.sha512|*.sha256|*.SHA256) cat ;; (*) grep -F "$(basename "$url")" ;; esac; } \
-          | grep -oE '\b[0-9a-f]{64}([0-9a-f]{64})?\b' | head -n 1) || true
-    [[ -n $sum ]] || { conflict "no published checksum for $(basename "$url") at $sums"; return 0; }
-  fi
-  if [[ ! -f $base || $(cat "$base.ok" 2>/dev/null) != "$sum" ]]; then
-    doing "download $(basename "$url")"
-    curl -fsSL --retry 3 -o "$base.part" "$url" || { rm -f "$base.part"; conflict "could not download $url"; return 0; }
-    case ${#sum} in 64) have=$(sha256sum "$base.part") ;; *) have=$(sha512sum "$base.part") ;; esac
-    if [[ ${have%% *} != "$sum" ]]; then rm -f "$base.part"; conflict "$(basename "$url") does not match its checksum: not used"; return 0; fi
-    mv -f "$base.part" "$base"; printf '%s\n' "$sum" >"$base.ok"
-    ok "downloaded and checked $(basename "$url")"
-  fi
+  sf_vm_fetch "$url" "$sum" "$sums" "$base" || return 0
   try qemu-img convert -O raw "$base" "$raw" || { rm -f "$raw"; return 0; }
   dump=$(sfdisk -d "$raw" 2>/dev/null || :)
   [[ $dump == *"label: gpt"* ]] || { rm -f "$raw"; conflict "the image has no GPT: it cannot be laid out beside another system"; return 0; }

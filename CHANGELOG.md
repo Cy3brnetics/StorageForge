@@ -23,6 +23,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The Ansible task that runs a step's Bash function is built by `changes.shell_task`, its parameters become words by `changes.words_of`, and helper functions are cut out of a Bash text by `changes.bash_fn`, in place of copies in 28 step modules. Each task still carries every helper it runs (BE-35).
 - The first line of an exported step's Bash (`APPLY=1` and the `ok`, `missing`, `conflict` and silent `info` helpers) comes from `changes.ansible_head` in the eight step modules that wrote it out identically: Tailscale, VM disk folder, secret file, desktop, OS install, rclone mount, netconsole and container runtime. The exported text is unchanged (BE-36).
 - The secrets folder on a host (`secretstore.SECRET_DIR`) and the rule for a secret's name (`secretstore.NAME`) are defined once, and the check of a step's secret field is one `secretstore.secret_ok`, in place of copies in the Tailscale, tunnel, overlay, LUKS, secret file, share and Nebula modules, the plan field check and the CLI. Generated scripts are unchanged (BE-38).
+- The OS install and VM from ISO steps download and check their image with `sf_vm_fetch`, the function the VM and Proxmox VM steps already used, in place of a copy of its body each. The plan script already carried it; the VM from ISO step's Ansible task now carries it too. Messages and files are as before (BE-39).
 
 ## 0.6.3.1 — 2026-11-26
 
