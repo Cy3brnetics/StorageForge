@@ -8,6 +8,10 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 - **Every destructive step in an Ansible export now runs only with `-e storageforge_destructive=true`, as the playbook's header says.** The exported tasks of seven destructive steps had no such gate, because each step module writes its own export: creating an mdadm array, installing or removing an OS on a disk, moving a tool's data to the trash, reverting a VM to a snapshot, removing a workload and rolling a ZFS dataset back. A plain `ansible-playbook` ran them. They now carry the `destructive` tag and the gate, whichever module wrote them, and a test walks every destructive step type.
 
+### Fixed
+
+- **Signing out while the page is still drawing its first answers no longer raises a script error.** When answers to the page's first load arrive, the infrastructure view waits 50 ms to draw them all at once. A sign-out inside those 50 ms let that drawing run on the emptied page. It now stops once the page is signed out. 0.6.3.1 fixed a similar case for answers still being read; GitHub CI's slower runners hit this one in three browser tests.
+
 ### Changed
 
 - **The Ansible task of a bridge, VLAN, MTU, SSH option, AppArmor, SELinux or AppArmor setup, NTS time, WireGuard, workload action or removal, or ZFS rollback step carries only the Bash it runs.** Each such task held about 500 lines of other steps' functions, because the pattern that cut out one helper ran to the end of the text; the tasks of the network address, bond, route and DHCP steps held their interface guard twice. The tasks now carry the function they run and each helper it calls once, and do the same on the host.
