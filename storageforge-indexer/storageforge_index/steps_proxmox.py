@@ -242,16 +242,33 @@ def ansible_of(fn: str, args: tuple, destructive=False):
     return render
 
 
+def _guest_at(conn, host: str, vmid) -> dict | None:
+    """The Proxmox guest the last reading of host holds under vmid, or None."""
+    from . import workloads
+    return next((x for x in workloads.listing(conn, host)['workloads'] if x['runtime'] == 'proxmox' and str(x.get('vmid')) == str(vmid)), None)
+
+
+def _new_vmid(conn, h, p, say):
+    """The VMID check of the create steps: a VMID given must be free and in range; none given, Proxmox picks the next free one."""
+    if p.get('vmid'):
+        w = _guest_at(conn, h['name'], p['vmid'])
+        if w:
+            say('crit', f'VMID {p["vmid"]} is already {w.get("name")} on {h["name"]}: the script leaves it alone')
+        elif not VMID_MIN <= int(p['vmid']) <= VMID_MAX:
+            say('crit', f'a VMID is between {VMID_MIN} and {VMID_MAX}')
+    else:
+        say('note', 'no VMID given: the script asks Proxmox for the next free one')
+
+
 def guest_check(conn, h, p, say) -> dict | None:
     """The part of the check both steps share: a node, a sensible VMID, and what the last reading holds under that VMID. Returns the guest or None."""
-    from . import workloads
     if not pvenode.is_proxmox_host(conn, h['name']):
         say('crit', f'{h["name"]} is not a Proxmox VE node: these steps run qm and pct there, so the guest shows in Proxmox. Use the generic steps on a plain host')
         return None
     vmid = int(p['vmid'])
     if not VMID_MIN <= vmid <= VMID_MAX:
         say('crit', f'a VMID is between {VMID_MIN} and {VMID_MAX}')
-    w = next((x for x in workloads.listing(conn, h['name'])['workloads'] if x['runtime'] == 'proxmox' and str(x.get('vmid')) == str(vmid)), None)
+    w = _guest_at(conn, h['name'], vmid)
     if not w:
         say('note', f'VMID {vmid} was not in the last reading of {h["name"]}: the script looks when it runs')
         return None
@@ -314,20 +331,13 @@ HOSTNAME = re.compile(r'[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9
 
 
 def check_ct(conn, c, h, p, say):
-    from . import inframeasure, workloads
+    from . import inframeasure
     if not pvenode.is_proxmox_host(conn, h['name']):
         say('crit', f'{h["name"]} is not a Proxmox VE node: this step runs pct there, so the container shows in Proxmox. Use the generic LXC step on a plain host')
         return
     if not HOSTNAME.fullmatch(p['hostname']):
         say('crit', 'a container hostname is letters, digits and hyphens, with dots between labels')
-    if p.get('vmid'):
-        w = next((x for x in workloads.listing(conn, h['name'])['workloads'] if x['runtime'] == 'proxmox' and str(x.get('vmid')) == p['vmid']), None)
-        if w:
-            say('crit', f'VMID {p["vmid"]} is already {w.get("name")} on {h["name"]}: the script leaves it alone')
-        elif not VMID_MIN <= int(p['vmid']) <= VMID_MAX:
-            say('crit', f'a VMID is between {VMID_MIN} and {VMID_MAX}')
-    else:
-        say('note', 'no VMID given: the script asks Proxmox for the next free one')
+    _new_vmid(conn, h, p, say)
     node = (inframeasure.reading(conn, h['name']) or {}).get('proxmox_node')
     if not node:
         say('note', f'the storages and templates of {h["name"]} are not read yet: the script checks when it runs')
@@ -398,7 +408,7 @@ VM_ARGS = ('vmid', 'name', 'source', 'iso', 'image', 'storage', 'disk_gb', 'core
 
 
 def check_vm(conn, c, h, p, say):
-    from . import inframeasure, steps_vm, workloads
+    from . import inframeasure, steps_vm
     if not pvenode.is_proxmox_host(conn, h['name']):
         say('crit', f'{h["name"]} is not a Proxmox VE node: this step runs qm there, so the VM shows in Proxmox. Use the generic VM steps on a plain host')
         return
@@ -408,14 +418,7 @@ def check_vm(conn, c, h, p, say):
         say('crit', 'from an ISO: name the ISO image and leave the cloud image empty')
     elif p['source'] == 'image' and (not p.get('image') or p.get('iso')):
         say('crit', 'from a cloud image: choose the image and leave the ISO empty')
-    if p.get('vmid'):
-        w = next((x for x in workloads.listing(conn, h['name'])['workloads'] if x['runtime'] == 'proxmox' and str(x.get('vmid')) == p['vmid']), None)
-        if w:
-            say('crit', f'VMID {p["vmid"]} is already {w.get("name")} on {h["name"]}: the script leaves it alone')
-        elif not VMID_MIN <= int(p['vmid']) <= VMID_MAX:
-            say('crit', f'a VMID is between {VMID_MIN} and {VMID_MAX}')
-    else:
-        say('note', 'no VMID given: the script asks Proxmox for the next free one')
+    _new_vmid(conn, h, p, say)
     node = (inframeasure.reading(conn, h['name']) or {}).get('proxmox_node')
     if not node:
         say('note', f'the storages and ISO images of {h["name"]} are not read yet: the script checks when it runs')
