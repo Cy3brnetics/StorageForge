@@ -16,6 +16,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The keys pinned for a host in `known_hosts` are read by one function, `remote.known_host_entries`, in place of four `ssh-keygen -F` parsers in the fingerprint lookup, host certificates, sync jobs and scan signatures (BE-13).
 - *Is this path under that folder* and *which mount holds this path* are answered by one pair of functions, `paths.is_under` and `paths.deepest`, in place of three containment tests and three deepest-mount loops. The planners' copy took an empty or relative path to be under `/`; now no relative path is under any folder, as the SSH side already ruled. Every caller passes an absolute path, so nothing a user sees changes (BE-14).
 - The `\NNN` octal escapes of fstab, mountinfo and findmnt are decoded by one function, `remote.unoctal`, in place of copies in the fstab readers of payloads and the host config history and in the findmnt reader. A design version's size text is written by `capacity.fmt_bin`; it is the same text up to 1024 PiB, and a size beyond that now reads in EiB where it read in thousands of PiB (BE-15).
+- The three hash terms of a folder's fingerprint are written once, in `folders.file_term`, `folders.folder_print` and `folders.child_term`, for the per-mount folder index and the per-subtree compare of folder copies. The per-file loop of the mount index keeps its file term inline for speed, with a comment that points at it (BE-20).
 
 ## 0.6.2 — 2026-11-26
 

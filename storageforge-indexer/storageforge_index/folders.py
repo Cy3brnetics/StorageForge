@@ -21,6 +21,24 @@ from .db import Conn, epoch
 from .remote import is_under
 
 M64 = (1 << 64) - 1
+
+
+# A folder's fingerprint (same names and sizes in the same layout), from three terms. dir_index (per mount) and
+# copies.tree_prints (per subtree) both build it, and the two must agree for a subtree to match its mount's folder.
+def file_term(name: str, size) -> int:
+    """One file's part of its folder's sum: added up, masked to M64."""
+    return hash((name, size))
+
+
+def folder_print(own_sum: int, files: int) -> int:
+    """A folder's fingerprint from the sum of its terms and the files under it."""
+    return hash(('dir', own_sum, files)) & M64
+
+
+def child_term(name: str, fp: int) -> int:
+    """A subfolder's part of its parent's sum: its name and fingerprint."""
+    return hash((name, fp))
+
 NOISE_DIRS = ('/usr', '/lib', '/lib32', '/lib64', '/libx32', '/bin', '/sbin', '/boot', '/etc', '/opt/containerd', '/opt/vc', '/snap',
               '/var/lib', '/var/cache', '/var/log', '/var/tmp', '/tmp')
 NOISE_NAMES = frozenset({'node_modules', '__pycache__', '.cache', 'site-packages', '.venv', 'venv', '.git',
@@ -178,7 +196,7 @@ def dir_index(conn: Conn, host: str | None = None, mounts: list[int] | None = No
                 continue
             if acc is None:
                 acc = own.setdefault((mid, parent), [0, 0, 0])
-            acc[0] = (acc[0] + hash((name, size))) & M64
+            acc[0] = (acc[0] + hash((name, size))) & M64     # file_term, written out: this loop runs once per file
             acc[1] += 1
             acc[2] += size or 0
     # fold children into parents, deepest first: fp = mix(own files + subfolder (name, fp))
@@ -186,13 +204,13 @@ def dir_index(conn: Conn, host: str | None = None, mounts: list[int] | None = No
     for key in sorted(own, key=lambda k: 0 if k[1] == '/' else k[1].count('/'), reverse=True):
         acc = own[key]
         mid, path = key
-        fp = hash(('dir', acc[0], acc[1])) & M64
+        fp = folder_print(acc[0], acc[1])
         prints.setdefault(mid, {})[path] = (fp, acc[1], acc[2])
         if path != '/':
             up, _, name = path.rpartition('/')
             p = own.get((mid, up or '/'))
             if p is not None:
-                p[0] = (p[0] + hash((name, fp))) & M64
+                p[0] = (p[0] + child_term(name, fp)) & M64
                 p[1] += acc[1]
                 p[2] += acc[2]
     by_mount: dict[int, dict] = {}

@@ -27,11 +27,11 @@ import json
 import posixpath
 
 from .db import Conn, epoch
+from .folders import M64, child_term, file_term, folder_print
 from .moves import _fmt, _path, _subtree_sql, find_host, get_plan, host_slug, hosts, indexed_file, mount_of, normalize, save_plan
 from .moves import check as moves_check
 from .remote import is_under
 
-M64 = (1 << 64) - 1
 TRASH = '.storageforge-trash'
 MIN_FILES, MIN_BYTES = 3, 1 << 20       # what the duplicates views compare by default: a smaller folder alike by name and size says little
 MAX_LOOKUPS = 2000                      # folders of one plan looked up in the rest of the index, largest first
@@ -323,7 +323,7 @@ def tree_prints(rows, root: str) -> tuple[dict, dict, dict]:
                 own.setdefault(parent, [0, 0, 0])
             continue
         acc = own.setdefault(parent, [0, 0, 0])
-        acc[0] = (acc[0] + hash((name, size))) & M64
+        acc[0] = (acc[0] + file_term(name, size)) & M64
         acc[1] += 1
         acc[2] += size or 0
         mine = (size or 0, parent, name)
@@ -338,14 +338,14 @@ def tree_prints(rows, root: str) -> tuple[dict, dict, dict]:
     prints, kids = {}, {}
     for path in sorted(own, key=lambda p: 0 if p == '/' else p.count('/'), reverse=True):
         acc = own[path]
-        fp = hash(('dir', acc[0], acc[1])) & M64
+        fp = folder_print(acc[0], acc[1])
         prints[path] = (fp, acc[1], acc[2])
         if path != '/':
             up, _, name = path.rpartition('/')
             up = up or '/'
             p = own.get(up)
             if p is not None:
-                p[0] = (p[0] + hash((name, fp))) & M64
+                p[0] = (p[0] + child_term(name, fp)) & M64
                 p[1] += acc[1]
                 p[2] += acc[2]
                 kids.setdefault(up, []).append(path)
