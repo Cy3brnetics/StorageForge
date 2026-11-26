@@ -17,7 +17,6 @@ goal is minimal lifetime, never zero copies.
 """
 from __future__ import annotations
 
-import base64
 import ctypes
 import ctypes.util
 import fnmatch
@@ -43,6 +42,7 @@ from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
 from . import enclave as _enclave
 from . import lock2
+from .sshwire import fingerprint_of_line
 
 MIN_SECRET_LEN = 32
 KDF_DEFAULTS = {'time_cost': 3, 'memory_kib': 64 * 1024, 'lanes': 4}
@@ -212,9 +212,7 @@ def _unstripped_from_env() -> bytes | None:
     return s.encode() if s and s != s.strip() else None
 
 
-def fingerprint(public_line: str) -> str:
-    blob = base64.b64decode(public_line.split()[1])
-    return 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+fingerprint = fingerprint_of_line          # SHA256:... of an OpenSSH public key line (sshwire)
 
 
 def actor_name(kind: str = 'cli') -> str:

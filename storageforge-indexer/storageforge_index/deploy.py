@@ -36,6 +36,7 @@ from .db import Database
 from .moves import host_slug
 from .remote import REFUSE_APPLIANCE, RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
+from .sshwire import put
 from .vault import AuditLog, EnclaveKey, NoBinding, Vault, VaultError, actor_name
 
 SIGNING_KEY = 'storageforge-signing'
@@ -59,8 +60,7 @@ class DeployError(RuntimeError):
 
 
 # ── signatures (OpenSSH SSHSIG, verified on hosts with ssh-keygen -Y verify) ──
-def _s(b: bytes) -> bytes:
-    return struct.pack('>I', len(b)) + b
+_s = put          # a length-prefixed SSH string (sshwire); tests build keys with deploy._s
 
 
 def sshsig(key: ed25519.Ed25519PrivateKey, message: bytes, namespace: str = NAMESPACE) -> str:

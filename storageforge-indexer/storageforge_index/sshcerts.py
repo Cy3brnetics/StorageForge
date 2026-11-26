@@ -19,12 +19,12 @@ import contextlib
 import os
 import re
 import secrets
-import struct
 import subprocess
 import tempfile
 import time
 
 from . import sshca
+from .sshwire import put
 from .db import Conn
 
 CA_KEY = 'storageforge-ssh-ca'
@@ -43,10 +43,6 @@ USER_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,31}')
 
 class CAError(ValueError):
     pass
-
-
-def _s(b: bytes) -> bytes:
-    return struct.pack('>I', len(b)) + b
 
 
 # ── the CA ──────────────────────────────────────────────────────────
@@ -79,9 +75,9 @@ def signer(vault):
     def sign(data: bytes) -> bytes:
         key = vault.decrypt_key(kid)
         if isinstance(key, EnclaveKey):
-            return _s(b'ssh-ed25519') + _s(key.sign(data))
+            return put(b'ssh-ed25519') + put(key.sign(data))
         try:
-            return _s(b'ssh-ed25519') + _s(serialization.load_ssh_private_key(bytes(key.view()), None).sign(data))
+            return put(b'ssh-ed25519') + put(serialization.load_ssh_private_key(bytes(key.view()), None).sign(data))
         finally:
             key.wipe()
     return sign

@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 
 from . import snapfind
 from .snapfind import SNAPFIND
+from .sshwire import fingerprint_of_blob
 from .stream import FIND_FORMAT
 
 PSEUDO_FS = frozenset({
@@ -54,7 +55,7 @@ def key_fingerprint(b64: str) -> str | None:
         blob = base64.b64decode(b64, validate=True)
     except ValueError:
         return None
-    return 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+    return fingerprint_of_blob(blob)
 
 
 def known_hosts_name(host: str, port: int | None) -> str:

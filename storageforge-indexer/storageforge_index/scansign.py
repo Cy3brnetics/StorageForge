@@ -37,6 +37,7 @@ import tempfile
 import time
 
 from .remote import RemoteError
+from .sshwire import fingerprint_of_line
 
 NAMESPACE = 'storageforge-scan'
 VERSION = 'storageforge-scan-v1'
@@ -115,9 +116,7 @@ def signer_key(armored: str) -> str:
     return f'{kind.decode()} {base64.b64encode(key).decode()}'
 
 
-def fingerprint(key_line: str) -> str:
-    blob = base64.b64decode(key_line.split()[1])
-    return 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+fingerprint = fingerprint_of_line          # SHA256:... of an OpenSSH public key line (sshwire)
 
 
 def known_host_lines(host: str, port: int, known_hosts: str | None) -> list[str]:

@@ -23,6 +23,8 @@ import re
 import struct
 import time
 
+from .sshwire import put
+
 USER, HOST = 1, 2
 MAX_USER_SECONDS = 24 * 3600
 MAX_HOST_SECONDS = 400 * 24 * 3600
@@ -35,10 +37,6 @@ KEY_ID = re.compile(r'[\x20-\x7e]{1,200}')
 
 class CertificateError(ValueError):
     pass
-
-
-def _s(b: bytes) -> bytes:
-    return struct.pack('>I', len(b)) + b
 
 
 def _first_string(blob: bytes) -> tuple[bytes, bytes]:
@@ -99,18 +97,18 @@ def issue(subject: str, ca: str, sign, *, key_id: str, principals: list[str], se
     start = int(now if now is not None else time.time())
     _, key_fields = _first_string(subject_blob)
     cert_type = f'{subject_type}-cert-v01@openssh.com'
-    body = (_s(cert_type.encode()) + _s(os.urandom(32)) + key_fields + struct.pack('>QI', serial, kind) + _s(key_id.encode())
-            + _s(b''.join(_s(p.encode()) for p in principals)) + struct.pack('>QQ', start - BACKDATE, start + seconds)
-            + _s(b''.join(_s(k.encode()) + _s(_s(v.encode())) for k, v in sorted(critical.items())))          # options, in order of name, as the format demands
-            + _s(b''.join(_s(e.encode()) + _s(b'') for e in sorted(set(extensions))))
-            + _s(b'') + _s(ca_blob))
+    body = (put(cert_type.encode()) + put(os.urandom(32)) + key_fields + struct.pack('>QI', serial, kind) + put(key_id.encode())
+            + put(b''.join(put(p.encode()) for p in principals)) + struct.pack('>QQ', start - BACKDATE, start + seconds)
+            + put(b''.join(put(k.encode()) + put(put(v.encode())) for k, v in sorted(critical.items())))          # options, in order of name, as the format demands
+            + put(b''.join(put(e.encode()) + put(b'') for e in sorted(set(extensions))))
+            + put(b'') + put(ca_blob))
     signature = sign(body)
     algorithm, _ = _first_string(signature) if isinstance(signature, (bytes, bytearray)) else (b'', b'')
     if algorithm == b'ssh-rsa':
         raise CertificateError('the CA signed with SHA-1, which no current sshd accepts')          # an RSA CA signs rsa-sha2-512
     if not algorithm:
         raise CertificateError('the CA returned no signature')
-    return f'{cert_type} {base64.b64encode(body + _s(bytes(signature))).decode()} {key_id.replace(" ", "_")}'
+    return f'{cert_type} {base64.b64encode(body + put(bytes(signature))).decode()} {key_id.replace(" ", "_")}'
 
 
 def trusted_user_ca_line(ca: str) -> str:
@@ -143,10 +141,10 @@ def krl(ca: str, serials, version: int, *, now: float | None = None, comment: st
         raise CertificateError('a revocation list names certificates by serial number')
     if not KEY_ID.fullmatch(comment):
         raise CertificateError('the comment is one line of plain characters')
-    out = struct.pack('>QIQQQ', KRL_MAGIC, KRL_FORMAT, version, int(now if now is not None else time.time()), 0) + _s(b'') + _s(comment.encode())
+    out = struct.pack('>QIQQQ', KRL_MAGIC, KRL_FORMAT, version, int(now if now is not None else time.time()), 0) + put(b'') + put(comment.encode())
     if serials:
-        listed = bytes([KRL_SERIAL_LIST]) + _s(b''.join(struct.pack('>Q', n) for n in serials))
-        out += bytes([KRL_CERTIFICATES]) + _s(_s(ca_blob) + _s(b'') + listed)
+        listed = bytes([KRL_SERIAL_LIST]) + put(b''.join(struct.pack('>Q', n) for n in serials))
+        out += bytes([KRL_CERTIFICATES]) + put(put(ca_blob) + put(b'') + listed)
     return out
 
 

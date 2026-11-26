@@ -24,6 +24,7 @@ import time
 
 from . import deploy, sfagent
 from .db import Database
+from .sshwire import fingerprint_of_blob
 
 NAME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,62}')
 ADDRESS_RE = re.compile(r'[A-Za-z0-9.:_\[\]-]{1,255}')
@@ -173,7 +174,7 @@ def _pin(conn, address: str, port: int, key_b64: str, actor: str) -> str:
     is another one is refused: that is what a machine in the middle would look like."""
     from .remote import known_host_keys, known_hosts_name
     from .runner import known_hosts_path
-    fp = 'SHA256:' + base64.b64encode(hashlib.sha256(base64.b64decode(key_b64)).digest()).decode().rstrip('=')
+    fp = fingerprint_of_blob(base64.b64decode(key_b64))
     kh = known_hosts_path()
     pinned = known_host_keys(address, port, str(kh))
     if pinned and fp not in pinned:

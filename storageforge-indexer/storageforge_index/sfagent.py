@@ -25,7 +25,6 @@ reaches a page only through the UI's own escaping.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -42,6 +41,7 @@ from . import agenttunnel, agentwatch, deploy
 from .db import Database
 from .remote import REFUSE_APPLIANCE, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path
+from .sshwire import fingerprint_of_line
 from .vault import AuditLog, EnclaveKey, Vault, actor_name
 
 SIGNING_KEY = 'storageforge-agent-signing'
@@ -226,10 +226,7 @@ def _signer(vault: Vault):
         buf.wipe()
 
 
-def fingerprint(public_line: str) -> str:
-    """SHA256:... of an OpenSSH public key line, as ssh-keygen -l shows it. Worked out here, never taken from a host."""
-    blob = base64.b64decode(public_line.split()[1])
-    return 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+fingerprint = fingerprint_of_line          # SHA256:... of an OpenSSH public key line, worked out here, never taken from a host (sshwire)
 
 
 def request(signer, op: str, machine: str, now: float | None = None, nonce: str | None = None, **fields) -> bytes:
