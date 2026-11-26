@@ -139,8 +139,8 @@ jobs:
         run: cmp /tmp/enclave-a/SHA256SUMS /tmp/enclave-b/SHA256SUMS
       - name: And they are the bytes the repository records
         run: diff enclave/image/SHA256SUMS /tmp/enclave-a/SHA256SUMS
-      - name: And the objects the kernel compiled
-        run: diff enclave/image/kernel-objects.txt /tmp/enclave-a/kernel-objects.txt
+      - name: And the files the kernel build read
+        run: diff enclave/image/kernel-sources.txt /tmp/enclave-a/kernel-sources.txt
       - name: Dependencies scanned
         run: |
           docker run --rm -v "$PWD/Cargo.lock:/src/Cargo.lock:ro" aquasec/trivy:latest \
@@ -149,7 +149,7 @@ jobs:
         run: |
           ARCH=arm64 sh enclave/image/build.sh /tmp/enclave-arm64
           diff enclave/image/SHA256SUMS.arm64 /tmp/enclave-arm64/SHA256SUMS
-          diff enclave/image/kernel-objects.arm64.txt /tmp/enclave-arm64/kernel-objects.txt
+          diff enclave/image/kernel-sources.arm64.txt /tmp/enclave-arm64/kernel-sources.txt
       - name: Signed with the release key
         env:
           RELEASE_KEY: ${{ secrets.STORAGEFORGE_RELEASE_KEY }}
