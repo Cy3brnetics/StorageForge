@@ -4,6 +4,8 @@ Everything not built on `main` as of 2026-11-16 (`01ece8f`, after 0.5.2), in one
 
 Checked against the code on 2026-11-16.
 
+0.6.0 was released on 2026-11-26. What comes next is in [roadmap-0.7.0.md](roadmap-0.7.0.md); this page stays as the ledger of what 0.6.0 built and of what in it is not lab-tested.
+
 ## How to read this
 
 **Done** means through the KVM lab, as [progress.md](progress.md) defines it. A finding is `SF`, `PF`, `EQ` or `UX` and a number, as in the notebook's [audit rules](notebook/Audit%20rules/Audit%20rules.md). Each section can stop at any item without harming the others. The **Status** columns are the ledger: whoever finishes an item writes the commit that finished it. There are no time estimates on this page, by the owner's choice.

@@ -66,6 +66,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 
 | Page | What it covers |
 | :--- | :--- |
+| [Backend consolidation survey, 2026-11-26](audit-2026-11-26-backend.md) | 107 places where features carry their own copy of the same job, each checked by a second reader, and the ones left apart on purpose |
 | [UI audit, 2026-11-04](audit-2026-11-04-ui.md) | How the screens are organised and behave, the planner against what the platform has learned since it was written, and 41 findings with evidence |
 | [Bug hunt, 2026-11-25](bug-hunt-2026-11-25.md) | The findings of the full-codebase audit that were still open when 0.6.0 was cut, each labelled confirmed, plausible or unverified |
 | [Bug reports, 2026-11-10](bug-reports-2026-11-10.md) | Six bug reports and UI defects, fixed in 0.5.1 |
@@ -81,6 +82,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Security audit, 2026-10-28](../security-audit-2026-10-28.md) | Findings and fixes |
 | [Security parameters](../security-parm.md) | The threat model and hardening checklist, from 2026-10-26 |
 | [Roadmap](../notebook/Roadmap.md) | The order the findings were worked in, up to 2026-11-01. The release plan is the roadmap below |
+| [Roadmap: 0.7.0](../roadmap-0.7.0.md) | What comes next: features that do the same job share one backend, in versions 0.6.2 to 0.7.0 |
 | [Roadmap](../roadmap.md) | Everything still open, under 0.6.0. The 0.4.0 release roadmap and the other finished and superseded roadmaps are in [the archive](../archive/roadmaps/) |
 | [UI and UX roadmap](../archive/roadmaps/ui-ux-roadmap.md) | The detail behind the roadmap's UI and UX items: how the screens should change, in order, and how the planner grows to match the platform |
 
