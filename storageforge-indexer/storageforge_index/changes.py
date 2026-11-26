@@ -202,6 +202,7 @@ CHECKS = {
     'options': re.compile(r'[A-Za-z0-9_=,.:/@+-]{0,400}'), 'label': re.compile(r'[A-Za-z0-9_.-]{0,64}'),
     'text': re.compile(r'[^\0\n]{0,200}'), 'host': HOST_RE,
     'devices': re.compile(r'/dev/[A-Za-z0-9/_.:+-]+( +/dev/[A-Za-z0-9/_.:+-]+){0,63}'),
+    'vmid': re.compile(r'[1-9]\d{2,8}'),    # a Proxmox VMID: 100 to 999999999
     'name': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'), 'unit': re.compile(r'[A-Za-z0-9:_.@-]{1,200}\.service'), 'dataset': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}'),
     'secret': re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}'),     # a vault secret's name (secretstore.NAME)
     'zfs-snapshot': re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}@[A-Za-z0-9_][A-Za-z0-9_.:+-]{0,127}'),
@@ -2098,6 +2099,7 @@ from . import steps_netconsole  # noqa: E402,F401  (kernel messages over UDP to 
 from . import steps_runtime  # noqa: E402,F401  (runtime-install: Docker, Podman, Incus, LXC, libvirt)
 from . import steps_secretfile  # noqa: E402,F401  (a vault secret written to a file a service reads)
 from . import steps_workloads  # noqa: E402,F401  (compose stacks, LXC containers and Incus instances, after steps_infra, whose firewall tool they use)
+from . import steps_proxmox  # noqa: E402,F401  (Proxmox VE guests through qm and pct)
 from . import steps_vmiso  # noqa: E402,F401  (VMs from installer ISOs)
 from . import steps_mac  # noqa: E402,F401  (letting VMs use a folder of disks under SELinux or AppArmor)
 from . import steps_toolbox  # noqa: E402,F401  (Toolbox installs and removals, after steps_runtime and steps_workloads, whose helpers they call)
