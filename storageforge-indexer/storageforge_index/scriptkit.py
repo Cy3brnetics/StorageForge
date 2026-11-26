@@ -496,3 +496,12 @@ CIFS_KERNEL = r"""cifs_kernel() { # the mount needs cifs and, for iocharset=utf8
   conflict "kernel $kernel still has no cifs or nls_utf8 after installing ${pkgs[*]}: if the host has a newer kernel waiting, reboot into it"; return 1
 }
 """
+
+
+# findmnt --verify judges the whole of /etc/fstab, so a line nobody here wrote (an unplugged USB disk, say) makes it fail before
+# a script edits anything. Its errors, one per line ("TARGET: [E] reason"), let a script blame an edit only for errors it added.
+FSTAB_ERRORS = r"""fstab_errors() {
+  command -v findmnt >/dev/null || return 0
+  { findmnt --verify --tab-file /etc/fstab 2>&1 || true; } | awk '/^[0-9]+ parse errors?,/ { next } /parse error/ { print; next } /^[^ \t]/ { t = $0; next } /\[E\]/ { sub(/^[ \t]+/, ""); print t ": " $0 }' | sort -u
+}
+"""

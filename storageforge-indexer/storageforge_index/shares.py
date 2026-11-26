@@ -26,7 +26,7 @@ from . import netshares, site
 from .db import Conn, loads
 from .moves import _subtree_sql, find_host, host_slug, hosts, mount_of
 from .payloads import is_designed, share_key
-from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
+from .scriptkit import CIFS_KERNEL, FSTAB_ERRORS, HELPERS, PACKAGES, REMOTE, comments, host_name, one_line, package_check
 from . import secretstore
 
 SMB_NAME = re.compile(r'[A-Za-z0-9_.$-]{1,80}')
@@ -698,6 +698,7 @@ def script(conn: Conn, host: str, prev_clients: list[str] | None = None) -> str:
             + SHARES_BODY_1 + HELPERS + SHARES_BODY_2 + REMOTE
             + SHARES_BODY_3.replace('@@PACKAGES@@\n', PACKAGES + CIFS_KERNEL)
                            .replace('@@SECRETS@@\n', secretstore.BASH)
+                           .replace('@@FSTAB_ERRORS@@\n', FSTAB_ERRORS)
                            .replace('@@DRIVERS@@\n', netshares.BASH + ''.join(netshares.DRIVERS[k].bash for k in netshares.keys()))
                            .replace('@@DRIVER_KEYS@@', ' '.join(netshares.keys())))
 
@@ -1108,10 +1109,7 @@ mount_share() { # a mount left from before its server was rebuilt answers "stale
 # findmnt --verify judges the whole fstab, and a line someone else wrote (a USB disk that is unplugged, say) makes it fail
 # before this script adds anything. So only errors the edit brought are its fault: the ones there before are reported, the
 # file is put back on new ones, and either way the reason findmnt gave is printed.
-fstab_errors() {
-  command -v findmnt >/dev/null || return 0
-  { findmnt --verify --tab-file /etc/fstab 2>&1 || true; } | awk '/^[0-9]+ parse errors?,/ { next } /parse error/ { print; next } /^[^ \t]/ { t = $0; next } /\[E\]/ { sub(/^[ \t]+/, ""); print t ": " $0 }' | sort -u
-}
+@@FSTAB_ERRORS@@
 fstab_before() { FSTAB_PREV=$(mktemp); cp -a /etc/fstab "$FSTAB_PREV"; FSTAB_ERRS=$(fstab_errors); }
 fstab_after() { # what was added, for the message
   local now new old

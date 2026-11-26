@@ -24,7 +24,7 @@ import time
 from . import receiving, site
 from .db import Conn
 from .moves import _fmt, _path, find_host, host_slug, hosts, mount_of, slug, subtree
-from .scriptkit import HELPERS, RECEIVE_KIT, REMOTE, SEND_KIT, comments, host_name, one_line
+from .scriptkit import FSTAB_ERRORS, HELPERS, RECEIVE_KIT, REMOTE, SEND_KIT, comments, host_name, one_line
 from .tasks import HOST_RE
 
 PROFILES = ['single', 'dup', 'raid1', 'raid1c3', 'raid1c4', 'raid10', 'raid5', 'raid6']
@@ -1118,7 +1118,7 @@ def script(conn: Conn, plan: dict, owner: str | None = None) -> str:
             + f'PLAN={q(slug(plan["name"]))}\n'
             + f'REQUIRED_ACCEPTS={q(",".join(sorted(str(x) for x in (plan.get("require_accept") or []))))}\n'
             + CHANGE_BODY_1 + HELPERS + RECEIVE_KIT + SEND_KIT + CHANGE_BODY_2 + REMOTE
-            + CHANGE_BODY_3.replace('@DESTRUCTIVE@', '|'.join(k for k, v in EXTRA.items() if TYPES[k].get('destructive')) or 'zfs-pool') + ''.join(EXTRA_BASH)
+            + CHANGE_BODY_3.replace('@@FSTAB_ERRORS@@\n', FSTAB_ERRORS).replace('@DESTRUCTIVE@', '|'.join(k for k, v in EXTRA.items() if TYPES[k].get('destructive')) or 'zfs-pool') + ''.join(EXTRA_BASH)
             + '\n'.join(calls) + CHANGE_TAIL)
 
 
@@ -1205,10 +1205,27 @@ need() { command -v "$1" >/dev/null && return 0
 esc() { local s=${1// /\\040}; printf '%s' "${s//$'\t'/\\011}"; }
 # the escaped path goes in through the environment: awk -v would turn the \040 back into a space and match nothing
 fstab_line() { SF_T="$(esc "$1")" awk '!/^[[:space:]]*#/ && $2 == ENVIRON["SF_T"]' /etc/fstab; }
-fstab_backup() { FSTAB_BAK=/etc/fstab.storageforge-$STAMP; [[ -e $FSTAB_BAK ]] || cp -a /etc/fstab "$FSTAB_BAK"; }
-fstab_verify() {
-  if findmnt --verify --tab-file /etc/fstab >/dev/null 2>&1; then reload_systemd 2>/dev/null || true; return 0; fi
-  cp -a "$FSTAB_BAK" /etc/fstab; conflict "findmnt --verify rejected the edited /etc/fstab: restored $FSTAB_BAK"; return 1
+@@FSTAB_ERRORS@@
+# The run's first backup stays as /etc/fstab.storageforge-STAMP. A rejected edit puts back only the copy taken just before it, so
+# an earlier edit of this run that passed is kept, and only errors the edit added reject it: findmnt's complaints about lines that
+# were already there are reported and left alone.
+fstab_backup() { FSTAB_BAK=/etc/fstab.storageforge-$STAMP; [[ -e $FSTAB_BAK ]] || cp -a /etc/fstab "$FSTAB_BAK"
+  FSTAB_PREV=$(mktemp); cp -a /etc/fstab "$FSTAB_PREV"; FSTAB_ERRS=$(fstab_errors); }
+fstab_verify() { local now added line
+  now=$(fstab_errors)
+  added=$(comm -13 <(printf '%s\n' "$FSTAB_ERRS") <(printf '%s\n' "$now") | sed '/^$/d')
+  if [[ -n $added ]]; then
+    cat "$FSTAB_PREV" >/etc/fstab; rm -f "$FSTAB_PREV"
+    conflict "findmnt --verify rejected the edited /etc/fstab, so it was put back as it was before this step (the run's first backup is $FSTAB_BAK):"
+    while IFS= read -r line; do info "  $line"; done <<<"$added"
+    return 1
+  fi
+  rm -f "$FSTAB_PREV"
+  if [[ -n $FSTAB_ERRS ]]; then
+    info "findmnt --verify already complained about other lines of /etc/fstab (left alone):"
+    while IFS= read -r line; do info "  $line"; done <<<"$FSTAB_ERRS"
+  fi
+  reload_systemd 2>/dev/null || true; return 0
 }
 fs_top() { # path -> the top folder of its filesystem or btrfs subvolume (where a rename stays a rename)
   local d; d=$(cd "$(dirname "$1")" && pwd -P)

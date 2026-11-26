@@ -365,7 +365,7 @@ class FstabVerify(Scripted):
         # the old line always fails; the new one too when asked, for as long as it is in the file
         extra = f'grep -q sfnew "{fstab}" && printf "/mnt/new\\\\n   [E] unreachable on boot required target\\\\n"\n' if added_error else ''
         self.stub('findmnt', f"printf '%s' {shlex.quote(self.BAD)}\n" + extra + 'exit 1')
-        code = functions(shares.SHARES_BODY_3, 'fstab_errors', 'fstab_before', 'fstab_after').replace('/etc/fstab', str(fstab))
+        code = (scriptkit.FSTAB_ERRORS + functions(shares.SHARES_BODY_3, 'fstab_before', 'fstab_after')).replace('/etc/fstab', str(fstab))
         r = self.run_bash(code + f'durable() {{ :; }}; info() {{ echo "  $*"; }}\nfstab_before; echo "srv:/x /mnt/new nfs nofail 0 0 # sfnew" >>{fstab}\n'
                                  'if fstab_after "the line for /mnt/new"; then echo KEPT; else echo PUT-BACK; fi\n')
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -443,3 +443,42 @@ class TakeOver(Scripted):
         self.assertIn('then\n    take_over; server_nfs; server_smb', body)     # the drivers' server_<k> follow (netshares.py)
         self.assertIn('|| ((TOOK_NFS)); then ((APPLY)) && reexport; fi', body)
         self.assertIn('local changed=$TOOK_SMB;', body)
+
+
+class FstabVerifyPlan(Scripted):
+    """The same fault in change plans (cachyos-x8664, 2026-11-26): an Unmount step's commented-out line was put back because
+    findmnt --verify already failed over the unplugged USB disk's line. And a rejected edit put back the run's first backup,
+    which would undo an earlier edit of the same run that had passed."""
+    BAD = FstabVerify.BAD
+
+    def run_it(self, second_adds_error=False):
+        fstab = self.dir / 'fstab'
+        fstab.write_text('UUID=4419 /mnt/UsbSSD ext4 defaults 0 0\nsrv:/a /mnt/a nfs4 nofail 0 0\nsrv:/b /mnt/b nfs4 nofail 0 0\n')
+        extra = f'grep -q sfbad "{fstab}" && printf "/mnt/c\\\\n   [E] unreachable on boot required target\\\\n"\n'
+        self.stub('findmnt', f"printf '%s' {shlex.quote(self.BAD)}\n" + extra + 'exit 1')
+        code = (scriptkit.FSTAB_ERRORS + functions(changes.CHANGE_BODY_3, 'fstab_backup', 'fstab_verify')).replace('/etc/fstab', str(fstab))
+        second = f'echo "srv:/c /mnt/c nfs4 nofail 0 0 # sfbad" >>{fstab}' if second_adds_error else f'sed -i "s|^srv:/b|# off srv:/b|" {fstab}'
+        r = self.run_bash(code + 'STAMP=t; reload_systemd() { :; }; info() { echo "  $*"; }; conflict() { echo "CONFLICT $*"; }\n'
+                                 f'fstab_backup; sed -i "s|^srv:/a|# off srv:/a|" {fstab}; fstab_verify && echo FIRST-KEPT\n'
+                                 f'fstab_backup; {second}; if fstab_verify; then echo SECOND-KEPT; else echo SECOND-PUT-BACK; fi\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout, fstab.read_text()
+
+    def test_commenting_out_a_line_passes_despite_an_old_error_elsewhere(self):
+        out, fstab = self.run_it()
+        self.assertIn('FIRST-KEPT', out)
+        self.assertIn('SECOND-KEPT', out)
+        self.assertIn('already complained about other lines', out)
+        self.assertIn('# off srv:/a', fstab)
+        self.assertIn('# off srv:/b', fstab)
+
+    def test_a_rejected_edit_puts_back_only_itself_and_says_why(self):
+        out, fstab = self.run_it(second_adds_error=True)
+        self.assertIn('FIRST-KEPT', out)
+        self.assertIn('SECOND-PUT-BACK', out)
+        self.assertIn('/mnt/c: [E] unreachable on boot required target', out)
+        self.assertNotIn('sfbad', fstab)
+        self.assertIn('# off srv:/a', fstab, 'the first edit of the run, which passed, is kept')
+
+    def test_the_plan_script_no_longer_judges_the_whole_file(self):
+        self.assertNotIn('findmnt --verify --tab-file /etc/fstab >/dev/null', changes.CHANGE_BODY_3)
