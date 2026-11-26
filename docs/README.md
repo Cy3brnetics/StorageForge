@@ -28,6 +28,7 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Planner](planner.md) | The design tool at `/planner`: devices, mounts, links, RAID, protection, export |
 | [Scanning and search](scanning-and-search.md) | What a scan reads, guardrails, incremental sync, read-only access, git and Docker discovery, search patterns |
 | [Plans and scripts](plans-and-scripts.md) | Staged changes, data moves, NFS/SMB shares and block-built storage tasks, and the scripts they produce |
+| [The Workloads page](workloads-page.md) | Every container and VM as one tree, how to read it, actions and the create wizard as plans, and the Proxmox VE steps. Built, not lab-tested |
 | [Change plans](change-plans.md) | How a plan goes from saved to applied (check, report, apply from the report, 409 on a changed plan), and the runtime-install step |
 | [Platform connections](api-connections.md) | Proxmox VE, Backup Server and Datacenter Manager read through their APIs: the least each token needs, the read-back, the pinned certificate, and what a taken-over web app can do with a token |
 | [Secrets for plan steps](secrets.md) | The secret store: secrets made, shown once, brought to a step on the runner's stdin, rotated and removed, and what the web app can get from it |

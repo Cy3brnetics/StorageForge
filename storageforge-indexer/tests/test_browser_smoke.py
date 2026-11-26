@@ -1211,7 +1211,7 @@ class BrowserSmoke(unittest.TestCase):
             self.assertTrue(self.page.inner_text('.sf-chrome .threat').startswith('Security: '), path)
             self.assertIn('measured in the last day', self.page.inner_text('.sf-chrome .threat-detail'))
             self.assertEqual(self.page.eval_on_selector_all('.sf-chrome nav a', 'as => as.map((a) => a.textContent)'),
-                             ['Topology and map', 'Storage planner', 'Network management', 'Security center', 'Host logs', 'Admin & vault', 'Changes', 'Moves', 'Schedule'])
+                             ['Topology and map', 'Storage planner', 'Network management', 'Security center', 'Workloads', 'Host logs', 'Admin & vault', 'Changes', 'Moves', 'Schedule'])
             self.assertEqual(self.page.get_attribute('.sf-chrome nav a[aria-current="page"]', 'href'), here)
             self.assertIn('admin', self.page.inner_text('.sf-user'))
         self.page.goto(self.base + '/search')

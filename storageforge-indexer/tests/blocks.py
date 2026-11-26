@@ -25,6 +25,7 @@ HEAVY = {
     'test_browser_polish.BrowserPolish',
     'test_browser_sfnet.BrowserSfnet',
     'test_browser_smoke.BrowserSmoke',
+    'test_browser_workloads.BrowserWorkloads',
     'test_sshcerts.BrowserSshCa',
     'test_secretstore.BrowserSecrets',
     'test_browser_platforms.BrowserPlatforms',

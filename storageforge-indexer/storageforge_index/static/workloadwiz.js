@@ -80,7 +80,10 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
   const want = confirmField ? String(step.params[spec.confirm_of || ''] || '') : '';
   const confirmInput = confirmField ? el('input', { type: 'text', class: 'mono', autocomplete: 'off', spellcheck: false, 'aria-label': confirmField.label, placeholder: want }) : null;
   const nameInput = el('input', { type: 'text', maxLength: 80, 'aria-label': 'Plan name', value: wwName(title || spec.label || step.type) });
-  nameInput.addEventListener('input', () => { S.touched = true; });
+  nameInput.addEventListener('input', () => {
+    S.touched = true;
+    if (S.error) { S.error = ''; if (S.check) draw(); else run(); }          // a failed save must not keep Save off once the name is edited
+  });
   const confirmed = () => !confirmInput || (want ? confirmInput.value.trim() === want : !!confirmInput.value.trim());
   const body = () => ({ name: nameInput.value.trim(), tasks: [{ ...step, params: { ...step.params, ...(form ? Object.fromEntries(extra.map((f) => [f.name, form.read()[f.name]])) : {}), ...(confirmInput ? { confirm: confirmInput.value.trim() } : {}) } }] });
   async function run() {

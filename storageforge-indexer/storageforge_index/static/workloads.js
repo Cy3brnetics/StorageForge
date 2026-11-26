@@ -45,7 +45,7 @@ function wlTree(listing) {
     if (!h.containers_read_at && !h.measured_at && !all.length) return mk(`host:${h.name}`, 'host', h.name, { host: h }, [mk(`note:${h.name}`, 'note', 'not read yet: scan it', { host: h.name })]);
     const pve = new Set(all.filter((w) => w.runtime === 'proxmox').map((w) => String(w.vmid)));
     const mine = h.proxmox ? all.filter((w) => !(w.runtime === 'lxc' && pve.has(String(w.name)))) : all;      // pct guests are read as lxc too: the proxmox branch shows them
-    const rts = WL_RUNTIMES.filter((r) => (h.runtimes || []).includes(r) || mine.some((w) => w.runtime === r));
+    const rts = WL_RUNTIMES.filter((r) => ((h.runtimes || []).includes(r) && !(h.proxmox && r === 'lxc')) || mine.some((w) => w.runtime === r));      // a node ships lxc-ls, but its containers are the proxmox branch's
     return mk(`host:${h.name}`, 'host', h.name, { host: h }, rts.map((r) => {
       const ws = mine.filter((w) => w.runtime === r).sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true }));
       const stacks = [...new Set(ws.filter((w) => w.stack).map((w) => w.stack))].sort();
