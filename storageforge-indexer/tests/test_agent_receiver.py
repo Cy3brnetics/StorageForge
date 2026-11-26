@@ -46,6 +46,11 @@ class Agent:
         if enroll:
             case.conn.execute("""INSERT INTO agents (host, enabled, state, public_key, fingerprint, counter, updated_at, updated_by)
                                  VALUES (:h, 1, 'running', :k, :f, 1, 0, 'test')""", {'h': host, 'k': self.line, 'f': self.fp})
+            # the receiver reads the pins on its own schedule: on a slow machine the agent would open before it has read this one,
+            # and be refused as a stranger. Wait for the receiver's own refresh to show the key, rather than for a time
+            deadline = time.monotonic() + 10
+            while not any(fp == self.fp for (_h, fp, _e) in list(case.r.pins.by_key.values())) and time.monotonic() < deadline:
+                time.sleep(0.01)
 
     def open(self):
         sock = socket.create_connection(('127.0.0.1', self.case.port), timeout=10)
