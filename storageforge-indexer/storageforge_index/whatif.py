@@ -208,7 +208,7 @@ def _ssh_path(fleet_before: reach.Fleet, fleet_after: reach.Fleet, conn: Conn, h
 def _ssh_iface(tasks: list[dict], facts: dict, host: str, h: dict) -> list[dict]:
     """A step that moves or reshapes the interface StorageForge comes in on. Firewall rules cannot show this, so it is looked at apart."""
     addr = h.get('ssh_host')
-    iface = next((i['name'] for i in (facts.get('net') or {}).get('interfaces') or [] if any(a.get('ip') == addr for a in i.get('addresses') or [])), None)
+    iface = (exposure.iface_of(facts.get('net'), addr) or {}).get('name')
     out = []
     for t in tasks:
         if t['host'] != host or not iface:
@@ -226,7 +226,7 @@ def _ssh_verdict(facts: dict, ctrl: str, h: dict, port: int) -> dict:
     if not fw or not fw.get('readable') or not fw.get('backends'):
         return {'verdict': 'unknown', 'rule': None}
     addr = h.get('ssh_host')
-    iface = next((i for i in (facts.get('net') or {}).get('interfaces') or [] if any(a.get('ip') == addr for a in i.get('addresses') or [])), None)
+    iface = exposure.iface_of(facts.get('net'), addr)
     res = exposure._input_path(fw, {'proto': 'tcp', 'port': port, 'iif': (iface or {}).get('name'), 'daddr': addr, 'saddr': ctrl, 'family': 'ip6' if ':' in ctrl else 'ip'})
     return {'verdict': 'accept' if res['verdict'] == 'accept' else 'drop', 'rule': res['rule']}
 

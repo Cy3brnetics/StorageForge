@@ -24,6 +24,8 @@ from .keyinstall import HOST
 from .nettransport import DirectTransport, NetworkTransport, TelnetTransport
 from .remote import RemoteError, Transport
 
+_controller_ips = security.controller_ips
+
 PLATFORMS = {'routeros': {'target': 'routeros', 'transport': 'direct', 'profile': 'routeros', 'label': 'MikroTik RouterOS', 'adapter': routeros},
              'openwrt': {'target': 'openwrt', 'transport': 'sh', 'profile': 'openwrt', 'label': 'OpenWrt', 'adapter': openwrt},
              'pfsense': {'target': 'pfsense', 'transport': 'sh', 'profile': 'pfsense', 'label': 'pfSense', 'adapter': pfsense},
@@ -356,14 +358,6 @@ def compile_for(conn: Conn, name: str, text: str, **options) -> dict:
     return {**rostranspiler.emit(stmts, PLATFORMS[d['platform']]['target'], **{**extra, **options}), 'statements': [s.text() for s in stmts], 'device': d['name'], 'platform': d['platform']}
 
 
-def _controller_ips(conn: Conn, name: str) -> list[str]:
-    from .steps_infra import _controller_ips as ips
-    try:
-        return ips(conn, {'name': name})
-    except Exception:
-        return []
-
-
 def cuts_off(conn: Conn, d: dict, stmts: list) -> dict | None:
     """Would this block SSH from where StorageForge comes in? Worked out from the rules already read, with the new ones appended, as RouterOS and fw4 would add them."""
     from . import inframeasure, netfacts
@@ -386,7 +380,7 @@ def cuts_off(conn: Conn, d: dict, stmts: list) -> dict | None:
             continue
         mapped.append({**r, 'table': base[0]['table'], 'chain': base[0]['name']})
     combined = {**fw, 'rules': sorted(fw['rules'] + mapped, key=lambda r: r.get('order') or 0)}
-    iif = next((i['name'] for i in net.get('interfaces') or [] for a in i.get('addresses') or [] if a.get('ip') == d['address']), None)
+    iif = (exposure.iface_of(net, d['address']) or {}).get('name')
     src = next(iter(_controller_ips(conn, d['name'])), None)
     flow = {'proto': 'tcp', 'port': d['port'], 'iif': iif, 'daddr': d['address'], 'saddr': src, 'family': 'ip'}
     before, after = exposure.kernel_path(fw, 'input', flow), exposure.kernel_path(combined, 'input', flow)

@@ -246,7 +246,7 @@ def query(fleet: Fleet, src: str, dst: str, port: int, proto: str = 'tcp') -> di
         blind.append(f'{dst_host} has not been read')
         return {**out, 'verdict': 'unknown', 'decided_by': None}
     fw = (h.get('infra') or {}).get('firewall')
-    iface = next((i for i in net.get('interfaces') or [] if any(a.get('ip') == dst_ip for a in i.get('addresses') or [])), None)
+    iface = exposure.iface_of(net, dst_ip)
     iif = (iface or {}).get('name')
     fam = 'ip6' if ':' in str(dst_ip) else 'ip'
 

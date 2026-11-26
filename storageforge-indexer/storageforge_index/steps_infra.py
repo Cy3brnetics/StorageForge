@@ -911,10 +911,7 @@ def _net(conn, h):
 
 def _controller_ips(conn, h) -> list[str]:
     from . import security
-    try:
-        return security._controller_ips(conn, h['name'])
-    except Exception:
-        return []
+    return security.controller_ips(conn, h['name'])
 
 
 def _ssh_port(h) -> int:

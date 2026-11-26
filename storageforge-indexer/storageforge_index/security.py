@@ -1177,6 +1177,14 @@ def _controller_ips(conn: Conn, host: str) -> list[str]:
     return list(found)
 
 
+def controller_ips(conn: Conn, host: str) -> list[str]:
+    """The controller's addresses as the host sees them, or none when they can't be worked out: for checks that go on without them."""
+    try:
+        return _controller_ips(conn, host)
+    except Exception:
+        return []
+
+
 def clean_target(conn: Conn, host: str, raw) -> str:
     """A single address or a sane network that is none of the machines this fleet cannot do without."""
     text = str(raw or '').strip()

@@ -23,6 +23,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The Proxmox Backup Server and Proxmox Datacenter Manager readers read the `/version` answer with the Proxmox VE reader's `parse_version` in place of their own copies (BE-17).
 - The *ports to publish* text of the container step is read by one function, `steps_workloads.parse_publish`, with one record shape, for the what-if, the design's Terraform and Puppet exports, the plan's workload exports and the container step's check, in place of four parsers. The Incus step keeps `incus_ports`, which refuses an IPv6 address its proxy devices can't take (BE-18).
 - A secret in network-language output (a WireGuard private key) is hidden by one function, `rostranspiler.redact_text`, for a device change's report and the compile preview, and `rostranspiler.secrets_of` decides whether a change's source may be stored. The refused RouterOS line keeps its own `***` marker (BE-19).
+- *The interface that carries this address* is found by one function, `exposure.iface_of`, for a device change's SSH check, the plan what-if's SSH checks and the reach model, and the controller's addresses for a check that goes on without them come from one function, `security.controller_ips`, in place of two nested wrappers. The three SSH checks keep their own verdicts (BE-33).
 
 ## 0.6.2 — 2026-11-26
 

@@ -221,6 +221,11 @@ def firewalld_path(fw: dict, flow: dict) -> dict:
     return {'verdict': 'drop', 'rule': f'zone {z["name"]} default', 'sources': state['sources'], 'unknown': state['unknown'], 'may_allow': state.get('may_allow')}
 
 
+def iface_of(net: dict | None, addr) -> dict | None:
+    """The first interface of a network reading that carries this address, or None."""
+    return next((i for i in (net or {}).get('interfaces') or [] if any(a.get('ip') == addr for a in i.get('addresses') or [])), None)
+
+
 def _input_path(fw: dict, flow: dict) -> dict:
     """A front end says what it lets in, and StorageForge's own tables, ahead of it, can take away from that."""
     front = firewalld_path if 'firewalld' in fw['backends'] else ufw_path if 'ufw' in fw['backends'] else None
