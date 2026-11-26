@@ -1872,10 +1872,27 @@ finished
 
 
 # ── the Ansible playbook ────────────────────────────────────────────────
+ANSIBLE_GATE = 'storageforge_destructive | default(false) | bool'
+
+
+def _gated(made: dict | list) -> dict | list:
+    """Every task of a destructive step runs only with -e storageforge_destructive=true, whichever module wrote it: a
+    task's own when: stays and the gate is added to it."""
+    for task in made if isinstance(made, list) else [made]:
+        if 'destructive' not in (task.get('tags') or []):
+            task['tags'] = [*(task.get('tags') or []), 'destructive']
+        when = task.get('when')
+        whens = when if isinstance(when, list) else [when] if when else []
+        if ANSIBLE_GATE not in whens:
+            task['when'] = [ANSIBLE_GATE, *whens] if whens else ANSIBLE_GATE
+    return made
+
+
 def _ansible_task(t: dict, c: Host | None, conn: Conn | None = None) -> dict:
     p, k = t['params'], t['type']
     if k in EXTRA:
-        return EXTRA[k]['ansible'](t, conn) if EXTRA[k].get('args_of') else EXTRA[k]['ansible'](t)
+        made = EXTRA[k]['ansible'](t, conn) if EXTRA[k].get('args_of') else EXTRA[k]['ansible'](t)
+        return _gated(made) if TYPES[k].get('destructive') else made
     name = title(t)
     q = shlex.quote
     if k == 'dir':

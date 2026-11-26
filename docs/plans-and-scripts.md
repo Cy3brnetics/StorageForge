@@ -89,7 +89,7 @@ Every step that writes to a device takes the three locks above. A LUKS key is a 
 
 The Ansible tasks of these steps run the same functions as the script, and those that write to a device run only with `-e storageforge_destructive=true`.
 
-**Ansible playbook** (`changes-<plan>.yml`) writes the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks run only with `-e storageforge_destructive=true`. A send to another host stops the playbook with the reason, since a playbook has no signature and no key: deploy that plan from StorageForge.
+**Ansible playbook** (`changes-<plan>.yml`) writes the same tasks with standard modules (`ansible.builtin.file`, `ansible.posix.mount`, `community.general.parted` and `filesystem`, `command` for btrfs). The inventory lines from the last scans are at the top. Drive tasks, and the tasks of every other step marked destructive, run only with `-e storageforge_destructive=true`. A send to another host stops the playbook with the reason, since a playbook has no signature and no key: deploy that plan from StorageForge.
 
 ### Sending snapshots
 

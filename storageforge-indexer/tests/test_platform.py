@@ -41,6 +41,22 @@ def private_pem():
     return k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH, serialization.NoEncryption())
 
 
+def sample_params(spec, path='/srv/data', text='note'):
+    """A valid value for every field of a change-step type, for tests that write every type."""
+    params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
+              {'path': path, 'text': text, 'spec': 'nas:' + path.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
+               'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb', 'host': 'pc',
+               'devices': '/dev/sdb', 'btrfs-device': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096',
+               'port': '8080', 'ports': '445,139', 'cidr': '10.0.0.0/24', 'cidrs': '10.0.0.0/24,10.0.1.0/24', 'iface': 'eth0', 'sysctl': 'fs.protected_hardlinks', 'word': 'yes',
+               'wgkey': 'a' * 43 + '=', 'image': 'nginx:1', 'publish': '127.0.0.1:8080:80/tcp', 'binds': '/srv/a:/data', 'lines': text, 'vmname': 'vm1', 'url': 'https://x.example/a.qcow2', 'sha': 'a' * 64, 'sizes': '10',
+               'pubkey': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl', 'names': 'vim',
+               'dhcprange': '10.0.0.100-10.0.0.200', 'vmdisks': 'vda:virtio:qcow2:vm1-vda.qcow2', 'vmnics': 'network=default:virtio:new', 'osinfo': 'debian12', 'unit': 'nginx.service', 'endpoint': '10.0.0.5:51820', 'ipv4': '10.0.0.5', 'zfs-snapshot': 'tank/data@s1', 'secret': 'some-secret', 'vmid': '101', 'dockersize': '10m', 'httpsurls': 'https://m.example', 'pveip': '10.0.0.5/24', 'pvetemplate': 'debian-13.tar.zst', 'pveiso': 'local:iso/a.iso'}[f['kind']]
+              for f in spec['fields']}
+    if spec.get('confirm_of') and not params.get('device') and not params.get('devices'):
+        params['confirm'] = params[spec['confirm_of']]       # typed again: the field it names (tool-data-remove: the tool)
+    return params
+
+
 class DBCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='sf-plat-'))
@@ -581,6 +597,33 @@ class ChangePlanTests(DBCase):
                                  'ansible.builtin.command', 'ansible.posix.mount'])
         self.assertEqual(plays[0]['tasks'][0]['when'], 'storageforge_destructive | default(false) | bool')
         self.assertEqual(plays[0]['tasks'][4]['ansible.posix.mount']['opts'], 'subvol=@media')
+
+    def test_every_destructive_step_runs_in_ansible_only_with_the_destructive_flag(self):
+        """The playbook's header says destructive tasks need -e storageforge_destructive=true. Each step module writes its
+        own export, and seven (md-array, os-install, os-remove, tool-data-remove, vm-revert, workload-remove, zfs-rollback)
+        once ran on a plain ansible-playbook."""
+        import yaml
+        from storageforge_index import changes
+
+        class Loader(yaml.SafeLoader):
+            pass
+        Loader.add_constructor('!unsafe', lambda loader, node: loader.construct_scalar(node))
+        gate = 'storageforge_destructive | default(false) | bool'
+        kinds = sorted(k for k, spec in changes.TYPES.items() if spec.get('destructive'))
+        self.assertGreater(len(kinds), 25)
+        for kind in kinds:
+            with self.subTest(kind):
+                plan = {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': sample_params(changes.TYPES[kind])}]}
+                tasks = yaml.load(changes.ansible(self.conn, plan), Loader)[0]['tasks']
+                self.assertTrue(tasks)
+                for t in tasks:
+                    when = t.get('when')
+                    self.assertIn(gate, when if isinstance(when, list) else [when], t['name'])
+                    self.assertIn('destructive', t.get('tags') or [], t['name'])
+        gated = changes._ansible_task({'type': 'zfs-rollback', 'params': {'dataset': 'tank/a', 'snapshot': 's1'}}, None)
+        self.assertEqual(gated['when'], gate)          # the exporter used on its own carries it too
+        self.assertEqual(changes._gated([{'name': 'b', 'when': 'sf_a is changed'}]),     # a task's own condition stays
+                         [{'name': 'b', 'when': [gate, 'sf_a is changed'], 'tags': ['destructive']}])
 
     def test_api(self):
         from storageforge_index import server, users
@@ -2126,17 +2169,7 @@ class ScriptHeaderTests(DBCase):
         out['clamav quarantine'] = clamav.quarantine_script(hostile, 'a' * 32)
         out['clamav restore'] = clamav.restore_script(hostile)
         for kind, spec in changes.TYPES.items():
-            params = {f['name']: next(o for o in f['options'] if o) if f['kind'] == 'choice' else
-                      {'path': path, 'text': text, 'spec': 'nas:/srv/' + canary.replace(' ', ''), 'bool': True, 'device': '/dev/sdb',
-                       'user': 'root', 'mode': '0755', 'options': 'defaults', 'label': 'data', 'confirm': '/dev/sdb', 'host': 'pc',
-                       'devices': '/dev/sdb', 'btrfs-device': '/dev/sdb', 'name': 'snap', 'dataset': 'tank/data', 'size': '10G', 'mkfs': '', 'number': '4096',
-                       'port': '8080', 'ports': '445,139', 'cidr': '10.0.0.0/24', 'cidrs': '10.0.0.0/24,10.0.1.0/24', 'iface': 'eth0', 'sysctl': 'fs.protected_hardlinks', 'word': 'yes',
-                       'wgkey': 'a' * 43 + '=', 'image': 'nginx:1', 'publish': '127.0.0.1:8080:80/tcp', 'binds': '/srv/a:/data', 'lines': text, 'vmname': 'vm1', 'url': 'https://x.example/a.qcow2', 'sha': 'a' * 64, 'sizes': '10',
-                       'pubkey': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl', 'names': 'vim',
-                       'dhcprange': '10.0.0.100-10.0.0.200', 'vmdisks': 'vda:virtio:qcow2:vm1-vda.qcow2', 'vmnics': 'network=default:virtio:new', 'osinfo': 'debian12', 'unit': 'nginx.service', 'endpoint': '10.0.0.5:51820', 'ipv4': '10.0.0.5', 'zfs-snapshot': 'tank/data@s1', 'secret': 'some-secret', 'vmid': '101', 'dockersize': '10m', 'httpsurls': 'https://m.example', 'pveip': '10.0.0.5/24', 'pvetemplate': 'debian-13.tar.zst', 'pveiso': 'local:iso/a.iso'}[f['kind']]
-                      for f in spec['fields']}
-            if spec.get('confirm_of') and not params.get('device') and not params.get('devices'):
-                params['confirm'] = params[spec['confirm_of']]       # typed again: the field it names (tool-data-remove: the tool)
+            params = sample_params(spec, path, text)
             out[f'changes {kind}'] = changes.script(self.conn, {'name': 'p', 'tasks': [{'type': kind, 'host': 'nas', 'params': params, 'note': text}]})
         for kind, spec in tasks.TYPES.items():
             if kind in ('command', 'if', 'try'):             # a command block's value is code on purpose
