@@ -7,6 +7,8 @@ import time
 import unittest
 from pathlib import Path
 
+import yaml
+
 try:
     from test_tasks import Fleet
 except ImportError:      # run as tests.test_x from the project folder
@@ -98,6 +100,43 @@ class Report(Fleet):
                 out = self.run_report(kind, self.tmp)
                 self.assertIn('this is a Proxmox VE node', out)
                 self.assertNotIn('command not found', out)
+
+
+class Loader(yaml.SafeLoader):
+    """A playbook marks its commands !unsafe."""
+
+
+Loader.add_constructor('!unsafe', lambda loader, node: loader.construct_scalar(node))
+
+
+def shell_cmds(node):
+    if isinstance(node, dict):
+        found = [node['ansible.builtin.shell']['cmd']] if isinstance(node.get('ansible.builtin.shell'), dict) else []
+        return found + [c for v in node.values() for c in shell_cmds(v)]
+    return [c for v in node for c in shell_cmds(v)] if isinstance(node, list) else []
+
+
+class Ansible(Fleet):
+    def guarded(self, kind, **over):
+        p = changes.normalize(changes.prepare(self.conn, plan(kind, 'nas', **over)))
+        return [c for c in shell_cmds(yaml.load(changes.ansible(self.conn, p), Loader)) if 'not_on_pve ||' in c]
+
+    def test_every_guarded_export_defines_the_guard_and_is_valid_bash(self):
+        for kind in STEPS:
+            with self.subTest(kind):
+                cmds = self.guarded(kind)
+                self.assertTrue(cmds, kind)
+                for c in cmds:
+                    self.assertIn('not_on_pve()', c)
+                    self.assertEqual(subprocess.run(['bash', '-n'], input=c, text=True, capture_output=True).returncode, 0)
+
+    def test_the_guard_in_an_export_stops_on_a_node(self):
+        for kind in ('lxc', 'vm'):
+            with self.subTest(kind):
+                r = subprocess.run(['bash', '-c', self.guarded(kind)[0]], env={**os.environ, 'SF_PVE_DIR': self.tmp}, capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('this is a Proxmox VE node', r.stderr)
+                self.assertNotIn('command not found', r.stderr)
 
 
 if __name__ == '__main__':

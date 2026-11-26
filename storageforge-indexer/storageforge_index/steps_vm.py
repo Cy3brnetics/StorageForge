@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import shlex
 
-from . import changes
+from . import changes, pvenode
 from .changes import F
 
 NS = 'https://storageforge.invalid/vm'      # the libvirt metadata namespace that marks a VM StorageForge made
@@ -361,7 +361,7 @@ def image_for(distro: str | None, version: str | None) -> str | None:
 
 # ── the check against the index ─────────────────────────────────────
 def _check(conn, c, h, p, say):
-    from . import inframeasure, pvenode
+    from . import inframeasure
     if pvenode.refuse_on_node(conn, h, say):
         return
     r = inframeasure.reading(conn, h['name'])
@@ -423,7 +423,7 @@ def _ansible(t):
     q = shlex.quote
     p = t['params']
     call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in ARGS)
-    head = ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+    head = (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
     return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + bash() + f'\nt_vm_create {call}\n', 'executable': '/bin/bash'},
             'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}

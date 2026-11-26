@@ -29,7 +29,7 @@ import shlex
 
 import yaml
 
-from . import changes
+from . import changes, pvenode
 from .changes import F
 
 LABEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,62}=[A-Za-z0-9_.:/@+-]{0,200}')
@@ -655,7 +655,7 @@ def _mac_check(conn, h, m, relabel, say):
 
 
 def check_lxc(conn, c, h, p, say):
-    from . import inframeasure, pvenode
+    from . import inframeasure
     if pvenode.refuse_on_node(conn, h, say):
         return
     r = inframeasure.reading(conn, h['name']) or {}
@@ -683,7 +683,7 @@ def check_lxc(conn, c, h, p, say):
 
 
 def check_incus(conn, c, h, p, say):
-    from . import inframeasure, pvenode
+    from . import inframeasure
     if pvenode.refuse_on_node(conn, h, say):
         return
     r = inframeasure.reading(conn, h['name']) or {}
@@ -717,7 +717,7 @@ def _stack_extra(conn, t) -> list[str]:
 
 
 # ── Ansible: the same functions, as one shell task ──────────────────
-ANSIBLE_HEAD = ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+ANSIBLE_HEAD = (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
                 'doing() { echo "changed: $*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }\n'
                 'fw_tool() { FW=/usr/local/sbin/storageforge-fwrules; [[ -x $FW ]] || { conflict "storageforge-fwrules is not on this host: run the Bash script of a fw-rule step once"; return 1; }; }\n'
                 'fw_need_nft() { command -v nft >/dev/null || { conflict "nftables is not installed"; return 1; }; }; fw_id() { printf "%s" "$*" | sha256sum | cut -c1-12; }\n')
@@ -768,7 +768,6 @@ REMOVE_ARGS = ('runtime', 'name')
 
 
 def check_managed_remove(conn, c, h, p, say):
-    from . import pvenode
     if p['runtime'] == 'lxc' and pvenode.refuse_on_node(conn, h, say):
         return
     if p['runtime'] == 'lxc':

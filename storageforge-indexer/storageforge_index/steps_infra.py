@@ -15,7 +15,7 @@ import ipaddress
 import re
 import shlex
 
-from . import changes
+from . import changes, pvenode
 from .changes import F
 
 SMB, NFS, ISCSI = '445,139', '2049,111,20048', '3260'
@@ -749,7 +749,7 @@ t_wg_forward() { local iface=$1 cidr=$2 state=${3:-present}
   ok "hub forwarding enabled on $iface ($key=1)"
 }
 
-not_on_pve() { [[ -e ${SF_PVE_DIR:-/etc/pve} ]] && { conflict "this is a Proxmox VE node: use the Proxmox VE steps, so Proxmox knows about it"; return 1; }; return 0; }
+@NOT_ON_PVE@
 
 t_workload_action() { local runtime=$1 name=$2 action=$3 state
   [[ $runtime == lxc ]] && { not_on_pve || return 0; }
@@ -876,7 +876,7 @@ t_zfs_rollback() { local dataset=$1 snapshot=$2
   # Keep a copy first (zfs send to another dataset) if what was written since may still be wanted
   try zfs rollback -r "$dataset@$snapshot" && ok "$dataset is back at @$snapshot"
 }
-""".replace('@FWRULES@', FWRULES).replace('@FWUNIT@', FWRULES_UNIT)
+""".replace('@FWRULES@', FWRULES).replace('@FWUNIT@', FWRULES_UNIT).replace('@NOT_ON_PVE@', pvenode.NOT_ON_PVE_BASH)
 
 
 # ── checks against the index ────────────────────────────────────────
@@ -1184,7 +1184,6 @@ def _workload(conn, h, runtime, name):
 
 
 def _check_workload_action(conn, c, h, p, say):
-    from . import pvenode
     if p['runtime'] == 'lxc' and pvenode.refuse_on_node(conn, h, say):
         return
     w = _workload(conn, h, p['runtime'], p['name'])
@@ -1237,7 +1236,6 @@ def _check_container(conn, c, h, p, say):
 
 
 def _check_vm(conn, c, h, p, say):
-    from . import pvenode
     if pvenode.refuse_on_node(conn, h, say):
         return
     where, _ = c.mount_at(p['disk'])
@@ -1301,7 +1299,7 @@ def _ansible_bash(fn: str, args: tuple):
         # A rollback timer needs the storageforge-fwrules program: a playbook run refuses one instead of dropping it.
         fw = 'fw_arm() { [[ -n $1 ]] || return 0; conflict "a rollback timer is not available from an Ansible export: leave the rollback empty"; }; fw_tool() { :; }'
         fwprog = '/usr/local/sbin/storageforge-fwrules' if fn == 't_wg_forward' else '/bin/true'
-        task = _shell(changes.title(t), ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+        task = _shell(changes.title(t), (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
                                          'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }; FW=' + fwprog + '\n'
                                          + helpers + fw + '\n' + body + f'\n{fn} {call}\n'))
         return _helper_tasks() + [task] if fn == 't_wg_forward' else task
@@ -1346,7 +1344,9 @@ def _ansible_vm(t):
     net = f'bridge={p["bridge"]}' if p['bridge'] else f'network={p["network"] or "default"}'
     argv = ['virt-install', '--import', '--name', p['name'], '--disk', f'{p["disk"]},bus=virtio', '--vcpus', p['vcpus'] or '2', '--memory', p['ram_mb'] or '2048', '--network', f'{net},model=virtio',
             '--osinfo', p['os_variant'] or 'generic', '--graphics', 'spice,listen=127.0.0.1', '--noautoconsole']
-    return {'name': changes.title(t), 'ansible.builtin.command': {'argv': argv}, 'args': {'creates': f'/etc/libvirt/qemu/{p["name"]}.xml'}}
+    # a shell task, not a command one, so a Proxmox VE node can be refused before virt-install makes something Proxmox does not know of
+    cmd = (pvenode.NOT_ON_PVE_BASH + '\nconflict() { echo "conflict: $*" >&2; exit 1; }\nnot_on_pve || exit 1\n' + shlex.join(argv) + '\n')
+    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': cmd, 'executable': '/bin/bash', 'creates': f'/etc/libvirt/qemu/{p["name"]}.xml'}}
 
 
 # ── the registrations ───────────────────────────────────────────────

@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 import shlex
 
-from . import changes
+from . import changes, pvenode
 from .changes import F
 
 NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}')       # a VM, snapshot, network or pool name this module writes
@@ -664,7 +664,6 @@ def _check_send(conn, c, h, p, say):
 
 
 def _check_define(conn, c, h, p, say):
-    from . import pvenode
     if pvenode.refuse_on_node(conn, h, say):
         return
     _check_name(p, say, 'name')
@@ -692,7 +691,7 @@ def _shell(fn, args):
         q = shlex.quote
         p = t['params']
         call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in args)
-        head = ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+        head = (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
                 'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; need() { command -v "$1" >/dev/null || conflict "$1 is not installed"; }\n')
         return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\n{fn} {call}\n', 'executable': '/bin/bash'},
                 'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}

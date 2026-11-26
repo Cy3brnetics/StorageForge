@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import shlex
 
-from . import changes, steps_vm
+from . import changes, pvenode, steps_vm
 from .changes import F
 
 # key -> (label, the checksum list the publisher puts beside its ISOs, the file names of this release in it (ERE), osinfo, firmware).
@@ -157,7 +157,7 @@ def bash() -> str:
 
 
 def _check(conn, c, h, p, say):
-    from . import inframeasure, pvenode
+    from . import inframeasure
     if pvenode.refuse_on_node(conn, h, say):
         return
     r = inframeasure.reading(conn, h['name'])
@@ -215,7 +215,7 @@ def _ansible(t):
     q = shlex.quote
     p = t['params']
     call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in ARGS)
-    head = ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+    head = (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
     return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + bash() + f'\nt_vm_iso {call}\n', 'executable': '/bin/bash'},
             'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
