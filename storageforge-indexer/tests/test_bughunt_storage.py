@@ -177,7 +177,11 @@ class DiskImage(Stubs):
 class FwRules(Stubs):
     def test_arm_with_a_timer_already_pending_still_prints_the_marker(self):
         script = self.tmp / 'fw'
-        script.write_text(steps_infra.FWRULES)
+        # the program sets its own PATH: the stand-ins go first in it, or the real systemd-run is reached and asks polkit on
+        # the machine running the tests (it did, on 2026-11-26)
+        text = steps_infra.FWRULES.replace('export LC_ALL=C PATH=/usr/local/sbin', f'export LC_ALL=C PATH={self.bin}:/usr/local/sbin', 1)
+        self.assertNotEqual(text, steps_infra.FWRULES)
+        script.write_text(text)
         self.stub('systemctl', 'echo "sf-fw-rollback.timer  n/a n/a n/a n/a"')
         self.stub('systemd-run', 'echo "run" >>"$STUB_LOG"')
         r = bash(f'bash {script} arm 7', {**self.env(), 'SF_FW_DIR': str(self.tmp / 'fw.d')})
