@@ -175,6 +175,18 @@ class Read(Base):
         listing = apiviews.annotate_workloads(self.conn, {'workloads': []})
         self.assertEqual(sorted((w['name'], w['host'], w['runtime']) for w in listing['workloads']), [('FreeNAS', None, 'xen'), ('web', 'xcp1', 'xen')])
 
+    def test_a_host_with_no_address_is_not_matched_to_a_scanned_host_with_no_address(self):
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ssh_user, inventory_json) VALUES ('nas', 'nas.lab', 'scan', '{}')")      # no ip_address
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ip_address, ssh_user, inventory_json) VALUES ('blank', 'blank.lab', '', 'scan', '{}')")
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ip_address, ssh_user, inventory_json) VALUES ('xcp1', 'xcp1.lab', '10.9.0.11', 'scan', '{}')")
+        objects = [{'kind': 'xo-host', 'ref': HOST1, 'name': 'pool-master', 'address': '10.9.0.11'},      # no name match: found by its address
+                   {'kind': 'xo-host', 'ref': HOST2, 'name': 'xcp-unscanned', 'address': None},
+                   {'kind': 'xo-host', 'ref': POOL, 'name': None, 'address': ''},
+                   {'kind': 'vm', 'ref': 'v1', 'name': 'web', 'container': HOST1}, {'kind': 'vm', 'ref': 'v2', 'name': 'db', 'container': HOST2}]
+        self.assertEqual(apixo._host_map(self.conn, objects), {HOST1: 'xcp1', HOST2: None, POOL: None})
+        self.assertEqual([(w['name'], w['host']) for w in apixo.workloads(self.conn, self.row, objects)], [('web', 'xcp1'), ('db', 'xcp-unscanned')])
+        self.assertEqual(apixo.compare(self.conn, self.row, objects)['scanned_hosts'], ['xcp1'])
+
     def test_the_guide_and_answers_that_are_not_what_the_examples_say(self):
         g = apiguide.guide('xo', scope=POOL)
         runs = [r for s in g['steps'] for r in s['run']]

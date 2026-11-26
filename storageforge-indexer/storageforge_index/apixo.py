@@ -287,11 +287,13 @@ def _host_map(conn, objects: list[dict]) -> dict:
     """XO host id -> the scanned host, by name or address."""
     from .apiviews import _hosts
     names = _hosts(conn)
-    by_ip = {(ip or '').lower(): h for h, ip in conn.all('SELECT hostname, ip_address FROM hosts')}
+    by_ip = {ip.lower(): h for h, ip in conn.all('SELECT hostname, ip_address FROM hosts') if ip}
     out = {}
     for o in objects:
         if o['kind'] == 'xo-host':
-            out[o['ref']] = names.get((o.get('name') or '').lower()) or names.get((o.get('name') or '').split('.')[0].lower()) or by_ip.get((o.get('address') or '').lower())
+            address = (o.get('address') or '').lower()      # no address matches no host: not the scanned host that has none either
+            out[o['ref']] = (names.get((o.get('name') or '').lower()) or names.get((o.get('name') or '').split('.')[0].lower())
+                             or (by_ip.get(address) if address else None))
     return out
 
 
