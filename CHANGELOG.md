@@ -2,6 +2,11 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Fixed
+- **A long answer from a network device no longer slows the session in the square of its length.** Reading from a router or switch over SSH or telnet cleaned all the output received so far every time more arrived, to find the prompt on the last line. A megabyte took about 15 s on a fast machine and over 30 s on a slow one, where a command could time out; the 64 MiB cap was out of reach. Only the last line is cleaned now, and the whole answer once, when the prompt arrives. Found when GitHub CI's test of the cap timed out.
+
 ## 0.6.3 — 2026-11-26
 
 The second version of the [0.7.0 roadmap](roadmap-0.7.0.md): 24 small pieces of shared work (parsers, SSH key handling, path tests, database spellings, host names) written once instead of in several modules. Most change nothing a user sees; what they do change is listed under *Changed*. Built and unit-tested on SQLite (light, medium and heavy blocks); **not lab-tested**, and not run on PostgreSQL in this release's checks. One browser test of the key enclave page failed once in three heavy runs and passes alone: it is a known flaky test, not fixed here.

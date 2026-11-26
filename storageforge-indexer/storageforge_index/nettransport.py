@@ -180,8 +180,9 @@ class CliSession:
                 if len(raw) > MAX_REMOTE_OUTPUT:
                     self.close()
                     raise RemoteError(f'{self.host}: the device sent more than {MAX_REMOTE_OUTPUT >> 20} MiB; refused')
-                text = self._clean(bytes(raw))
-                tail = text.rsplit('\n', 1)[-1]
+                # only the last line can be a prompt or the pager, and cleaning never reaches across a newline: cleaning all of
+                # the output on every chunk made a long answer cost time in the square of its length
+                tail = self._clean(bytes(raw[raw.rfind(b'\n') + 1:]))
                 if self._more.search(tail):
                     # the pager's own words are not output: drop them where they sit
                     cut = raw.rfind(b'\n') + 1
@@ -190,6 +191,7 @@ class CliSession:
                     break
                 if not self._is_prompt(tail):
                     break
+                text = self._clean(bytes(raw))
                 # a device that redraws its prompt is still talking: this one only counts once it has finished
                 try:
                     more = self._read(SETTLE)
