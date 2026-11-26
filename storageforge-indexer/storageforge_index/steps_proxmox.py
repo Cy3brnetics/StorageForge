@@ -67,6 +67,69 @@ t_pve_remove() { local kind=$1 vmid=$2 name=$3 purge=$4
   try "$PVE_TOOL" destroy "$vmid" ${purge:+--purge} >/dev/null && ok "destroyed: $name ($vmid)"
   return 0
 }
+# The vault secret NAME as a file: where an apply from StorageForge wrote it, or where a test puts it.
+pve_secret() { local d=/run/storageforge/secrets; ((EUID != 0)) && d=${SF_SECRET_DIR:-$d}; echo "$d/$1"; }
+
+# t_pve_ct VMID HOSTNAME TEMPLATE STORAGE DISK_GB CORES MEMORY_MB BRIDGE IP GATEWAY SSH_KEY PASSWORD_SECRET UNPRIVILEGED ONBOOT START
+# An existing VMID is left alone. The root password is never an argument of any command: the vault secret is read from its file by a pipe into
+# chpasswd inside the container, and the container is stopped again unless it was asked to start.
+t_pve_ct() { local vmid=$1 host=$2 tmpl=$3 store=$4 disk=${5:-8} cores=${6:-1} mem=${7:-512} bridge=${8:-vmbr0} ip=${9:-dhcp} gw=${10} key=${11} sec=${12} unpriv=${13} onboot=${14} start=${15}
+  local out tstore list net src= keyf= i ok_pw=0 name
+  local -a args
+  command -v pct >/dev/null || { conflict "this host is not a Proxmox VE node: pct is not here"; return 0; }
+  if [[ -z $vmid ]]; then
+    vmid=$(pvesh get /cluster/nextid 2>/dev/null) || vmid=
+    [[ $vmid =~ ^[0-9]+$ ]] || { conflict "Proxmox gave no free VMID: name one in the step"; return 0; }
+  fi
+  if pct status "$vmid" >/dev/null 2>&1; then conflict "VMID $vmid is already a guest on this node: it is left alone"; return 0; fi
+  if [[ -n $sec ]]; then
+    src=$(pve_secret "$sec")
+    if [[ ! -s $src ]]; then
+      if ((APPLY)); then conflict "the vault secret $sec is not on this host: apply this from StorageForge, which brings it"; return 0; fi
+      info "the vault secret $sec arrives with an apply from StorageForge"
+    fi
+  fi
+  if [[ $tmpl != *:* ]]; then
+    name=$tmpl
+    out=$(pvesm status --content vztmpl 2>/dev/null) || out=
+    tstore=$(awk 'NR > 1 && $3 == "active" { print $1; exit }' <<<"$out")
+    [[ -n $tstore ]] || { conflict "no storage on this node holds container templates (content vztmpl)"; return 0; }
+    tmpl=$tstore:vztmpl/$name
+    list=$(pveam list "$tstore" 2>/dev/null) || list=
+    if grep -qF -- "$tmpl" <<<"$list"; then ok "template $tmpl is on $tstore"
+    elif act "download the template $name into $tstore with pveam"; then
+      try pveam update >/dev/null && try pveam download "$tstore" "$name" >/dev/null || return 0
+    fi
+  else
+    list=$(pveam list "${tmpl%%:*}" 2>/dev/null) || list=
+    if ! grep -qF -- "$tmpl" <<<"$list"; then
+      if ((APPLY)); then conflict "the template $tmpl is not on this node"; return 0; fi
+      missing "the template $tmpl was not seen on this node: an apply checks again"
+    fi
+  fi
+  net=name=eth0,bridge=$bridge,ip=$ip${gw:+,gw=$gw}
+  act "create container $vmid ($host) from $tmpl on $store: ${disk} GiB, $cores cores, ${mem} MiB, $net${sec:+, root password from the vault}${key:+, with an SSH key}" || return 0
+  args=("$vmid" "$tmpl" --hostname "$host" --storage "$store" --rootfs "$store:$disk" --cores "$cores" --memory "$mem" --net0 "$net" --unprivileged "${unpriv:-0}")
+  [[ -n $onboot ]] && args+=(--onboot 1)
+  if [[ -n $key ]]; then
+    keyf=$(mktemp) && chmod 600 "$keyf" && printf "%s\n" "$key" >"$keyf" || { rm -f -- "$keyf"; conflict "could not write the SSH key to a temporary file"; return 0; }
+    args+=(--ssh-public-keys "$keyf")
+  fi
+  if try pct create "${args[@]}" >/dev/null; then rm -f -- "$keyf"; else rm -f -- "$keyf"; return 0; fi
+  ok "created container $vmid ($host)"
+  if [[ -n $sec ]]; then
+    try pct start "$vmid" >/dev/null || return 0
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      if { printf "root:"; tr -d "\n" <"$src"; printf "\n"; } | pct exec "$vmid" -- chpasswd >/dev/null 2>&1; then ok_pw=1; break; fi
+      sleep 2
+    done
+    ((ok_pw)) && ok "root password of $vmid set from the vault secret $sec" || conflict "could not set the root password of $vmid: the container did not take it"
+    [[ -n $start ]] || { try pct shutdown "$vmid" --forceStop 1 --timeout 30 >/dev/null && ok "stopped $vmid again: it was not asked to start"; }
+  elif [[ -n $start ]]; then
+    try pct start "$vmid" >/dev/null && ok "started $vmid"
+  fi
+  return 0
+}
 """
 
 ANSIBLE_HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }; skip() { echo "skip: $*"; }\n'
@@ -152,4 +215,88 @@ changes.register('pve-remove', {'group': 'Proxmox VE', 'label': 'Remove a Proxmo
     F('confirm', 'confirm', 'Type its name again to confirm', required=True)],
     'help': 'Destroys a stopped guest and its disks with qm or pct destroy. The name must be the one the guest has.'},
     REMOVE_ARGS, lambda p: f'Remove Proxmox {p["kind"]} {p["name"]} ({p["vmid"]})', check_remove, ansible_of('t_pve_remove', REMOVE_ARGS, destructive=True))
+# ── a container ─────────────────────────────────────────────────────
+CT_ARGS = ('vmid', 'hostname', 'template', 'storage', 'disk_gb', 'cores', 'memory_mb', 'bridge', 'ip', 'gateway', 'ssh_key', 'password_secret', 'unprivileged', 'onboot', 'start')
+HOSTNAME = re.compile(r'[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*')
+
+
+def check_ct(conn, c, h, p, say):
+    from . import inframeasure, workloads
+    if not pvenode.is_proxmox_host(conn, h['name']):
+        say('crit', f'{h["name"]} is not a Proxmox VE node: this step runs pct there, so the container shows in Proxmox. Use the generic LXC step on a plain host')
+        return
+    if not HOSTNAME.fullmatch(p['hostname']):
+        say('crit', 'a container hostname is letters, digits and hyphens, with dots between labels')
+    if p.get('vmid'):
+        w = next((x for x in workloads.listing(conn, h['name'])['workloads'] if x['runtime'] == 'proxmox' and str(x.get('vmid')) == p['vmid']), None)
+        if w:
+            say('crit', f'VMID {p["vmid"]} is already {w.get("name")} on {h["name"]}: the script leaves it alone')
+        elif not VMID_MIN <= int(p['vmid']) <= VMID_MAX:
+            say('crit', f'a VMID is between {VMID_MIN} and {VMID_MAX}')
+    else:
+        say('note', 'no VMID given: the script asks Proxmox for the next free one')
+    node = (inframeasure.reading(conn, h['name']) or {}).get('proxmox_node')
+    if not node:
+        say('note', f'the storages and templates of {h["name"]} are not read yet: the script checks when it runs')
+    else:
+        _storage_check(node, p, h['name'], say)
+    if p['ip'] != 'dhcp':
+        if not p.get('gateway'):
+            say('warn', f'{p["ip"]} has no gateway: the container reaches only its own network')
+    elif p.get('gateway'):
+        say('note', 'the gateway is used with a fixed address only: with dhcp it is ignored')
+    if not (p.get('ssh_key') or p.get('password_secret')):
+        say('warn', 'no SSH key and no root password: the only way in is pct enter on the node')
+    if p.get('password_secret'):
+        say('note', f'the secret {p["password_secret"]} reaches {h["name"]} on the runner stdin in an apply; the container is started once to set the root password through chpasswd'
+                    + ('' if p.get('start') else ', then stopped again'))
+    if not p.get('unprivileged'):
+        say('warn', 'a privileged container has root of the node inside it: prefer unprivileged unless it needs more')
+
+
+def _storage_check(node: dict, p: dict, host: str, say):
+    stores = {s['name']: s for s in node.get('storages') or []}
+    have = ', '.join(sorted(stores)) or 'none'
+    root = stores.get(p['storage'])
+    if not root:
+        say('crit', f'{host} has no storage {p["storage"]}: it has {have}')
+    elif root.get('content') and 'rootdir' not in root['content']:
+        say('crit', f'{p["storage"]} does not hold container disks (content {", ".join(root["content"])}): choose one with rootdir, such as {", ".join(n for n, s in sorted(stores.items()) if "rootdir" in (s.get("content") or [])) or "none here"}')
+    elif not root.get('active'):
+        say('warn', f'{p["storage"]} is not active on {host}')
+    volids = {t['volid'] for t in node.get('templates') or []}
+    tmpl = p['template']
+    if ':' in tmpl:
+        tstore = stores.get(tmpl.split(':', 1)[0])
+        if not tstore or 'vztmpl' not in (tstore.get('content') or []):
+            say('crit', f'{tmpl.split(":", 1)[0]} does not hold container templates on {host}: pick a storage with vztmpl ({", ".join(n for n, s in sorted(stores.items()) if "vztmpl" in (s.get("content") or [])) or "none here"})')
+        elif tmpl not in volids:
+            say('warn', f'{tmpl} was not in the last reading of {host}: the script checks again when it runs')
+        else:
+            say('ok', f'{tmpl} is on {host}')
+    elif any(v.split('/', 1)[-1] == tmpl for v in volids):
+        say('ok', f'{tmpl} is already on {host}')
+    elif not any('vztmpl' in (s.get('content') or []) for s in stores.values()):
+        say('crit', f'no storage on {host} holds container templates (content vztmpl): enable it on one in Proxmox first')
+    else:
+        say('warn', f'{tmpl} is not on {host}: it will be downloaded with pveam')
+
+
+changes.CHECKS['pveip'] = re.compile(r'dhcp|((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)/(3[0-2]|[12]?\d)')
+changes.CHECKS['pvetemplate'] = re.compile(r'([A-Za-z0-9][A-Za-z0-9_.-]{0,63}:vztmpl/)?[A-Za-z0-9][A-Za-z0-9_.+:-]{0,127}')
+changes.register('pve-ct', {'group': 'Proxmox VE', 'label': 'Create a Proxmox container', 'fields': [
+    F('vmid', 'vmid', 'VMID (empty: the next free one)', placeholder='105'),
+    F('hostname', 'name', 'Hostname', required=True, placeholder='web-01'),
+    F('template', 'pvetemplate', 'Template (storage:vztmpl/file, or a name to download)', required=True, placeholder='debian-13-standard_13.0-1_amd64.tar.zst'),
+    F('storage', 'name', 'Storage for the root disk', required=True, placeholder='local-lvm'),
+    F('disk_gb', 'number', 'Root disk, GiB', default='8'), F('cores', 'number', 'Cores', default='1'), F('memory_mb', 'number', 'Memory, MiB', default='512'),
+    F('bridge', 'iface', 'Bridge', default='vmbr0'), F('ip', 'pveip', 'Address (dhcp, or address/prefix)', default='dhcp', placeholder='10.0.0.5/24'),
+    F('gateway', 'ipv4', 'Gateway (fixed address only)', placeholder='10.0.0.1'),
+    F('ssh_key', 'pubkey', 'SSH public key for root'),
+    F('password_secret', 'secret', 'Vault secret holding the root password', placeholder='ct-root'),
+    F('unprivileged', 'bool', 'Unprivileged', default=True), F('onboot', 'bool', 'Start with the node'), F('start', 'bool', 'Start it now')],
+    'help': 'Created with pct on the node, so Proxmox shows it. A template name that is not on the node is downloaded with pveam first. The root password comes from the vault '
+            'and never appears on a command line. An existing VMID is left alone.'},
+    CT_ARGS, lambda p: f'Proxmox container {p["hostname"]} on {p["storage"]}', check_ct, ansible_of('t_pve_ct', CT_ARGS))
+
 changes.EXTRA_BASH.append(BASH)

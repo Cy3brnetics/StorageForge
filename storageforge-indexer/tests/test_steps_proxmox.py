@@ -69,13 +69,13 @@ class Steps(Fleet):
 
 class Check(Steps):
     def test_both_kinds_are_in_the_proxmox_group(self):
-        for kind in BASE:
+        for kind in ('pve-action', 'pve-remove'):
             self.assertEqual(changes.TYPES[kind]['group'], 'Proxmox VE')
         self.assertTrue(changes.TYPES['pve-remove']['destructive'])
         self.assertEqual(changes.TYPES['pve-remove']['confirm_of'], 'name')
 
     def test_a_plain_host_is_not_a_node(self):
-        for kind in BASE:
+        for kind in ('pve-action', 'pve-remove'):
             self.assertTrue(any(lv == 'crit' and 'not a Proxmox VE node' in t for lv, t in self.items(kind, 'pc')), kind)
 
     def test_a_running_guest_started_is_already_running(self):
@@ -103,7 +103,7 @@ class Check(Steps):
 
     def test_a_name_that_is_not_the_guests_is_a_crit(self):
         self.make_node()
-        for kind in BASE:
+        for kind in ('pve-action', 'pve-remove'):
             self.assertTrue(any(lv == 'crit' and 'named web' in t for lv, t in self.items(kind, name='other', confirm='other')), kind)
 
     def test_the_vmid_and_kind_are_held_to_their_range(self):
@@ -156,6 +156,146 @@ class Run(Steps):
         doc = yaml.load(changes.ansible(self.conn, changes.normalize(plan('pve-remove'))), Loader)
         task = next(t for play in doc for t in play['tasks'] if 't_pve_remove' in str(t))
         self.assertEqual(task['tags'], ['destructive'])
+
+
+NODE = {'storages': [{'name': 'local', 'type': 'dir', 'active': True, 'content': ['iso', 'vztmpl', 'backup']},
+                      {'name': 'local-lvm', 'type': 'lvmthin', 'active': True, 'content': ['images', 'rootdir']},
+                      {'name': 'tank', 'type': 'zfspool', 'active': True, 'content': ['images']}],
+        'isos': [], 'templates': [{'storage': 'local', 'volid': 'local:vztmpl/debian-13.tar.zst', 'size': 1}]}
+CT = {'hostname': 'web-01', 'template': 'local:vztmpl/debian-13.tar.zst', 'storage': 'local-lvm', 'vmid': '105'}
+BASE['pve-ct'] = CT
+KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ops@laptop'
+PASSWORD = 'S3cret-pass_word,42'
+
+
+class Container(Steps):
+    def make_node(self, node=NODE, host='nas'):
+        security._save_measurement(self.conn, host, 'infra', int(time.time()), 'test', {'tools': ['qm', 'pct', 'pvesm'], 'proxmox': GUESTS, 'proxmox_node': node})
+
+    def says(self, **over):
+        return self.items('pve-ct', **over)
+
+    def test_it_is_in_the_proxmox_group_and_asks_for_the_vault_secret(self):
+        from storageforge_index import secretstore
+        self.assertEqual(changes.TYPES['pve-ct']['group'], 'Proxmox VE')
+        self.assertEqual(secretstore.secret_fields(changes.TYPES['pve-ct']), ['password_secret'])
+
+    def test_a_good_container_checks_clean(self):
+        self.make_node()
+        self.assertFalse(any(lv == 'crit' for lv, _ in self.says()), self.says())
+
+    def test_a_storage_the_node_lacks_is_named_with_the_ones_it_has(self):
+        self.make_node()
+        self.assertTrue(any(lv == 'crit' and 'no storage nope' in t and 'local-lvm' in t for lv, t in self.says(storage='nope')))
+
+    def test_a_storage_without_rootdir_is_refused(self):
+        self.make_node()
+        self.assertTrue(any(lv == 'crit' and 'tank does not hold container disks' in t for lv, t in self.says(storage='tank')))
+
+    def test_a_bare_template_is_downloaded_and_a_volid_on_the_wrong_storage_is_refused(self):
+        self.make_node()
+        self.assertTrue(any(lv == 'warn' and 'downloaded with pveam' in t for lv, t in self.says(template='debian-12.tar.zst')))
+        self.assertTrue(any(lv == 'crit' and 'local-lvm does not hold container templates' in t for lv, t in self.says(template='local-lvm:vztmpl/x.tar.zst')))
+        self.assertTrue(any(lv == 'ok' for lv, t in self.says(template='debian-13.tar.zst')))
+
+    def test_an_old_scan_without_the_node_data_only_notes_it(self):
+        security._save_measurement(self.conn, 'nas', 'infra', int(time.time()), 'test', {'tools': ['qm', 'pct']})
+        items = self.says()
+        self.assertTrue(any(lv == 'note' and 'not read yet' in t for lv, t in items))
+        self.assertFalse(any(lv == 'crit' for lv, _ in items))
+
+    def test_a_fixed_address_wants_a_gateway_and_nonsense_is_refused(self):
+        self.make_node()
+        self.assertTrue(any(lv == 'warn' and 'no gateway' in t for lv, t in self.says(ip='10.0.0.5/24')))
+        self.assertFalse(any('gateway' in t for _, t in self.says(ip='10.0.0.5/24', gateway='10.0.0.1')))
+        with self.assertRaises(ValueError):
+            changes.normalize(plan('pve-ct', ip='nonsense'))
+
+    def test_a_plain_host_and_an_existing_vmid_are_refused(self):
+        self.assertTrue(any(lv == 'crit' and 'not a Proxmox VE node' in t for lv, t in self.says(host='pc')))
+        self.make_node()
+        self.assertTrue(any(lv == 'crit' and 'already web' in t for lv, t in self.says(vmid='101')))
+
+    def test_the_secret_is_delivered_by_name_and_the_script_holds_only_the_name(self):
+        from storageforge_index import secretstore
+        p = plan('pve-ct', password_secret='ct-root')
+        self.assertEqual(secretstore.plan_secrets(self.conn, p), {'nas': [('ct-root', 'pve-ct')]})
+        text = changes.script(self.conn, changes.normalize(p))
+        self.assertIn('ct-root', text)
+        self.assertNotIn(PASSWORD, text)
+
+
+class CtRun(Steps):
+    def ct_stubs(self, exists=False, downloaded=True):
+        tmp, log = self.stubs()
+        (tmp / 'pct').write_text('#!/bin/sh\necho "$0 $*" >> %s\ncase "$1" in status) %s ;; exec) cat >> %s.stdin ;; esac\n'
+                                 % (log, 'echo "status: running"; exit 0' if exists else 'exit 2', log))
+        (tmp / 'pvesh').write_text('#!/bin/sh\necho 105\n')
+        (tmp / 'pvesm').write_text('#!/bin/sh\necho "Name Type Status Total Used Avail %"\necho "local dir active 1 1 1 1%"\n')
+        (tmp / 'pveam').write_text('#!/bin/sh\necho "$0 $*" >> %s\n[ "$1" = list ] && %s\nexit 0\n'
+                                   % (log, 'echo "local:vztmpl/debian-13.tar.zst 1 1"' if downloaded else 'true'))
+        (tmp / 'sleep').write_text('#!/bin/sh\nexit 0\n')
+        for n in ('pct', 'pvesh', 'pvesm', 'pveam', 'sleep'):
+            (tmp / n).chmod(0o755)
+        (tmp / 'secrets').mkdir()
+        (tmp / 'secrets' / 'ct-root').write_text(PASSWORD)
+        return tmp, log
+
+    def env(self, tmp):
+        return {**os.environ, 'PATH': f'{tmp}:{os.environ["PATH"]}', 'SF_SECRET_DIR': str(tmp / 'secrets')}
+
+    def export_cmd(self, **over):
+        doc = yaml.load(changes.ansible(self.conn, changes.normalize(plan('pve-ct', **over))), Loader)
+        cmd = next(t['ansible.builtin.shell']['cmd'] for play in doc for t in play['tasks'] if 'ansible.builtin.shell' in t and 't_pve_ct' in t['ansible.builtin.shell']['cmd'])
+        self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, text=True, capture_output=True).returncode, 0)
+        return cmd
+
+    def test_the_script_is_valid_bash_and_the_report_would_create(self):
+        text = changes.script(self.conn, changes.normalize(plan('pve-ct', vmid='')))
+        self.assertEqual(subprocess.run(['bash', '-n'], input=text, text=True, capture_output=True).returncode, 0)
+        tmp, log = self.ct_stubs()
+        r = subprocess.run(['bash', '-s', '--', '--report'], input=text, env=self.env(tmp), capture_output=True, text=True, timeout=120)
+        out = r.stdout + r.stderr
+        self.assertIn('would: create container 105', out)
+        self.assertNotIn('command not found', out)
+        self.assertNotIn(' create ', log.read_text().replace('status', ''))
+
+    def test_a_vmid_that_exists_is_a_conflict_and_pct_create_is_never_called(self):
+        tmp, log = self.ct_stubs(exists=True)
+        r = subprocess.run(['bash', '-c', self.export_cmd()], env=self.env(tmp), capture_output=True, text=True, timeout=60)
+        self.assertIn('already a guest', r.stderr)
+        self.assertNotIn('create', log.read_text())
+
+    def test_an_apply_creates_with_the_key_in_a_temp_file_and_the_password_on_stdin_only(self):
+        tmp, log = self.ct_stubs()
+        r = subprocess.run(['bash', '-c', self.export_cmd(password_secret='ct-root', ssh_key=KEY, onboot=True, ip='10.0.0.5/24', gateway='10.0.0.1')],
+                           env=self.env(tmp), capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = log.read_text()
+        self.assertRegex(argv, r'pct create 105 local:vztmpl/debian-13.tar.zst --hostname web-01 --storage local-lvm --rootfs local-lvm:8 --cores 1 --memory 512 '
+                               r'--net0 name=eth0,bridge=vmbr0,ip=10.0.0.5/24,gw=10.0.0.1 --unprivileged 1 --onboot 1 --ssh-public-keys /')
+        self.assertNotIn(PASSWORD, argv)
+        self.assertNotIn(PASSWORD, r.stdout + r.stderr)
+        self.assertIn('pct start 105', argv)
+        self.assertIn('pct shutdown 105', argv, 'not asked to start: stopped again')
+        self.assertEqual((tmp / 'argv.log.stdin').read_text(), f'root:{PASSWORD}\n')
+        keyfile = argv.split('--ssh-public-keys ')[1].split()[0]
+        self.assertFalse(os.path.exists(keyfile), 'the temporary key file is removed')
+
+    def test_start_keeps_it_running_and_a_bare_template_is_downloaded(self):
+        tmp, log = self.ct_stubs(downloaded=False)
+        r = subprocess.run(['bash', '-c', self.export_cmd(password_secret='ct-root', start=True, template='debian-13.tar.zst')], env=self.env(tmp), capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = log.read_text()
+        self.assertIn('pveam download local debian-13.tar.zst', argv)
+        self.assertNotIn('pct shutdown', argv)
+
+    def test_the_secret_missing_on_the_host_is_a_conflict_before_anything_is_created(self):
+        tmp, log = self.ct_stubs()
+        (tmp / 'secrets' / 'ct-root').unlink()
+        r = subprocess.run(['bash', '-c', self.export_cmd(password_secret='ct-root')], env=self.env(tmp), capture_output=True, text=True, timeout=60)
+        self.assertIn('is not on this host', r.stderr)
+        self.assertNotIn('create', log.read_text())
 
 
 if __name__ == '__main__':
