@@ -65,7 +65,7 @@ The report changes nothing on the host. It reads the package lists the host alre
 
 Each of these is looked at first and done only when it is not so already, so a second apply says `present` and `ok` for each.
 
-Not built yet: removing a runtime, choosing the storage pool and network of a new Incus or libvirt from the plan (the `pooldef` and `netdef` steps), Alpine (`apk`), and rootless Docker.
+On Alpine (`apk`) the step installs the runtime packages, with no rootless service setup, which is manual there. Not built yet: removing a runtime, choosing the storage pool and network of a new Incus or libvirt from the plan (the `pooldef` and `netdef` steps), and rootless Docker.
 
 ## secret-file
 

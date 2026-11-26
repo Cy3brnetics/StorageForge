@@ -261,11 +261,18 @@ The roadmap goes further than this.
 - For private networks and access proxies: an alert when an OpenVPN certificate or CRL is about to end (the map says it, nothing notifies), OpenVPN client profiles, a public Pomerium route in the exposure engine, Teleport's applications, databases and session recordings, and making Teleport or Boundary targets from the host inventory.
 - Deploying a stack, an LXC instance or a catalog tool from the map, or a VM from an ISO or cloud image. Those are in the [roadmap](../roadmap.md).
 - From the map: moving, cloning or resizing a VM, restricting a service's bind address, putting a listener behind a proxy, rotating a peer's key.
-- `bridge`-family firewall rules for bridged VMs. A quarantine has `input` and `forward` hooks, and bridged VMs bypass both: the map says a bridged VM is outside host rules.
-- Reading a rich firewalld rule beyond source, port and verdict. The others stay unmodelled, which gives **Unknown**.
-- DHCP scopes as nodes, and activity from byte counters between scans. Changing what another file of the host's network says: the network steps write files of their own.
-- Force-directed and rack layouts, custom icons and colour rules, per-role default views, and map tiles on dashboards.
-- Rendering for very large fleets, NetBox and Grafana exports, SNMP and LLDP.
+- Reading a firewalld rich rule beyond family, source, destination, service, port, protocol, masquerade and the verdict. Rules with other clauses (`forward-port`, `icmp-type`, `mark`, `limit`) stay unmodelled, which gives **Unknown**.
+- Changing what another file of the host's network says: the network steps write files of their own.
+- Custom icons and colour rules.
+
+### Built since, not lab-tested
+
+These were built for 0.6.0 and have unit tests, but have not met a real device or fleet.
+
+- **Layouts and exports:** the map has Grid, Force and Rack layouts, and its **Export** menu includes NetBox and Grafana files next to JSON, Mermaid, DOT, SVG, draw.io and the Obsidian canvas.
+- **Readings:** `lldpctl` neighbours on Linux hosts, read-only SNMP v2c and v3 (`snmp.py`), and Linux interface byte counters between scans (`traffic.py`), with alerts for the network scanner and the counters.
+- **Quarantine:** `bridge`-family fencing and `place-before` rule positioning, so a quarantine can reach bridged VMs. Whether it does has not been measured on a real bridge.
+- **Dashboards:** map tiles on the custom dashboard.
 
 ## What has been tested, and how
 
@@ -281,7 +288,7 @@ The roadmap goes further than this.
 | [KVM lab](kvm-lab.md) tier 10 | What scans read against each VM. A capture on the VM during a scan: the only connection is SSH |
 | KVM lab tier 11 | Rules on ufw, nftables and firewalld judged by real connections between VMs, a published port's fix, a fence across a reboot, the timer undoing a firewall rule and a bridge that each cut SSH, VLANs on networkd and NetworkManager across a reboot, the reach table against real connections, the overlay against the next reading, a half-deployed design, WireGuard confirmed by key, and a placeholder promoted to a host |
 
-**Not tested:** Terraform and Puppet have not applied the exports: those are checked for structure and for values held as data. Incus, LXC, Proxmox guests, Tailscale, proxy routes and identity providers have parsers and unit tests, and have not met a real host in the lab. libvirt has been read in the lab, with a guest defined and not booted. No generated VM has been booted. Whether a quarantine reaches a bridged VM has not been measured, and the page says a bridged VM is outside host rules: the lab shows it does reach a published container port.
+**Not tested:** the 0.6.0 map extras above (SNMP, LLDP, counters, NetBox and Grafana files, bridge fencing). Terraform and Puppet have not applied the exports: those are checked for structure and for values held as data. Incus, LXC, Proxmox guests, Tailscale, proxy routes and identity providers have parsers and unit tests, and have not met a real host in the lab. libvirt has been read in the lab, with a guest defined and not booted. No generated VM has been booted. Whether a `bridge`-family quarantine reaches a bridged VM has not been measured, and the page says a bridged VM is outside host rules where no bridge fence is in place: the lab shows a quarantine without one does not stop a published container port.
 
 
 ### Saved storage designs after upgrade

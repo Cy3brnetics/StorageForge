@@ -149,9 +149,9 @@ The catalog's signature decides which entries are offered without a warning, and
 ## Not built yet
 
 - **sso-link** with a registered OIDC client: needs an identity provider entry configured. Until then it is a plain link.
-- **CVE deltas** in updates: need the Trivy entry (0.5.13).
+- **CVE deltas** in updates (`GET /api/toolbox/updates`) are built, not lab-tested; they need the Trivy entry.
 - **Image CVE scans before the first deploy** and the CI job that checks entries against published checksums.
-- **QR codes** for WireGuard peer configurations.
+- **QR codes** for WireGuard peer configurations are built (an SVG made in Python, `qrsvg.py`) and not lab-tested.
 - **Binaries in archives**. A binary method can download a standalone program or select one regular file from a gzip-compressed tar archive. For an archive, set `archive.member` and `archive.sha256` under the architecture's file entry. The file entry’s `sha256` pins the complete download. `archive.sha256` pins the selected program. The host needs Python 3 to read the archive. To also verify a publisher signature, set `minisign.url` to the detached signature’s HTTPS URL and `minisign.public_key` to the single Base64 key line from the publisher’s public key. The host needs `minisign`. The signature covers the complete download, so it is verified before archive extraction. A SHA-256 match never substitutes for a configured signature check.
 
   ```yaml

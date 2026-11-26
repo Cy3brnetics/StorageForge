@@ -251,7 +251,8 @@ Besides failed, late and differing jobs and drift, alerts cover what scans and t
 - a filesystem is over `STORAGEFORGE_DISK_WARN_PCT` or `STORAGEFORGE_DISK_CRIT_PCT` full, from the last scan (network shares and RAM disks don't count);
 - a pool is not healthy, or reports device errors;
 - the nightly backup failed, or the newest is over 3 days old;
-- the HTTPS certificate ends within 30 days.
+- the HTTPS certificate ends within 30 days;
+- `/etc/fstab` has lines that `findmnt --verify` rejects, read at each scan. The alert names the mount points and, for a line required at boot whose disk or folder is missing, says it can stop the host starting. Unmounting that mount point as a plan step comments the line out, and changing its mount options can add `nofail`.
 
 **Log rules** raise an alert from what a host logs. A rule names the lines it means (host, unit, program, lowest level, text) and how many of them in how long; lines are matched as each scan brings them in, and a rule over its threshold is one alert per rule and host, however many lines there were, which resolves when the count falls back under. A pattern is text with `*` for anything and `|` between alternatives, and is never a regular expression. **Program** is who journald saw write the line where the line has that, so a rule about `sshd` is not set off by `logger -t sshd`. The count goes by when a line arrived, so a host's clock cannot hold a rule open or shut, and a line over the host's rate is counted though it is not stored.
 

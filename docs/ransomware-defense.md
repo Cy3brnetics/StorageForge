@@ -97,7 +97,7 @@ A **measurement** is a read-only signed run. It happens when you ask, and every 
 
 - **A waiver hides a finding from the count, with a reason, a name and an end date.** It still shows, and when it ends the finding counts again.
 - **The targets are ours.** No standard sets a Lynis score or a number of hold days. Those are StorageForge's suggestions, and your own profile can change them.
-- **Identity is sampled.** It sees what is connected at that moment, each minute, and nothing that came and went between. It cannot see how much was read: that takes per-file auditing, which is not built. It writes down who connected from where on the host, so it starts off.
+- **Identity is sampled.** It sees what is connected at that moment, each minute, and nothing that came and went between. It cannot see how much was read: that takes per-file auditing. Samba's `vfs_full_audit` gives an off-hours reading where it is on; nothing does it for other services. It writes down who connected from where on the host, so it starts off.
 - **Falco sees one event at a time.** "Many renames fast" cannot be a Falco rule: that is what the change rate between scans is for. Only named fields of an alert are read: its output text can hold a command line.
 - **Playbooks need StorageForge up and the host reachable.** An armed sentinel acts on the host by itself, with neither. A playbook's first look starts from now, so old alarms do not fire it.
 - **A fence only ever takes away.** A client inside still needs the host firewall to let it in. It does not cover a published container port.
@@ -109,9 +109,21 @@ A **measurement** is a read-only signed run. It happens when you ask, and every 
 
 The roadmap goes further than this. None of the following exists, and none of it is shown as if it did.
 
-Fanotify watchers · a simulator for Falco rules against recorded sessions · off-hours read volume by user (it needs `vfs_full_audit`) · a visual drag-and-drop subnet matrix (fences are typed) · a visual builder for playbooks beyond the form · SMS as such (it goes through a webhook) · FIDO2 at sign-in (only for guarded actions) · local mirror discovery (a host uses the mirrors it is already set up for).
+Fanotify watchers.
 
-These will not be built, because they cannot work or would claim too much: a shadow-copy (VSS) trap on the Samba server (the deletion runs on the Windows client and never crosses SMB; a tripwire on the client, through the optional agent, is on the [roadmap](../roadmap.md)), cryptographic shred, compliance certificates, a *SECURE* banner, and the WebSocket stream. See the [roadmap's corrections](../archive/roadmaps/ransomware-defense-roadmap.md).
+### Built for 0.6.0, not lab-tested
+
+These have unit tests and no run against a real device or service. A physical FIDO2 token and a Windows client have not been used.
+
+- **FIDO2 at sign-in:** a security key can sign in (`/api/login/webauthn/begin` and `finish`), as well as confirm guarded actions. It asks the key for its PIN or fingerprint, and the session it opens is not a fresh password: commands on hosts ask for the password as before.
+- **SMS** is a channel of its own in the alert settings (a gateway URL, token and numbers), not only a webhook.
+- **A Falco simulator:** a rule is tried against sample events before it is installed (`POST /api/security/behavior/falco/simulate`).
+- **Off-hours reads by user** from Samba's `vfs_full_audit`, where it is on.
+- **An interactive subnet matrix and a visual builder for playbook steps** in the Security Center.
+- **Local mirror discovery:** `GET /api/security/packages/mirrors`.
+- **The shadow-copy tripwire on Windows clients,** through the optional [agent](agent.md): it drops only the address pinned for the reporting client at enrollment, and needs an independent witness before it acts.
+
+These will not be built, because they cannot work or would claim too much: a shadow-copy (VSS) trap on the Samba server (the deletion runs on the Windows client and never crosses SMB; the tripwire above runs on the client), cryptographic shred, compliance certificates, a *SECURE* banner, and the WebSocket stream. See the [roadmap's corrections](../archive/roadmaps/ransomware-defense-roadmap.md).
 
 ## What has been tested, and how
 
@@ -126,4 +138,4 @@ These will not be built, because they cannot work or would claim too much: a sha
 | KVM lab tier 11 | Retention policies, a freeze, a rollback preview, YARA, a playbook on a real trip, package checks and a bundle, Falco from its repository with a real `chattr -i`, identity sampling from real `smbstatus`, evidence checked with `ssh-keygen`, a plan that re-converges a failing check, and waivers |
 | `tests/test_browser_smoke.py` | FIDO2 enrollment and touch through Chromium's virtual authenticator, dashboards and every panel |
 
-The lab runs StorageForge on SQLite. A real Windows client has not been used: the Samba client is Linux. No physical FIDO2 token has been used. A playbook has run in the lab only in the mode that says what it would do: the live path is tested with the real brake script and stand-ins.
+The lab runs StorageForge on SQLite. A real Windows client has not been used: the Samba client is Linux. No physical FIDO2 token has been used, for sign-in or anything else. A playbook has run in the lab only in the mode that says what it would do: the live path is tested with the real brake script and stand-ins.

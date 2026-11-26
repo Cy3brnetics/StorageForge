@@ -1,6 +1,6 @@
 # Cloning and migrating hosts
 
-**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes, VMs from cloud images with VM specs, and copying a host onto any scanned target: its packages, accounts, share files, the layout of its data disks (btrfs, ZFS and LVM included) and user files, with snapshots before and after, and the data at risk accepted before anything is saved. A copy of a ZFS host onto a new VM has run end to end in the lab ([Lab run](#lab-run)). See [Phases](#phases) for what is not built.
+**Status: design, partly built.** Copy a scanned machine to another one in any direction: physical to VM, VM to physical, VM to VM, or physical to physical. Use it to test a change on a copy, or to move a machine onto other hardware or off it. The same choices apply in every direction. Built so far: the package list and its fixes, VMs from cloud images with VM specs, and copying a host onto any scanned target: its packages, accounts, share files, the layout of its data disks (btrfs, ZFS and LVM included) and user files, with snapshots before and after, and the data at risk accepted before anything is saved. A copy of a ZFS host onto a new VM has run end to end in the lab ([Lab run](#lab-run)). Everything added for 0.6.0 (phases 3b, 3d, 4b, 5 and 7) is built and unit-tested and has not been lab-tested. See [Phases](#phases) for the state of each.
 
 ## What was decided
 
@@ -368,16 +368,16 @@ Hyprland is written in its Lua configuration, which is what Hyprland 0.55 and la
 | 2b | **The `packages` step:** another host's packages, as a plan step | Built, lab-tested on apt |
 | 3 | **Config and storage:** the `accounts` and `config-files` steps, and the data disks' layout through the planner's design-to-plan step: partitions, filesystems, btrfs pools and subvolumes, ZFS pools and datasets, LVM, mdadm arrays (`md-array`) | Built; accounts, ZFS, btrfs raid1 and nested subvolumes, and an mdadm raid1 lab-tested. LVM not lab-tested |
 | 3a | **Services:** the scan records enabled systemd units and OpenRC services, and the `services` step starts them on the copy | Built, lab-tested on systemd (Leap 16) and OpenRC (Alpine 3.24) |
-| 3d | **Not built:** LUKS (its key is yours: by hand), other `/etc` files | Planned |
-| 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Planned |
+| 3d | **LUKS and other `/etc` files:** LUKS is checked against the vault (its key is yours: by hand unless the vault holds it); other `/etc` configs are carried | Built, unit-tested, **not lab-tested** |
+| 3b | **AUR and local builds:** cache, `bacman`, an AUR build at the matching commit; Arch Linux Archive pinning; derivative repositories and CPU levels | Built, unit-tested, **not lab-tested** |
 | 3c | **Hardware differences:** kernels and bootloaders, firmware, microcode, GPU drivers, guest tools, hardware tools and services, Raspberry Pi packages, the CPU level and the architecture, decided on the target | Built. Lab-tested from real hardware (CachyOS, NVIDIA, x86-64-v3 packages) onto an Arch VM, with the CPU-level refusal on a v2 CPU. Going to hardware is unit-tested only |
 | 4 | **User files:** none, structure, chosen folders or everything, through Moves with `dirs_only` and `keep_replaced` | Built; `all` lab-tested and verified by checksum |
-| 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Not built: holds on the clone snapshots, the before/after "what changed" report, `--accept` in the scripts | Built in part, **not lab-tested** |
-| 5 | **Test and migration modes**: the isolation above, and cutover | Planned |
+| 4b | **Snapshots and risks:** before and after snapshots, the Data at risk list with its ticks and typed name, and `accept` in the API. Holds on the clone snapshots (`zfs-hold`), the before and after report and `--accept` in the scripts are built for 0.6.0 | Built, unit-tested, **not lab-tested** |
+| 5 | **Test and migration modes**: the isolation above, and cutover plans | Built, unit-tested, **not lab-tested** |
 | 6 | **VM to VM copy as is**: each disk by a signed send, live from a disk-only snapshot or shut off, and the VM defined on the target from the source's reading (`vm-send`, `vm-define`, `vm copy`). See [VMs on libvirt](vms.md#copying-a-vm-to-another-libvirt-host) | Built; lab-tested live from libvirt 10.0 to 9.0 (tier 18) |
 | 8 | **A second system beside the first**, over SSH: `os-install`, `os-boot`, `os-remove`, `os-running`, and a page under Rebuild (see above) | Built; tested in one UEFI VM on Fedora 44 and Rocky 10. A static address, Secure Boot detection, the BIOS refusal and the page: built and unit-tested, **not lab-tested**. Lab tier 23 is written and **has not run** |
 | 9 | **A desktop on it:** `dux-install`, `desktop-profile`, desktop profiles kept on the server, and a page for them under Rebuild (see above) | Built; one VM run on Fedora 44 with niri. The page: built and browser-tested, **not lab-tested**. Lab tier 23 is written and **has not run** |
-| 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Later |
+| 7 | **Disk image from a physical host**: a block copy from a snapshot into qcow2, then fixed up to boot. To bare metal, through a live environment | Built (`disk-image`: `qemu-img` and `virt-customize`), unit-tested, **not lab-tested**. Writing an image to bare metal has no step of its own yet |
 
 ## Lab run
 
