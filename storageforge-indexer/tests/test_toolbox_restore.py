@@ -70,6 +70,7 @@ class RestoreTest(tts.Steps):
         words = [name, tool, str(self.root / 'srv/backup/repo'), 'restic-photos', str(self.src), str(self.scratch), '100', schedule]
         call = 't_restore_test ' + ' '.join(f"'{w}'" for w in words)
         e = {'PATH': f'{self.bin}:{self.real}', 'FAKE': str(self.fake), 'LOG': str(self.fake / 'log'), 'HOME': str(self.tmp), 'SF_SECRET_DIR': str(self.secrets), 'DEAD_MOUNT': '', 'RELOAD_FAILS': '',
+             'SF_UNIT_ROOT': str(self.root / 'etc/systemd/system'),
              'SNAPTIME': self.snaptime if tool == 'restic' else time.strftime('%a, %Y-%m-%d %H:%M:%S', time.localtime(time.time() - 60)), **env}
         p = subprocess.run([str(self.real / 'bash'), '-c', tts.HARNESS + f'APPLY={int(apply)}\n' + self.bash() + '\n' + call + '\nexit $((PROBLEMS > 0))\n'],
                            capture_output=True, text=True, timeout=60, env=e)
@@ -160,6 +161,12 @@ class RestoreTest(tts.Steps):
         out = self.run_rt(True, schedule='daily')
         self.assertIn('ok: the daily timer of restore test photos is on', out)
         self.assertIn('systemctl daemon-reload', self.log())
+        # a timer that is on and read needs no reload: a dead mount elsewhere does not fail a step with nothing to do
+        (self.fake / 'log').unlink()
+        out = self.run_rt(True, schedule='daily', DEAD_MOUNT='1')
+        self.assertIn('ok: the daily timer of restore test photos is on', out)
+        self.assertNotIn('conflict', out)
+        self.assertNotIn('daemon-reload', self.log())
         # removing the timer goes on, and says the reload it could not make
         (self.fake / 'log').unlink()
         out = self.run_rt(True, schedule='none', DEAD_MOUNT='1')

@@ -44,7 +44,9 @@ case ${a[0]:-} in
   stop) rm -f "$FAKE/active/$u" ;;
   enable) touch "$FAKE/enabled/$u" "$FAKE/active/$u" ;;
   disable) rm -f "$FAKE/enabled/$u" "$FAKE/active/$u" ;;
-  cat|daemon-reload) : ;;
+  daemon-reload) touch "$FAKE/reloaded" ;;
+  show) for u in "${a[@]:4}"; do f=${SF_UNIT_ROOT:-/nonexistent}/$u; if [[ -e $f && ( ! -e $FAKE/reloaded || $f -nt $FAKE/reloaded ) ]]; then echo yes; else echo no; fi; done ;;  # show -p NeedDaemonReload --value UNIT...
+  cat) : ;;
 esac''',
     'useradd': 'h=; while (($#)); do [[ $1 == --home-dir ]] && h=$2; shift; done; mkdir -p "$h"',
     'loginctl': ':',

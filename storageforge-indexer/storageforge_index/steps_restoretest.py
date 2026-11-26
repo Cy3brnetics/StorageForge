@@ -115,8 +115,12 @@ RTEOF
   if [[ -f $unit.timer && $(cat "$unit.timer") == "$new" ]]; then :
   elif act "write $unit.timer ($schedule)"; then printf "%s\n" "$new" >"$unit.timer"; changed=1; fi
   if ((APPLY)); then
-    # also when nothing was written now: a run that was refused the reload left units systemd has not read
-    reload_systemd || { ((${PROBLEMS:-0} > p)) || conflict "systemd did not reload: the timer of restore test $name is not turned on"; return 0; }
+    # also when nothing was written now but the timer is off or systemd says it has not read the units, as a run that was refused the reload leaves them;
+    # a timer that is on and read needs no reload, so a dead network mount elsewhere does not fail a step with nothing to do
+    if ((changed)) || ! systemctl is-enabled --quiet "sf-restore-test-$name.timer" 2>/dev/null \
+      || [[ $(systemctl show -p NeedDaemonReload --value "sf-restore-test-$name.timer" "sf-restore-test-$name.service" 2>/dev/null) == *yes* ]]; then
+      reload_systemd || { ((${PROBLEMS:-0} > p)) || conflict "systemd did not reload: the timer of restore test $name is not turned on"; return 0; }
+    fi
     if systemctl is-enabled --quiet "sf-restore-test-$name.timer" 2>/dev/null && ((!changed)); then ok "the $schedule timer of restore test $name is on"
     else try systemctl enable --now "sf-restore-test-$name.timer" >/dev/null && ok "restore test $name runs $schedule"; fi
   fi
