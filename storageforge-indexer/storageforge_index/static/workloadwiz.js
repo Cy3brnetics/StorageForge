@@ -7,6 +7,7 @@
 // the kinds that create something, by the runtime that holds what they make
 const WW_KINDS = { docker: ['container', 'stack'], podman: ['container', 'stack'], libvirt: ['vm-create', 'vm-iso', 'vm'], incus: ['incus'], lxc: ['lxc'], proxmox: ['pve-vm', 'pve-ct'] };
 const WW_WHERE = ['storage', 'pool', 'template', 'iso'];
+const WW_WHERE_OF = { 'pve-vm': ['source', 'iso', 'image'] };      // what a VM is made from belongs with where its disk goes
 const WW_GROUPS = [
   ['Resources', ['cores', 'vcpus', 'memory_mb', 'ram_mb', 'disk_gb', 'disk']],
   ['Network', ['bridge', 'network', 'ip', 'gateway', 'publish']],
@@ -22,10 +23,12 @@ function wwName(title, n = 1) {
 }
 const wwPlanHref = (id) => `/${sfFormatHash(['topo', 'changes'], { plan: id })}`;
 
-/* The create steps a host can take. A Proxmox VE node gets only the Proxmox ones, and no other host gets them; a runtime is offered when the
-   scan found it, and Docker and Podman always (the step installs nothing: runtime-install does that). */
+/* The create steps a host can take. A Proxmox VE node gets the Proxmox ones, and containers and stacks when it runs Docker or Podman, but not the generic
+   VM, LXC and Incus steps (they refuse a node); no other host gets the Proxmox ones. A runtime is offered when the scan found it, and Docker and Podman
+   always elsewhere (the step installs nothing: runtime-install does that). */
 function wwKinds(types, host, runtime) {
-  let rts = host && host.proxmox ? ['proxmox'] : ['docker', 'podman', ...((host && host.runtimes) || []).filter((r) => !['docker', 'podman', 'proxmox'].includes(r))];
+  const have = (host && host.runtimes) || [];
+  let rts = host && host.proxmox ? ['proxmox', ...['docker', 'podman'].filter((r) => have.includes(r))] : ['docker', 'podman', ...((host && host.runtimes) || []).filter((r) => !['docker', 'podman', 'proxmox'].includes(r))];
   if (runtime) rts = rts.filter((r) => r === runtime);
   const out = [];
   for (const r of rts) {
@@ -54,24 +57,32 @@ function wwChoices(entry, host) {
 }
 
 /* a step's fields as pages: where, then the groups of WW_GROUPS, then everything else as Settings */
-function wwPages(spec, nodes) {
+function wwPages(spec, nodes, kind = '') {
   const items = spec.fields.map((f, i) => ({ f, node: nodes[i] })).filter((x) => x.f.name !== 'runtime');
   const used = new Set();
   const take = (pred) => items.filter((x) => !used.has(x) && pred(x) && used.add(x));
-  const pages = [['Where', take((x) => (['name', 'hostname'].includes(x.f.name) && x.f.required) || WW_WHERE.includes(x.f.name) || x.f.kind === 'path')]];
+  const pages = [['Where', take((x) => (['name', 'hostname'].includes(x.f.name) && x.f.required) || WW_WHERE.includes(x.f.name) || (WW_WHERE_OF[kind] || []).includes(x.f.name) || x.f.kind === 'path')]];
   for (const [title, names] of WW_GROUPS) pages.push([title, take((x) => names.includes(x.f.name))]);
   pages.push(['Settings', take(() => true)]);
   return pages.filter(([, xs]) => xs.length).map(([title, xs]) => ({ title, items: xs }));
 }
 
-const wwSection = (xs) => {         // required first, optional under More
-  const req = xs.filter((x) => x.f.required), opt = xs.filter((x) => !x.f.required);
+/* a Proxmox VM has the ISO field when it installs from an ISO and the image field when it comes from a cloud image, never both */
+function wwVmSource(spec, sf) {
+  const node = (name) => sf.nodes[spec.fields.findIndex((f) => f.name === name)];
+  const show = () => { node('iso').hidden = sf.controls.source.value !== 'iso'; node('image').hidden = sf.controls.source.value !== 'image'; };
+  sf.controls.source.addEventListener('change', show);
+  show();
+}
+const wwSection = (xs, kind = '') => {         // required first, optional under More; what a VM is made from is not optional to look at
+  const open = (x) => x.f.required || (WW_WHERE_OF[kind] || []).includes(x.f.name);
+  const req = xs.filter(open), opt = xs.filter((x) => !open(x));
   return [...req.map((x) => x.node), opt.length ? el('details', {}, el('summary', {}, req.length ? 'More' : 'Optional'), ...opt.map((x) => x.node)) : null];
 };
 
 /* ── the review: check, show, save ────────────────────────────────── */
 function wwReview(box, step, spec, { title = '', done = () => {}, back = null } = {}) {
-  const S = { seq: 0, check: null, error: '', saved: null, busy: false, touched: false, focusNext: true, tries: 1, title: title || spec.label || step.type };
+  const S = { seq: 0, check: null, error: '', idle: false, saved: null, busy: false, touched: false, focusNext: true, tries: 1, title: title || spec.label || step.type };
   // fields the panel did not fill (Edit…, Snapshots…, a snapshot name) are asked here, above the check
   const extra = (spec.fields || []).filter((f) => !(f.name in step.params) && f.kind !== 'confirm');
   const form = extra.length ? stepFields({ ...spec, fields: spec.fields }, step.params, { type: step.type, host: step.host }) : null;
@@ -84,12 +95,15 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
     S.touched = true;
     if (S.error) { S.error = ''; if (S.check) draw(); else run(); }          // a failed save must not keep Save off once the name is edited
   });
+  // a step the panel gave nothing to (engine settings) is not checked while every field is empty: that check can only say "set at least one"
+  const hold = extra.length > 0 && !Object.values(step.params).some((v) => typeof v === 'string' && v.trim());
   const confirmed = () => !confirmInput || (want ? confirmInput.value.trim() === want : !!confirmInput.value.trim());
   const body = () => ({ name: nameInput.value.trim(), tasks: [{ ...step, params: { ...step.params, ...(form ? Object.fromEntries(extra.map((f) => [f.name, form.read()[f.name]])) : {}), ...(confirmInput ? { confirm: confirmInput.value.trim() } : {}) } }] });
   async function run() {
     const n = ++S.seq;
-    S.check = null; S.error = '';
+    S.check = null; S.error = ''; S.idle = false;
     if (!confirmed()) { draw(); return; }
+    if (hold && !Object.values(body().tasks[0].params).some((v) => typeof v === 'string' && v.trim())) { S.idle = true; draw(); return; }
     draw();
     try {
       const r = await (await postJSON('/api/changes/check', { ...body(), name: 'check' })).json();
@@ -140,12 +154,13 @@ function wwReview(box, step, spec, { title = '', done = () => {}, back = null } 
     const order = { crit: 0, warn: 1, ok: 2, note: 3 };
     const sorted = [...items].sort((a, b) => order[a.level] - order[b.level]);
     const crit = S.check ? S.check.crit : 0, warn = S.check ? S.check.warn : 0;
-    const waiting = !S.check && !S.error && confirmed();
+    const waiting = !S.check && !S.error && !S.idle && confirmed();
     results.replaceChildren(
       el('div', { class: 'row' }, text('h3', 'Checks'),
-        text('span', waiting ? 'checking…' : !confirmed() ? 'waiting for the confirmation' : S.error ? 'error' : crit ? `${crit} to fix` : warn ? `${warn} warning${warn === 1 ? '' : 's'}` : 'all good',
-          waiting || !confirmed() ? 'muted small' : crit || S.error ? 'st-failed small' : warn ? 'st-running small' : 'st-ok small')),
+        text('span', waiting ? 'checking…' : S.idle ? 'waiting for a value' : !confirmed() ? 'waiting for the confirmation' : S.error ? 'error' : crit ? `${crit} to fix` : warn ? `${warn} warning${warn === 1 ? '' : 's'}` : 'all good',
+          waiting || S.idle || !confirmed() ? 'muted small' : crit || S.error ? 'st-failed small' : warn ? 'st-running small' : 'st-ok small')),
       S.error ? text('p', S.error, 'st-failed') : null,
+      S.idle ? text('p', 'Fill in at least one setting above to see what the check says about it.', 'muted small') : null,
       sorted.length ? el('ul', { class: 'mvcheck wl-check' }, ...sorted.map((x) => text('li', x.text, `lv-${x.level}`))) : null);
     saveBtn.disabled = !canSave();
     if (!box.firstChild) {
@@ -204,12 +219,17 @@ async function wizOpen({ host = '', runtime = '' } = {}) {
     const prior = W.sf ? W.sf.read() : {};
     W.sf = stepFields(W.entry.spec, { ...prior, ...(W.entry.spec.fields.some((f) => f.name === 'runtime') ? { runtime: W.entry.runtime } : {}) },
       { type: W.entry.kind, host: W.host, choices: wwChoices(W.entry, hostObj(W.host)) });
-    W.pages = wwPages(W.entry.spec, W.sf.nodes);
+    W.pages = wwPages(W.entry.spec, W.sf.nodes, W.entry.kind);
+    if (W.entry.kind === 'pve-vm') wwVmSource(W.entry.spec, W.sf);
     W.built = key;
   }
   const missing = (xs) => { const v = W.sf.read(); return xs.filter((x) => x.f.required && typeof v[x.f.name] !== 'boolean' && !String(v[x.f.name] || '').trim()).map((x) => x.f.label); };
   const steps = () => ['What', ...(W.entry ? W.pages.map((p) => p.title) : []), 'Review'];
-  const stepObj = () => ({ type: W.entry.kind, host: W.host, params: W.sf.read() });
+  const stepObj = () => {
+    const params = W.sf.read();
+    if (W.entry.kind === 'pve-vm') { if (params.source !== 'iso') params.iso = ''; if (params.source !== 'image') params.image = ''; }      // the one that is hidden is not sent
+    return { type: W.entry.kind, host: W.host, params };
+  };
 
   function nav(next, hasBack) {
     return el('div', { class: 'row end' }, hasBack ? button('Back', () => { W.page--; W.msg = ''; draw(); }, 'btn ghost sm') : null, button('Cancel', () => finish(null), 'btn ghost sm'), next);
@@ -244,7 +264,7 @@ async function wizOpen({ host = '', runtime = '' } = {}) {
       return;
     }
     const pg = W.pages[W.page - 1];
-    box.replaceChildren(el('h2', {}, pg.title), head, W.page === 1 ? text('p', `${W.entry.spec.label} on ${W.host}`, 'muted small') : null, el('div', { class: 'stack' }, ...wwSection(pg.items)),
+    box.replaceChildren(el('h2', {}, pg.title), head, W.page === 1 ? text('p', `${W.entry.spec.label} on ${W.host}`, 'muted small') : null, el('div', { class: 'stack' }, ...wwSection(pg.items, W.entry.kind)),
       W.msg ? text('p', W.msg, 'st-failed small') : null,
       nav(button('Next', () => {
         const gap = missing(pg.items);

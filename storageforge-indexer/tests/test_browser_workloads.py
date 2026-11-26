@@ -46,7 +46,8 @@ class BrowserWorkloads(unittest.TestCase):
                      "VALUES (:h, 'docker', 'direct', '/var/lib/docker', :c, '[]', '[]', NULL, :t)", {'h': hid, 'c': json.dumps(cs), 't': now})
         security._save_measurement(conn, 'kvm', 'infra', now, 'test', {'tools': ['virsh'], 'libvirt': [
             {'name': 'db-vm', 'state': 'running', 'vcpus': 2, 'memory_mib': 4096, 'disks': [DISK], 'nics': [], 'graphics': [], 'snapshots': []},
-            {'name': 'test-vm', 'state': 'shut off', 'vcpus': 1, 'memory_mib': 1024, 'disks': [], 'nics': [], 'graphics': [], 'snapshots': []}]})
+            {'name': 'test-vm', 'state': 'shut off', 'vcpus': 1, 'memory_mib': 1024, 'disks': [], 'nics': [], 'graphics': [], 'snapshots': []}],
+            'podman_rootless': [{'user': 'ana', 'containers': [{'id': 'r', 'name': 'ana-app', 'image': 'nginx:1.27', 'state': 'running', 'labels': {}, 'mounts': []}]}]})
         security._save_measurement(conn, 'pve', 'infra', now, 'test', {'tools': ['qm', 'pct', 'lxc-ls', 'pvesm'], 'proxmox_node': NODE, 'proxmox': [
             {'kind': 'qemu', 'vmid': 101, 'name': 'web', 'state': 'running', 'memory_mib': 2048, 'cores': 2, 'disks': [], 'nics': []},
             {'kind': 'lxc', 'vmid': 200, 'name': 'dns', 'state': 'stopped', 'memory_mib': 512, 'cores': 1, 'disks': [], 'nics': [], 'unprivileged': True}],
@@ -111,7 +112,7 @@ class BrowserWorkloads(unittest.TestCase):
         self.node('host:kvm').locator('[data-fold]').click()
         self.assertEqual(self.page.locator('.wl-node[data-id^="wl:kvm:"]').count(), 0)
         self.node('host:kvm').locator('[data-fold]').click()
-        self.assertEqual(self.page.locator('.wl-node[data-id^="wl:kvm:"]').count(), 2)
+        self.assertEqual(self.page.locator('.wl-node[data-id^="wl:kvm:"]').count(), 3)
         self.page.fill('#wl-q', 'db')
         self.assertTrue(self.node('wl:dock:docker:wiki-db-1').evaluate('n => !n.classList.contains("dim")'))
         self.assertTrue(self.node('wl:dock:docker:wiki-web-1').evaluate('n => n.classList.contains("dim")'))
@@ -195,6 +196,9 @@ class BrowserWorkloads(unittest.TestCase):
         field = self.page.locator('dialog.wlwiz label.field:has(> span:text-matches("^Log size per file")) input').first
         self.page.wait_for_selector('dialog.wlwiz label.field')
         self.assertTrue(self.page.locator('.wlsave').is_disabled())       # nothing is set yet: at least one setting is needed
+        self.assertEqual(self.page.locator('dialog.wlwiz .lv-crit').count(), 0)         # and that is asked plainly, not shown as a failed check
+        self.assertEqual(self.page.locator('dialog.wlwiz .st-failed').count(), 0)
+        self.assertIn('at least one setting', self.page.inner_text('dialog.wlwiz'))
         field.fill('10m')
         self.ready()
         self.page.click('.wlsave')
@@ -236,3 +240,42 @@ class BrowserWorkloads(unittest.TestCase):
         self.assertEqual(len(made), 1)
         self.assertEqual(made[0]['tasks'][0]['params']['hostname'], 'web-02')
         self.assertEqual(made[0]['tasks'][0]['params']['template'], 'alpine-3.22-default_20250617_amd64.tar.xz')
+
+    def test_a_node_offers_to_create_its_own_guests_and_containers_but_no_generic_lxc(self):
+        self.open_panel('host:pve')
+        buttons = self.page.locator('#wl-panel .wl-actions button').all_inner_texts()
+        self.assertIn('+ New proxmox', buttons)
+        self.assertNotIn('+ New lxc', buttons)
+        got = self.page.evaluate("""async () => {
+            const t = await wwTypes(), kinds = (h) => wwKinds(t, h, '').map((k) => `${k.runtime}:${k.kind}`).sort();
+            return { node: kinds({ proxmox: true, runtimes: ['proxmox', 'lxc', 'libvirt', 'incus'] }),
+                     docker: kinds({ proxmox: true, runtimes: ['proxmox', 'lxc', 'docker'] }),
+                     buttons: wlNewRuntimes({ proxmox: true, runtimes: ['proxmox', 'lxc', 'libvirt', 'docker', 'podman', 'incus'] }),
+                     plain: wlNewRuntimes({ runtimes: ['lxc', 'libvirt'] }) };
+        }""")
+        self.assertEqual(got['node'], ['proxmox:pve-ct', 'proxmox:pve-vm'])
+        self.assertEqual(got['docker'], ['docker:container', 'docker:stack', 'proxmox:pve-ct', 'proxmox:pve-vm'])
+        self.assertEqual(got['buttons'], ['proxmox', 'docker', 'podman'])
+        self.assertEqual(got['plain'], ['lxc', 'libvirt'])
+
+    def test_a_rootless_podman_container_offers_no_actions_and_says_who_manages_it(self):
+        self.open_panel('wl:kvm:podman:ana-app')
+        self.assertEqual(self.page.locator('#wl-panel .wl-actions button').count(), 0)
+        self.assertIn('managed by its user (ana)', self.page.inner_text('#wl-panel'))
+        self.open_panel('wl:kvm:libvirt:db-vm')
+        self.assertGreater(self.page.locator('#wl-panel .wl-actions button').count(), 0)
+
+    def test_the_proxmox_vm_page_puts_the_source_with_its_iso_or_image(self):
+        self.open_panel('host:pve')
+        self.page.click('#wl-panel button:text-is("+ New")')
+        self.page.wait_for_selector('dialog.wlwiz .wlwiz-kind')
+        self.page.click('.wlwiz-kind[data-kind="pve-vm"] input')
+        self.page.click('dialog.wlwiz button:text-is("Next")')
+        shown = lambda: self.page.locator('dialog.wlwiz label.field:visible > span').all_inner_texts()
+        first = shown()
+        self.assertEqual(first[:3], ['Name', 'Install from', 'Cloud image (image only) (optional)'], first)
+        self.assertFalse(any(t.startswith('ISO image') for t in first))
+        self.page.locator('dialog.wlwiz label.field:has(> span:text-is("Install from")) select').select_option('iso')
+        after = shown()
+        self.assertEqual(after[:3], ['Name', 'Install from', 'ISO image on the node (iso only) (optional)'], after)
+        self.assertFalse(any(t.startswith('Cloud image') for t in after))

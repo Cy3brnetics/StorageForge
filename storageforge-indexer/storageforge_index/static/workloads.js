@@ -247,6 +247,7 @@ const wlStep = (type, host, params) => ({ type, host, params });
 
 /* the actions of one workload as {label, step, danger}, by runtime. Steps carry only the fields that identify the target: the wizard fills the rest */
 function wlActions(w) {
+  if (w.runtime === 'podman' && w.user) return [];      // a rootless container is the user's: the steps run as root and cannot see it
   const { host, runtime: rt, name } = w, act = (label, action) => ({ label, step: wlStep('workload-action', host, { runtime: rt, name, action }) });
   const rm = (type, runtime = rt) => ({ label: 'Remove…', danger: true, step: wlStep(type, host, { runtime, name }) });
   if (rt === 'docker' || rt === 'podman') {
@@ -293,6 +294,8 @@ function wlEngineRows(runtime, s) {
     ...(docker && !s.daemon_json_read ? [['daemon.json', 'not read: the scan user cannot open it, or it is over 64 KiB']] : []),
     ...(s.daemon_json_error ? [['daemon.json', `could not be used: ${s.daemon_json_error}`]] : [])];
 }
+/* what a host's panel offers to create: a Proxmox node takes its own guests, and containers when it runs an engine. Its generic lxc, libvirt and incus have no step that works there */
+const wlNewRuntimes = (h) => (h.runtimes || []).filter((r) => !h.proxmox || ['proxmox', 'docker', 'podman'].includes(r));
 const wlLink = (href, label) => el('a', { class: 'btn sm', href }, label);
 
 function wlPanel() {
@@ -304,7 +307,7 @@ function wlPanel() {
     const h = d.host;
     out.push(wlDl([['Runtimes', (h.runtimes || []).join(', ') || 'none found'], ['Engine', h.engine], ...wlReading(h)]));
     if (h.measure_stale) out.push(text('p', 'The measurement of this host is old: scan it again for a current picture.', 'wl-warn'));
-    if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button('+ New', () => WL.onNew({ host: h.name, runtime: '' }), 'btn sm pri'), ...(h.runtimes || []).map((r) => button(`+ New ${r}`, () => WL.onNew({ host: h.name, runtime: r }), 'btn sm'))));
+    if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button('+ New', () => WL.onNew({ host: h.name, runtime: '' }), 'btn sm pri'), ...wlNewRuntimes(h).map((r) => button(`+ New ${r}`, () => WL.onNew({ host: h.name, runtime: r }), 'btn sm'))));
     out.push(wlLink(wlScanHref(h.name), 'Open host'));
   } else if (n.kind === 'runtime') {
     out.push(wlDl([['Host', d.host], ['Workloads', d.count], ...wlReading(wlHostOf(d.host)),
@@ -316,7 +319,8 @@ function wlPanel() {
     out.push(wlDl([['Compose project', n.label], ['Host', d.host], ['Containers', d.items.map((w) => `${w.name}: ${w.state || '?'}`)]]));
     const warn = d.runtime !== 'proxmox' && wlManagedWarn(d.items);
     if (warn) out.push(warn);
-    out.push(wlButtons([{ label: 'Update images', step: wlStep('image-update', d.host, { runtime: d.runtime, stack: n.label }) }]));
+    if (d.items.some((w) => w.runtime === 'podman' && w.user)) out.push(text('p', `Rootless containers are managed by their user (${d.items.find((w) => w.user).user}): this page offers no actions on them.`, 'muted small'));
+    else out.push(wlButtons([{ label: 'Update images', step: wlStep('image-update', d.host, { runtime: d.runtime, stack: n.label }) }]));
   } else if (n.kind === 'note') {
     out.push(text('p', 'Nothing has read this host yet, so there is nothing to draw.', 'muted'), wlLink(wlScanHref(d.host), 'Scan it'));
   } else if (n.kind === 'connections') {
@@ -346,6 +350,7 @@ function wlWorkloadPanel(n, out) {
   }
   const warn = w.runtime !== 'proxmox' && wlManagedWarn([w]);
   if (warn) out.push(warn);
+  if (w.runtime === 'podman' && w.user) { out.push(text('p', `A rootless container is managed by its user (${w.user}), not by root: this page offers no actions on it. Use podman as ${w.user}.`, 'muted small')); return; }
   out.push(wlButtons(wlActions(w)));
 }
 
