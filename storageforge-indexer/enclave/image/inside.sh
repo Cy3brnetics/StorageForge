@@ -72,9 +72,13 @@ kernel)
     cp arch/x86/boot/bzImage "$OUT/bzImage" && cp vmlinux "$OUT/vmlinux"
   fi
   cp .config "$OUT/kernel.config.full"
-  # What was compiled, as source paths without their extension: the evidence for "this CVE's code is not in the enclave's kernel"
-  # (security/kernel_vex.py). Not in SHA256SUMS; image/kernel-objects*.txt record it, and CI compares it like the sums.
-  find . -name "*.o" ! -path "./scripts/*" ! -path "./tools/*" ! -name "*.mod.o" ! -name "built-in.o" | sed "s|^\./||; s|\.o\$||" | LC_ALL=C sort -u > "$OUT/kernel-objects.txt"
+  # Every file that went into the kernel, sources and headers alike, from the dependency records kbuild keeps beside each object
+  # (.NAME.o.cmd: the source and each file it included, a .c pulled into another .c among them). The evidence for "this CVE's code
+  # is not in the enclave's kernel" (security/kernel_vex.py). Not in SHA256SUMS; image/kernel-sources*.txt record it, and CI
+  # compares it like the sums. Paths outside the tree (the compiler's own headers) and Kconfig wildcards are left out.
+  find . -name '.*.o.cmd' ! -path './scripts/*' ! -path './tools/*' -exec cat {} + | tr ' \t' '\n\n' | sed 's|\\$||' \
+    | grep -E '\.(c|h|S|rs|lds)$' | grep -v '^\$(' | sed "s|^$PWD/||; s|^\./||" | grep -v '^/' | LC_ALL=C sort -u > "$OUT/kernel-sources.txt"
+  [ -s "$OUT/kernel-sources.txt" ]
   ;;
 sums)
   # shellcheck disable=SC2086  # KFILES is a list of names
