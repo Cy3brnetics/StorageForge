@@ -41,6 +41,8 @@ NEWT_ARGS = ('secret', 'site_id', 'endpoint', 'state')
 BASH = r"""
 # ── tunnels started from a token the vault holds ────────────────────
 tun_systemd() { command -v systemctl >/dev/null && [[ -d ${SF_SYSTEMD_RUN:-/run/systemd/system} ]]; }
+# Where the secret of a plan is: the folder sf_secrets_in and vault send-secret write. Root reads that one whatever SF_SECRET_DIR says, as they do
+tun_secret_file() { local d=/run/storageforge/secrets; ((EUID != 0)) && d=${SF_SECRET_DIR:-$d}; echo "$d/$1"; }
 tun_secret_missing() { # $1 the file, $2 the secret name, $3 what it is
   if ((APPLY)); then conflict "no $3 at $1: storageforge-index vault send-secret $2 --host $(uname -n), then run this again"
   else missing "it needs the $3 at $1: storageforge-index vault send-secret $2 --host $(uname -n)"; fi
@@ -67,7 +69,7 @@ tun_unit_start() { # $1 unit name, $2 its text, $3 restart when it already runs.
 }
 
 t_cloudflare_tunnel() { local secret=$1 state=${2:-present} f tok bin unit=storageforge-cloudflared.service changed=
-  f=${SF_SECRET_DIR:-/run/storageforge/secrets}/$secret; tok=${SF_CLOUDFLARED_DIR:-/etc/cloudflared}/storageforge-token
+  f=$(tun_secret_file "$secret"); tok=${SF_CLOUDFLARED_DIR:-/etc/cloudflared}/storageforge-token
   if [[ $state == absent ]]; then
     if [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit && ! -e $tok ]]; then ok "no Cloudflare Tunnel started by StorageForge is here"; return 0; fi
     act "stop $unit and remove it and its token file (cloudflared stays installed, and the tunnel stays defined at Cloudflare)" || return 0
@@ -112,7 +114,7 @@ WantedBy=multi-user.target" "$changed" || {
 }
 
 t_pangolin_site() { local secret=$1 id=$2 endpoint=$3 state=${4:-present} f conf bin unit=storageforge-newt.service changed= rc
-  f=${SF_SECRET_DIR:-/run/storageforge/secrets}/$secret; conf=${SF_NEWT_DIR:-/etc/newt}/storageforge.json
+  f=$(tun_secret_file "$secret"); conf=${SF_NEWT_DIR:-/etc/newt}/storageforge.json
   if [[ $state == absent ]]; then
     if [[ ! -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit && ! -e $conf ]]; then ok "no Pangolin site started by StorageForge is here"; return 0; fi
     act "stop $unit and remove it and its configuration (Newt stays installed, and the site stays defined at the Pangolin server)" || return 0

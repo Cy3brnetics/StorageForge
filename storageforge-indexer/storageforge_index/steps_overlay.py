@@ -68,7 +68,7 @@ nb_host() { sed -E "s#^[a-z]+://##; s#[:/].*##" <<<"$1"; }
 nb_unregistered() { ov_says "^Daemon status: (NeedsLogin|LoginFailed|SessionExpired)" netbird status; }
 nb_ip() { local s; s=$(netbird status --ipv4 2>/dev/null) || true; echo "${s%%$'\n'*}"; }
 t_netbird() { local secret=$1 url=$2 name=$3 state=${4:-present} f out ip at args=()
-  f=${SF_SECRET_DIR:-/run/storageforge/secrets}/$secret
+  f=$(tun_secret_file "$secret")
   if [[ $state == absent ]]; then
     command -v netbird >/dev/null || { ok "NetBird is not installed"; return 0; }
     netbird status >/dev/null 2>&1 || { ok "the NetBird service does not run here: this host is on no NetBird network"; return 0; }
@@ -232,7 +232,7 @@ WantedBy=multi-user.target" 1 || {
 # OpenZiti. An identity is enrolled once, from a token that works once (a JWT): ziti-edge-tunnel reads the token from a file and
 # writes the identity, with the private key it made, to a file the tunneller loads
 t_openziti() { local secret=$1 name=$2 state=${3:-present} f d id unit=ziti-edge-tunnel.service bin out
-  f=${SF_SECRET_DIR:-/run/storageforge/secrets}/$secret; d=${SF_ZITI_DIR:-/opt/openziti/etc/identities}; id=$d/$name.json
+  f=$(tun_secret_file "$secret"); d=${SF_ZITI_DIR:-/opt/openziti/etc/identities}; id=$d/$name.json
   if [[ $state == absent ]]; then
     [[ -e $id ]] || { ok "no OpenZiti identity named $name is here"; return 0; }
     act "remove $id, which holds the identity and its key, and restart $unit (the tunneller stays installed, and the identity stays defined at the controller until it is deleted there)" || return 0

@@ -3,6 +3,7 @@ What must hold: a service a running tunnel publishes is public in the exposure v
 open; a tunnel whose routes cannot be read is unknown, never fine; and a token is in a file only its owner reads, on no command
 line, in no output. cloudflared and Newt are not installed here, so the steps run against stand-ins that record what they were
 started with; neither step has met the real program."""
+import base64
 import json
 import os
 import re
@@ -14,7 +15,7 @@ import unittest
 from pathlib import Path
 
 import dbfactory
-from storageforge_index import changes, exposure, inframeasure, security, steps_tunnels
+from storageforge_index import changes, exposure, inframeasure, secretstore, security, steps_tunnels
 
 TOKEN = 'eyJhIjoiTESTTESTTESTnotARealTunnelToken0000000000000000000000In0='
 SITE_SECRET = 'q7testsecretnotarealone0000000000000000000000000000000000'
@@ -188,6 +189,30 @@ esac''')
                'SF_NEWT_DIR': str(self.d / 'newt'), 'SF_SYSTEMD_RUN': str(self.d / 'run'), 'SF_TUNNEL_WAIT': '0'}
         got = subprocess.run(['bash', '-c', HARNESS + f'APPLY={int(apply)}\n' + steps_tunnels.BASH + '\n' + call + '\nexit $((PROBLEMS > 0))\n'], capture_output=True, text=True, timeout=60, env=env)
         return got.returncode, got.stdout + got.stderr
+
+    def delivered_as_root(self, fn, name, value, *args):
+        """What a signed run does as root, in a user namespace where this user is root and /run is its own: the plan's secret
+        comes on stdin and is written by sf_secrets_in, then the step reports. SF_SECRET_DIR names an empty folder throughout."""
+        call = fn + ' ' + ' '.join(f"'{a}'" for a in (name, *args))
+        env = {**os.environ, 'PATH': f'{self.d}/bin:{os.environ["PATH"]}', 'SF_SECRET_DIR': str(self.d / 'secrets'), 'SF_UNIT_DIR': str(self.d / 'units'), 'SF_CLOUDFLARED_DIR': str(self.d / 'cf'),
+               'SF_NEWT_DIR': str(self.d / 'newt'), 'SF_SYSTEMD_RUN': str(self.d / 'run'), 'SF_TUNNEL_WAIT': '0'}
+        script = HARNESS + 'APPLY=1 SECRETS_STDIN=1\n' + secretstore.BASH + 'APPLY=0\n' + steps_tunnels.BASH + '\n' + call + '\n'
+        got = subprocess.run(['unshare', '-Urm', 'bash', '-c', 'mount -t tmpfs tmpfs /run && exec bash -c "$0"', script], capture_output=True, text=True, timeout=60, env=env,
+                             input=f'SF-SECRETS 1\n{name} {base64.b64encode(value.encode()).decode()}\nEND\n')
+        return got.stdout + got.stderr
+
+    @unittest.skipUnless(shutil.which('unshare') and subprocess.run(['unshare', '-Urm', 'mount', '-t', 'tmpfs', 'tmpfs', '/run'], capture_output=True).returncode == 0,
+                         'needs a user who may make namespaces of its own (unshare -Urm)')
+    def test_as_root_a_step_reads_the_folder_the_plan_delivered_to_whatever_SF_SECRET_DIR_says(self):
+        for fn, name, value, args, would in (('t_cloudflare_tunnel', 'cf-token', TOKEN, ('present',), 'would: keep the tunnel token in'),
+                                             ('t_pangolin_site', 'site-secret', SITE_SECRET, ('abc123', 'https://pangolin.example.com', 'present'), 'would: ')):
+            with self.subTest(fn):
+                out = self.delivered_as_root(fn, name, value, *args)
+                self.assertIn('info: 1 secret(s) from StorageForge written to /run/storageforge/secrets', out)
+                self.assertNotIn('vault send-secret', out, 'the step found what the plan delivered')
+                self.assertNotIn(str(self.d / 'secrets'), out, 'root reads the fixed folder')
+                self.assertIn(would, out)
+                self.assertEqual(list((self.d / 'secrets').iterdir()), [])
 
     def read(self, name):
         p = self.d / 'fake' / name

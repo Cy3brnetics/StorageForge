@@ -22,7 +22,7 @@ import unittest.mock
 from pathlib import Path
 
 import dbfactory
-from storageforge_index import changes, nebulaca, overlaykeys, overlays, steps_overlay, steps_tailscale, steps_tunnels
+from storageforge_index import changes, nebulaca, overlaykeys, overlays, secretstore, steps_overlay, steps_tailscale, steps_tunnels
 
 SETUP_KEY = 'A1B2C3D4-TEST-4NOT-AREAL-SETUPKEY0000'
 
@@ -75,6 +75,7 @@ PROBLEMS=0
 PLAIN = ('bash', 'sh', 'cat', 'grep', 'sed', 'tr', 'head', 'tail', 'awk', 'rm', 'mkdir', 'chmod', 'mv', 'cp', 'cmp', 'sleep', 'uname', 'mktemp', 'base64', 'touch', 'env', 'id', 'chown',
          'sha256sum', 'cut', 'date', 'ls', 'wc')
 
+OWN_RUN = bool(shutil.which('unshare')) and subprocess.run(['unshare', '-Urm', 'mount', '-t', 'tmpfs', 'tmpfs', '/run'], capture_output=True).returncode == 0
 
 class Stage(unittest.TestCase):
     """A host as far as a step sees it: stand-ins first on a PATH with nothing else but the plain tools, and every folder a step
@@ -113,6 +114,20 @@ esac''')
                              capture_output=True, text=True, timeout=60, env=self.env | env)
         self.assertEqual(got.stderr, '', 'nothing a step runs fails unseen, and nothing it needs is missing from the plain tools')
         return got.returncode, got.stdout
+
+    def delivered_as_root(self, fn, name, value, *args):
+        """What a signed run does as root, in a user namespace where this user is root and /run is its own: the plan's secret
+        comes on stdin and is written by sf_secrets_in, then the step reports. SF_SECRET_DIR names an empty folder throughout."""
+        call = fn + ' ' + ' '.join(f"'{a}'" for a in (name, *args))
+        script = PRELUDE + 'APPLY=1 SECRETS_STDIN=1\n' + secretstore.BASH + 'APPLY=0\n' + steps_tunnels.BASH + steps_overlay.BASH + '\n' + call + '\n'
+        got = subprocess.run([shutil.which('unshare'), '-Urm', 'bash', '-c', shutil.which('mount') + ' -t tmpfs tmpfs /run && exec bash -c "$0"', script], capture_output=True, text=True,
+                             timeout=60, env=self.env, input=f'SF-SECRETS 1\n{name} {base64.b64encode(value.encode()).decode()}\nEND\n')
+        out = got.stdout + got.stderr
+        self.assertIn('info: 1 secret(s) from StorageForge written to /run/storageforge/secrets', out)
+        self.assertNotIn('vault send-secret', out, 'the step found what the plan delivered')
+        self.assertNotIn(str(self.d / 'secrets'), out, 'root reads the fixed folder')
+        self.assertEqual(list((self.d / 'secrets').iterdir()), [])
+        return out
 
     def read(self, name):
         p = self.fake / name
@@ -186,6 +201,11 @@ esac''')
         self.assertEqual(self.read('netbird.read'), SETUP_KEY, 'netbird read the whole key from the file')
         self.assertFalse(key.exists(), 'the peer keeps a key of its own')
         self.assertNotIn(SETUP_KEY, out + self.everything_written('fake/netbird.read', 'fake/accepts'))
+
+    @unittest.skipUnless(OWN_RUN, 'needs a user who may make namespaces of its own (unshare -Urm)')
+    def test_as_root_it_reads_the_folder_the_plan_delivered_to_whatever_SF_SECRET_DIR_says(self):
+        out = self.delivered_as_root('t_netbird', 'nb-key', SETUP_KEY, 'https://nb.example.com', 'web-1', 'present')
+        self.assertIn('would: netbird up --setup-key-file=/run/storageforge/secrets/nb-key ', out)
 
     def test_a_second_run_changes_nothing_and_removes_a_key_sent_again(self):
         self.secret('nb-key', SETUP_KEY)
@@ -421,6 +441,11 @@ echo "{{\\"ztAPI\\":\\"https://ziti.example.com:1280\\",\\"id\\":{{\\"cert\\":\\
         self.assertIn('systemctl restart ziti-edge-tunnel.service', self.read('systemctl.calls'))
         self.assertNotIn(JWT, out + self.everything_written('fake/accepts'))
         self.assertNotIn('PRIVATE KEY', out + self.everything_written('identities/web-1.json'))
+
+    @unittest.skipUnless(OWN_RUN, 'needs a user who may make namespaces of its own (unshare -Urm)')
+    def test_as_root_it_reads_the_folder_the_plan_delivered_to_whatever_SF_SECRET_DIR_says(self):
+        out = self.delivered_as_root('t_openziti', 'ziti-web', JWT, 'web-1', 'present')
+        self.assertIn('would: ziti-edge-tunnel enroll --jwt /run/storageforge/secrets/ziti-web ', out)
 
     def test_a_second_run_changes_nothing_and_a_token_sent_again_is_removed(self):
         self.secret('ziti-web', JWT)
