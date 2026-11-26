@@ -39,9 +39,12 @@ def stand_ins(d: Path, log: Path) -> Path:
     """A PATH where every program the scripts start writes its command line to log before the real one runs: what ps would show."""
     b = d / 'bin'
     b.mkdir()
-    for name in ('base64', 'mv', 'mkdir', 'chmod', 'rm', 'tailscale', 'cat', 'install', 'printf', 'cmp', 'chown', 'mktemp', 'stat', 'id', 'sync'):
+    for name in ('base64', 'mv', 'mkdir', 'chmod', 'rm', 'tailscale', 'cat', 'install', 'printf', 'cmp', 'chown', 'mktemp', 'stat', 'id', 'sync',
+                 'systemctl'):
         real = shutil.which(name)
-        body = f'exec {real} "$@"' if real and name != 'tailscale' else (
+        # systemctl is a stand-in that succeeds: on a host with systemd the step would otherwise run the real one, which a user
+        # without root is refused (CI's runner), and the step ends there
+        body = 'exit 0' if name == 'systemctl' else f'exec {real} "$@"' if real and name != 'tailscale' else (
             'case $1 in status) [[ -e $FAKE/up ]] && echo \'  "BackendState": "Running",\' || echo \'  "BackendState": "NeedsLogin",\' ;; '
             'up) for a; do case $a in --auth-key=file:*) cp "${a#--auth-key=file:}" "$FAKE/key-seen" ;; esac; done; touch "$FAKE/up" ;; ip) echo 100.64.0.9 ;; esac')
         (b / name).write_text(f'#!/bin/bash\nprintf "%s\\n" "{name} $*" >>{log}\n{body}\n')
