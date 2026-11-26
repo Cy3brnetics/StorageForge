@@ -77,7 +77,7 @@ class BrowserLogsMonitor(unittest.TestCase):
         self.addCleanup(self.page.close)
         self.page.set_default_timeout(30000)
         self.errors = []
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
         self.page.on('console', lambda m: self.errors.append(m.text) if 'Content Security Policy' in m.text else None)
         self.requests = []
         self.page.on('request', lambda r: self.requests.append(r.url) if '/api/' in r.url else None)

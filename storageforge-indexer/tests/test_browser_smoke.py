@@ -60,7 +60,7 @@ class BrowserSmoke(unittest.TestCase):
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
         self.errors = []
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
         self.page.goto(self.base + '/login')
         self.page.fill('input[type=text], input[name=username], #username', 'admin')
         self.page.fill('input[type=password]', PW)
@@ -173,7 +173,7 @@ class BrowserSmoke(unittest.TestCase):
         page = self.browser.new_page()
         self.addCleanup(page.close)
         errors = []
-        page.on('pageerror', lambda e: errors.append(str(e)))
+        page.on('pageerror', lambda e: errors.append(e.stack or str(e)))
         cdp = page.context.new_cdp_session(page)
         cdp.send('WebAuthn.enable')
         cdp.send('WebAuthn.addVirtualAuthenticator', {'options': {'protocol': 'ctap2', 'transport': 'usb', 'hasResidentKey': False, 'hasUserVerification': True, 'isUserVerified': True, 'automaticPresenceSimulation': True}})
@@ -1707,7 +1707,7 @@ class MapAtScale(unittest.TestCase):
                 browser = pw.chromium.launch()
                 page = browser.new_page(viewport={'width': 1500, 'height': 900})
                 errors = []
-                page.on('pageerror', lambda e: errors.append(str(e)))
+                page.on('pageerror', lambda e: errors.append(e.stack or str(e)))
                 page.goto(base + '/login')
                 page.fill('input[type=text], input[name=username], #username', 'admin')
                 page.fill('input[type=password]', PW)

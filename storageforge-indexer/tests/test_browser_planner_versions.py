@@ -51,7 +51,7 @@ class PlannerVersions(unittest.TestCase):
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
         self.errors = []
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
         self.page.goto(self.base + '/login')
         self.page.fill('input[type=text], input[name=username], #username', 'admin')
         self.page.fill('input[type=password]', PW)

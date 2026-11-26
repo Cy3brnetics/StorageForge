@@ -47,7 +47,7 @@ class BrowserDrafts(unittest.TestCase):
         self.page = self.browser.new_page()          # one page: both accounts share its localStorage, as on a shared workstation
         self.addCleanup(self.page.close)
         self.errors = []
-        self.page.on('pageerror', lambda e: self.errors.append(str(e)))
+        self.page.on('pageerror', lambda e: self.errors.append(e.stack or str(e)))      # the stack names the line when CI catches one
 
     def sign_in(self, name):
         self.page.goto(self.base + '/login')

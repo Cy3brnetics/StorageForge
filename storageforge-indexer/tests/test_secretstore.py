@@ -559,7 +559,7 @@ class BrowserSecrets(Db):
         browser = pw.chromium.launch()
         self.addCleanup(browser.close)
         page, errors = browser.new_page(), []
-        page.on('pageerror', lambda e: errors.append(str(e)))
+        page.on('pageerror', lambda e: errors.append(e.stack or str(e)))
         base = f'http://127.0.0.1:{http.server_port}'
         page.goto(base + '/login')
         page.fill('input[type=text], input[name=username], #username', 'admin')
