@@ -91,6 +91,26 @@ fn file(dir: &Path, name: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// The agent refuses to run as root unless told whom to become, and becoming someone needs a container made as agentctl makes it.
+/// Run as root, as the tests are in the build container, the agent is started as nobody, the account given the world's folders.
+fn as_agent(w: &World, command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    const NOBODY: u32 = 65534;
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    fn give(path: &Path) {
+        std::os::unix::fs::lchown(path, Some(NOBODY), Some(NOBODY)).unwrap();
+        if path.is_dir() && !path.is_symlink() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                give(&entry.unwrap().path());
+            }
+        }
+    }
+    give(&w.dir);
+    command.uid(NOBODY).gid(NOBODY);
+}
+
 #[test]
 fn an_enrolled_agent_with_no_manifest_runs_nothing() {
     let w = World::new("idle");
@@ -300,15 +320,10 @@ fn the_agent_wipes_its_key_on_tampering_and_never_starts_again() {
     std::fs::write(file(&w.paths.plugins(), "dropped-in"), b"#!/bin/sh\n").unwrap();
     let agent = env!("CARGO_BIN_EXE_storageforge-agent");
     let run = || {
-        std::process::Command::new(agent)
-            .args(["run", "--etc"])
-            .arg(&w.paths.etc)
-            .arg("--manifest")
-            .arg(&w.paths.manifest)
-            .arg("--state")
-            .arg(&w.paths.state)
-            .output()
-            .unwrap()
+        let mut command = std::process::Command::new(agent);
+        command.args(["run", "--etc"]).arg(&w.paths.etc).arg("--manifest").arg(&w.paths.manifest).arg("--state").arg(&w.paths.state);
+        as_agent(&w, &mut command);
+        command.output().unwrap()
     };
     let out = run();
     let said = String::from_utf8_lossy(&out.stderr).to_string();
