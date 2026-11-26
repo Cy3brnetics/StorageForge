@@ -9,6 +9,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 ### Fixed
 - **A Xen Orchestra host with no address is no longer taken for a scanned host that has no address either.** When a host in Xen Orchestra matched no scanned host by name and its API answer carried no address, the empty address was looked up among the scanned hosts' addresses, and a scanned host whose address was never recorded matched. Its VMs were then listed and drawn on that unrelated host, and the storage comparison read that host's mounts. Now a host with no address is matched by name only, and a scanned host with no address is matched by no address.
+- **A container managed through a platform API is named by the platform's title.** A container that a Portainer, Dockhand or Komodo connection manages was said to be managed by `portainer`, the connection kind, while one told by its labels was said to be managed by `Portainer`. The Workloads page showed both spellings, and a plan check on a stack whose containers were known both ways could warn about the same panel once for each spelling. Now both say `Portainer`. The `api.platform` field of a workload is still the connection kind.
 
 ## 0.6.1 — 2026-11-26
 

@@ -76,6 +76,14 @@ class Listing(unittest.TestCase):
         self.assertEqual(ws['ov']['managed']['by'], 'oVirt')
         self.assertEqual(ws['101']['managed']['by'], 'Proxmox VE')
 
+    def test_a_workload_a_platform_api_manages_is_named_by_the_platform_title(self):
+        ws = [dict(c('web'), host='nas', runtime='docker', kind='container'), dict(c('odd'), host='nas', runtime='docker', kind='container')]
+        wlmanaged.annotate(ws, 'nas', {}, {'web': {'panel': 'portainer', 'connection': 'port1', 'environment': 'local'},
+                                           'odd': {'panel': 'not-a-kind', 'connection': 'c2'}})
+        self.assertEqual(ws[0]['managed'], {'by': 'Portainer', 'how': 'managed by Portainer via API connection port1', 'level': 'warn'})
+        self.assertEqual(ws[0]['api'], {'platform': 'portainer', 'connection': 'port1', 'environment': 'local'})      # the kind stays the kind
+        self.assertEqual(ws[1]['managed']['by'], 'not-a-kind')
+
     def test_a_step_warns_before_it_changes_one(self):
         def items(kind, **p):
             plan = {'name': 'x', 'tasks': [{'type': kind, 'host': 'nas', 'params': p}]}

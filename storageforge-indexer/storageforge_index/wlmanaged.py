@@ -16,7 +16,7 @@ Platforms read through their own APIs (the API connection kind) are not read her
 """
 from __future__ import annotations
 
-from . import pvenode
+from . import apiconn, pvenode
 from .runtimes.docker import _manager
 
 LABEL_MANAGERS = (('komodo.', 'Komodo'), ('io.portainer.', 'Portainer'), ('coolify.', 'Coolify'), ('dockhand.', 'Dockhand'), ('dev.dockge.', 'Dockge'))
@@ -86,7 +86,8 @@ def annotate(workloads: list[dict], host: str, reading: dict | None, api_managed
             continue
         if w.get('runtime') == 'docker' and w.get('kind') == 'container' and w.get('name') in api_managed:
             am = api_managed[w['name']]
-            w['managed'] = _m(am['panel'], f'managed by {am["panel"]} via API connection {am["connection"]}', 'warn')
+            title = apiconn.KINDS.get(am['panel'], {}).get('title', am['panel'])      # 'Portainer', as its labels name it; w['api'] keeps the kind
+            w['managed'] = _m(title, f'managed by {title} via API connection {am["connection"]}', 'warn')
             w['api'] = {'platform': am.get('panel'), 'connection': am.get('connection'), 'environment': am.get('environment')}
             continue
         m = None
