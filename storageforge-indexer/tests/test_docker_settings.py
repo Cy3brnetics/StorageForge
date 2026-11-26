@@ -40,6 +40,20 @@ class Parse(unittest.TestCase):
         self.assertEqual(got['daemon_json'], {'data-root': '/srv/docker', 'log-opts': {'max-size': '10m'}})
         self.assertNotIn('tcp://', json.dumps(got))
 
+    def test_secrets_in_log_options_and_mirror_urls_are_masked_before_storing(self):
+        raw = json.dumps({'log-driver': 'splunk', 'log-opts': {'splunk-token': 'abc-123', 'splunk-url': 'https://s:8088', 'max-size': '10m', 'X_API_KEY': 'k',
+                                                               'password': 'p', 'my-secret': 's'},
+                          'registry-mirrors': ['https://bob:hunter2@mirror.example/', 'https://plain.example/']})
+        got = docker.parse_engine(probe(daemon=raw, settings=json.dumps({'registry_mirrors': ['https://bob:hunter2@mirror.example/']})))['settings']
+        opts = got['daemon_json']['log-opts']
+        self.assertEqual((opts['max-size'], opts['splunk-url']), ('10m', 'https://s:8088'))
+        for k in ('splunk-token', 'X_API_KEY', 'password', 'my-secret'):
+            self.assertEqual(opts[k], '***', k)
+        self.assertEqual(got['daemon_json']['registry-mirrors'], ['https://***@mirror.example/', 'https://plain.example/'])
+        self.assertEqual(got['registry_mirrors'], ['https://***@mirror.example/'])
+        self.assertNotIn('hunter2', json.dumps(got))
+        self.assertNotIn('abc-123', json.dumps(got))
+
     def test_daemon_json_that_is_not_json(self):
         for raw in ('{"data-root": ', '["a"]'):
             got = docker.parse_engine(probe(daemon=raw))['settings']
@@ -66,6 +80,10 @@ class Parse(unittest.TestCase):
         self.assertIn('@@daemonjson-unreadable', docker.ENGINE)
         self.assertIn('65536', docker.ENGINE)
         self.assertIn("S='sudo -n'", docker.ENGINE)
+
+    def test_the_cap_counts_bytes_not_characters(self):
+        self.assertIn('LC_ALL=C wc -c', docker.ENGINE)
+        self.assertNotIn('${#dj}', docker.ENGINE)
 
 
 class Stored(unittest.TestCase):

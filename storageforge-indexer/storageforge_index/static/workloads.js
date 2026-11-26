@@ -309,7 +309,9 @@ function wlPanel() {
   } else if (n.kind === 'runtime') {
     out.push(wlDl([['Host', d.host], ['Workloads', d.count], ...wlReading(wlHostOf(d.host)),
       ...(d.runtime === 'docker' || d.runtime === 'podman' ? wlEngineRows(d.runtime, (wlHostOf(d.host) || {}).engine_settings) : [])]));
-    if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button(`+ New ${d.runtime}`, () => WL.onNew({ host: d.host, runtime: d.runtime }), 'btn sm pri')));
+    // Podman keeps its storage in storage.conf, which this version only reads: no edit button for it
+    if (can('plans.edit')) out.push(el('div', { class: 'wl-actions' }, button(`+ New ${d.runtime}`, () => WL.onNew({ host: d.host, runtime: d.runtime }), 'btn sm pri'),
+      ...(d.runtime === 'docker' ? [button('Edit engine settings…', () => WL.onAction(wlStep('docker-daemon', d.host, {})), 'btn sm')] : [])));
   } else if (n.kind === 'stack') {
     out.push(wlDl([['Compose project', n.label], ['Host', d.host], ['Containers', d.items.map((w) => `${w.name}: ${w.state || '?'}`)]]));
     const warn = d.runtime !== 'proxmox' && wlManagedWarn(d.items);

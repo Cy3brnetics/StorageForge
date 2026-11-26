@@ -189,6 +189,21 @@ class BrowserWorkloads(unittest.TestCase):
         self.page.locator('dialog.wlwiz input[aria-label="Plan name"]').fill('another name')
         self.ready()
 
+    def test_edit_engine_settings_asks_for_the_fields_and_saves_one_docker_daemon_task(self):
+        self.open_panel('rt:dock:docker')
+        self.act('Edit engine settings…')
+        field = self.page.locator('dialog.wlwiz label.field:has(> span:text-matches("^Log size per file")) input').first
+        self.page.wait_for_selector('dialog.wlwiz label.field')
+        self.assertTrue(self.page.locator('.wlsave').is_disabled())       # nothing is set yet: at least one setting is needed
+        field.fill('10m')
+        self.ready()
+        self.page.click('.wlsave')
+        self.page.wait_for_selector('.wlopen')
+        mine = [p for p in self.plans() if any(t['type'] == 'docker-daemon' for t in p['tasks'])]
+        self.assertEqual(len(mine), 1, mine)
+        self.assertEqual([(t['type'], t['host'], t['params']['log_max_size']) for t in mine[0]['tasks']], [('docker-daemon', 'dock', '10m')])
+        self.page.click('dialog.wlwiz button:text-is("Close")')
+
     def test_the_wizard_on_a_proxmox_node_makes_a_container_plan(self):
         self.open_panel('host:pve')
         self.page.click('#wl-panel button:text-is("+ New")')

@@ -70,10 +70,10 @@ echo '@@settings'
 if [ "${D##* }" = podman ]; then $D info --format '{"storage_driver":{{json .Store.GraphDriverName}},"log_driver":{{json .Host.LogDriver}},"cgroup_driver":{{json .Host.CgroupManager}}}' 2>/dev/null || true
 else $D info --format '{"storage_driver":{{json .Driver}},"log_driver":{{json .LoggingDriver}},"cgroup_driver":{{json .CgroupDriver}},"live_restore":{{json .LiveRestoreEnabled}},"registry_mirrors":{{json .RegistryConfig.Mirrors}}}' 2>/dev/null || true; fi
 if [ "${D##* }" = docker ]; then
-  # daemon.json is read the way the engine was reached: root may own the folder; a file over 64 KiB is not the one we want in the index
+  # daemon.json is read the way the engine was reached: root may own the folder; a file over 64 KiB (bytes, not characters) is not the one we want in the index
   S=; [ "$how" = sudo ] && S='sudo -n'; f=/etc/docker/daemon.json
   if $S test -e $f 2>/dev/null; then
-    dj=$($S head -c 65537 -- $f 2>/dev/null) && [ "${#dj}" -le 65536 ] && printf '@@daemonjson\n%s\n' "$dj" || echo '@@daemonjson-unreadable'
+    dj=$($S head -c 65537 -- $f 2>/dev/null) && [ "$(printf %s "$dj" | LC_ALL=C wc -c)" -le 65536 ] && printf '@@daemonjson\n%s\n' "$dj" || echo '@@daemonjson-unreadable'
   elif $S test -x /etc/docker 2>/dev/null; then echo '@@daemonjson'
   else echo '@@daemonjson-unreadable'; fi
 fi
@@ -158,6 +158,23 @@ def _details(c: dict, d: dict, digests: dict) -> dict:
 DAEMON_KEYS = ('data-root', 'storage-driver', 'log-driver', 'log-opts', 'registry-mirrors', 'live-restore', 'default-address-pools')
 
 
+SECRET_KEY = re.compile(r'token|secret|passw|key', re.I)
+URL_AUTH = re.compile(r'^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]*@')
+
+
+def _mask_mirror(url: str) -> str:
+    """A mirror URL may carry user:password: it never reaches the index."""
+    return URL_AUTH.sub(r'\1***@', url)
+
+
+def _mask_known(key: str, v):
+    if key == 'log-opts' and isinstance(v, dict):
+        return {k: ('***' if SECRET_KEY.search(str(k)) else x) for k, x in v.items()}
+    if key == 'registry-mirrors' and isinstance(v, list):
+        return [_mask_mirror(x) if isinstance(x, str) else x for x in v]
+    return v
+
+
 def _settings(sec: dict, engine: str) -> dict:
     """The engine's answers plus the known keys of daemon.json: anything else in the file (hosts, TLS paths) is dropped here."""
     got = {}
@@ -171,7 +188,7 @@ def _settings(sec: dict, engine: str) -> dict:
     out = {'storage_driver': got.get('storage_driver') or None, 'log_driver': got.get('log_driver') or None,
            'cgroup_driver': got.get('cgroup_driver') or None,
            'live_restore': got.get('live_restore') if isinstance(got.get('live_restore'), bool) else None,
-           'registry_mirrors': [m for m in mirrors if isinstance(m, str)] if isinstance(mirrors, list) else [],
+           'registry_mirrors': [_mask_mirror(m) for m in mirrors if isinstance(m, str)] if isinstance(mirrors, list) else [],
            'daemon_json': None, 'daemon_json_read': False}
     if engine == 'docker' and 'daemonjson' in sec:
         raw = sec['daemonjson'].strip()
@@ -179,7 +196,7 @@ def _settings(sec: dict, engine: str) -> dict:
             doc = json.loads(raw) if raw else {}
             if not isinstance(doc, dict):
                 raise ValueError('the top level is not an object')
-            out['daemon_json'] = {k: v for k, v in doc.items() if k in DAEMON_KEYS}
+            out['daemon_json'] = {k: _mask_known(k, v) for k, v in doc.items() if k in DAEMON_KEYS}
         except ValueError as exc:
             out['daemon_json_error'] = f'not valid JSON: {str(exc)[:120]}'
         out['daemon_json_read'] = True

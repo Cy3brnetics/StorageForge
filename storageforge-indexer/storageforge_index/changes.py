@@ -45,6 +45,7 @@ def F(name, kind, label, **kw):
 # Step types registered from other modules (steps_infra.py), so changes.py does not have to grow with every new kind of step.
 EXTRA: dict[str, dict] = {}
 EXTRA_BASH: list[str] = []
+VALIDATE: dict = {}    # step type -> (params, where) raising ValueError: a rule across fields (docker-daemon: at least one setting), kept apart from TYPES, which is served as JSON
 PREPARE: list = []     # (conn, body) -> body, before a plan is checked or saved: steps_vm.py fills a VM step from its spec
 
 
@@ -326,6 +327,8 @@ def normalize(body: dict) -> dict:
             elif f['kind'] != 'confirm' and not CHECKS[f['kind']].fullmatch(v):
                 raise ValueError(f'task {i} ({spec["label"]}): {f["label"]} {v!r} is not valid')
             params[f['name']] = v
+        if kind in VALIDATE:
+            VALIDATE[kind](params, f'task {i} ({spec["label"]})')
         if spec.get('destructive'):
             if params.get('devices'):
                 params['devices'] = ' '.join(params['devices'].split())
@@ -2100,6 +2103,7 @@ from . import steps_runtime  # noqa: E402,F401  (runtime-install: Docker, Podman
 from . import steps_secretfile  # noqa: E402,F401  (a vault secret written to a file a service reads)
 from . import steps_workloads  # noqa: E402,F401  (compose stacks, LXC containers and Incus instances, after steps_infra, whose firewall tool they use)
 from . import steps_proxmox  # noqa: E402,F401  (Proxmox VE guests through qm and pct)
+from . import steps_dockerd  # noqa: E402,F401  (docker-daemon: the engine's daemon.json and its data directory, after steps_proxmox, whose export head it uses)
 from . import steps_vmiso  # noqa: E402,F401  (VMs from installer ISOs)
 from . import steps_mac  # noqa: E402,F401  (letting VMs use a folder of disks under SELinux or AppArmor)
 from . import steps_toolbox  # noqa: E402,F401  (Toolbox installs and removals, after steps_runtime and steps_workloads, whose helpers they call)

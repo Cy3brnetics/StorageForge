@@ -67,6 +67,14 @@ What to know:
 - **No "managed by" warning.** `pve-action` and `pve-remove` are Proxmox's own tools, so Proxmox stays in charge and the page does not warn.
 - **Ansible export.** An Ansible export of `pve-ct` with a vault password secret expects the secret's file to be on the host already: the playbook does not carry the secret. Deploy through StorageForge to have it delivered.
 
+## Docker engine settings
+
+Select a Docker runtime (not Podman) and its panel lists what the engine runs with: the data directory, storage driver, log driver and options, live-restore, registry mirrors and cgroup driver, each marked "set in `daemon.json`" or "default", and how old the reading is. Only the keys this feature knows are read from `daemon.json`; anything else in the file (`hosts`, TLS paths) never reaches the index, and a secret-looking log option (`splunk-token`) or a login inside a mirror URL is masked before it is stored. A host whose `daemon.json` the scan user cannot open says "not read", not "default".
+
+**Edit engine settings…** opens the review of a `docker-daemon` step. The fields are the data directory, whether to move the data, log driver, log size and file count, live-restore, registry mirrors and storage driver; an empty field leaves that setting as it is, and at least one must be set. The script merges only those keys into `/etc/docker/daemon.json` with python3 (jq when python3 is not there; with neither it stops with a conflict rather than edit JSON by hand), has `dockerd --validate` check the result when this Docker can, keeps the old file as `daemon.json.storageforge-STAMP` and restarts docker. A `daemon.json` that is not valid JSON is a conflict that names the file and changes nothing.
+
+Moving the data directory stops `docker.socket` and `docker`, copies the old directory with `rsync -aHAX --numeric-ids`, writes the file only after the copy, and starts docker; it then checks that `docker info` reports the new directory. The target must be empty or absent and have room for the old data. If the copy fails, the file is untouched and docker is started on the old directory. The old directory is kept either way: remove it yourself once the containers are checked. The move needs root, and the report says how many containers are running: those without a restart policy stay stopped afterwards until they are started by hand. The check also warns about a target on the system disk or a network filesystem, and refuses a target inside the old directory or the reverse, a Podman host and a snap Docker.
+
 ## Who sees it
 
 The page needs the `workloads.view` permission, and the buttons need `plans.edit`. An account with the first and not the second can look but not change.
@@ -77,6 +85,7 @@ The page runs in a headless Chromium against fixture data in the test suite, and
 
 - Any `pve-*` step on a real Proxmox VE node (`qm create`, `pct create`, `pveam` downloads, `pvesm` readings, destroy).
 - The Ansible export of the Proxmox steps.
+- The `docker-daemon` step on a real Docker host (the restart, `dockerd --validate`, a data move with rsync), on Docker Desktop, a snap Docker, or with `jq` and no python3.
 - The page against a fleet of real size.
 
 The KVM lab can run a Proxmox VE VM; that tier is listed in the [roadmap](../roadmap.md).

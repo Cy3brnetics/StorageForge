@@ -1,0 +1,348 @@
+"""The Docker engine's settings as a plan step: daemon.json is merged, not replaced, and the data directory can move.
+
+docker-daemon   data-root, log driver and options, live-restore, registry mirrors, storage driver. Empty means leave as it is.
+
+The script reads the file, merges only the keys given with python3 (or jq when python3 is not there), asks dockerd to validate the result, backs the
+old file up beside it, writes it and restarts docker. Moving the data directory stops docker first, copies with rsync, writes the file only then
+and starts docker; when the copy fails the file is not touched and docker starts on the old directory, which is kept in every case.
+"""
+from __future__ import annotations
+
+import re
+
+from . import changes
+from .changes import F
+from .steps_proxmox import ANSIBLE_HEAD
+
+LOG_DRIVERS = ['', 'json-file', 'local', 'journald', 'syslog', 'none']
+STORAGE_DRIVERS = ['', 'overlay2', 'btrfs', 'zfs', 'fuse-overlayfs']
+SETTINGS = ('data_root', 'log_driver', 'log_max_size', 'log_max_file', 'live_restore', 'registry_mirrors', 'storage_driver')
+ARGS = ('data_root', 'move_data', 'log_driver', 'log_max_size', 'log_max_file', 'live_restore', 'registry_mirrors', 'storage_driver')
+NETWORK_FS = ('nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', '9p', 'sshfs', 'fuse.sshfs', 'ceph', 'glusterfs', 'fuse.glusterfs', 'afs', 'lustre')
+
+# https URLs with no login in them (a login would reach the plan and daemon.json in the clear), separated by spaces
+changes.CHECKS['dockersize'] = re.compile(r'[0-9]{1,9}[kmg]')
+changes.CHECKS['httpsurls'] = re.compile(r'https://[A-Za-z0-9._~:/?#%+=&,-]{1,200}( +https://[A-Za-z0-9._~:/?#%+=&,-]{1,200}){0,9}')
+
+# No apostrophes: the script text is checked for values that could end a quoted word. The functions read the locals of t_docker_daemon, as bash allows.
+# The values reach python3 as environment words and jq as --arg words, never inside the program text.
+BASH = r"""
+# dd_merge BASE NEW: the wanted keys merged into the JSON object in BASE, written to NEW. Exit 3: BASE is not a JSON object (the reason is printed).
+dd_merge() { local base=$1 new=$2 flt
+  if [[ $DD_TOOL == python3 ]]; then
+    DD_ROOT=$eff_root DD_LOGDRV=$logdrv DD_LOGSIZE=$logsize DD_LOGFILE=$logfile DD_LIVE=$live DD_MIRRORS=$mirrors DD_STOR=$stor python3 - "$base" "$new" <<"PY"
+import json, os, sys
+base, new = sys.argv[1], sys.argv[2]
+try:
+    with open(base) as fh:
+        doc = json.load(fh)
+except ValueError as exc:
+    print(str(exc)[:120])
+    sys.exit(3)
+if not isinstance(doc, dict):
+    print("the top level is not an object")
+    sys.exit(3)
+orig = json.loads(json.dumps(doc))
+env = os.environ
+if env.get("DD_ROOT"):
+    doc["data-root"] = env["DD_ROOT"]
+if env.get("DD_LOGDRV"):
+    doc["log-driver"] = env["DD_LOGDRV"]
+if env.get("DD_LOGSIZE") or env.get("DD_LOGFILE"):
+    opts = doc.get("log-opts")
+    opts = dict(opts) if isinstance(opts, dict) else {}
+    if env.get("DD_LOGSIZE"):
+        opts["max-size"] = env["DD_LOGSIZE"]
+    if env.get("DD_LOGFILE"):
+        opts["max-file"] = env["DD_LOGFILE"]
+    doc["log-opts"] = opts
+if env.get("DD_LIVE"):
+    doc["live-restore"] = env["DD_LIVE"] == "on"
+if env.get("DD_MIRRORS"):
+    doc["registry-mirrors"] = env["DD_MIRRORS"].split()
+if env.get("DD_STOR"):
+    doc["storage-driver"] = env["DD_STOR"]
+with open(new, "w") as fh:
+    # the same content in another layout is no change: the file is then kept as it is, and nothing restarts
+    if doc == orig:
+        fh.write(open(base).read())
+    else:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+PY
+  else
+    jq -e "type == \"object\"" "$base" >/dev/null 2>&1 || { echo "not a JSON object"; return 3; }
+    flt="(if \$root != \"\" then .[\"data-root\"] = \$root else . end)
+      | (if \$ldrv != \"\" then .[\"log-driver\"] = \$ldrv else . end)
+      | (if \$lsize != \"\" then .[\"log-opts\"] = ((.[\"log-opts\"] // {}) + {\"max-size\": \$lsize}) else . end)
+      | (if \$lfile != \"\" then .[\"log-opts\"] = ((.[\"log-opts\"] // {}) + {\"max-file\": \$lfile}) else . end)
+      | (if \$live == \"on\" then .[\"live-restore\"] = true elif \$live == \"off\" then .[\"live-restore\"] = false else . end)
+      | (if \$mirrors != \"\" then .[\"registry-mirrors\"] = (\$mirrors | split(\" \") | map(select(. != \"\"))) else . end)
+      | (if \$stor != \"\" then .[\"storage-driver\"] = \$stor else . end)"
+    jq --arg root "$eff_root" --arg ldrv "$logdrv" --arg lsize "$logsize" --arg lfile "$logfile" --arg live "$live" --arg mirrors "$mirrors" --arg stor "$stor" \
+      "$flt" "$base" >"$new" || return 3
+    # the same content in another layout is no change: the file is then kept as it is, and nothing restarts
+    [[ $(jq -cS . "$base") == "$(jq -cS . "$new")" ]] && cp -- "$base" "$new"
+    return 0
+  fi
+}
+
+# dd_write NEW: NEW becomes daemon.json, the old file kept as daemon.json.storageforge-STAMP. Sets dd_bak to the backup, or empty when there was no file.
+dd_write() { local tmpf=$f.storageforge-new
+  STAMP=${STAMP:-$(date +%Y%m%d-%H%M%S)}
+  dd_bak=
+  mkdir -p -- "$etc" || { conflict "could not make $etc"; return 1; }
+  if [[ -e $f ]]; then
+    dd_bak=$f.storageforge-$STAMP
+    cp -p -- "$f" "$dd_bak" || { dd_bak=; conflict "could not back up $f"; return 1; }
+    cp -p -- "$f" "$tmpf" && cat -- "$1" >"$tmpf" || { rm -f -- "$tmpf"; conflict "could not write $tmpf"; return 1; }
+  else
+    install -m 0644 -- "$1" "$tmpf" || { conflict "could not write $tmpf"; return 1; }
+  fi
+  mv -f -- "$tmpf" "$f" || { rm -f -- "$tmpf"; conflict "could not replace $f"; return 1; }
+  ok "wrote $f${dd_bak:+ (the old one is kept as $dd_bak)}"
+}
+
+# dd_undo: the file as it was before dd_write, when docker would not start with the new one.
+dd_undo() {
+  if [[ -n ${dd_bak:-} ]]; then cp -p -- "$dd_bak" "$f"; else rm -f -- "$f"; fi
+}
+
+# dd_expect LABEL FORMAT WANT: docker info agrees with what was asked.
+dd_expect() { local got
+  [[ -n $3 ]] || return 0
+  got=$(docker info --format "$2" 2>/dev/null </dev/null) || got=
+  if [[ ${got%/} == "${3%/}" ]]; then ok "docker reports $1 $3"; else conflict "docker reports $1 ${got:-nothing}, not $3"; return 1; fi
+}
+
+# dd_back: waits for docker to answer, then says which of the containers that ran before are running again.
+dd_back() { local i name now missing=
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    docker info >/dev/null 2>&1 </dev/null && break
+    sleep 1
+  done
+  docker info >/dev/null 2>&1 </dev/null || { conflict "docker does not answer after the restart: look at systemctl status docker"; return 1; }
+  [[ -n $running ]] || return 0
+  now=$(docker ps --format "{{.Names}}" 2>/dev/null </dev/null) || now=
+  while IFS= read -r name; do
+    [[ -n $name ]] && ! grep -qxF -- "$name" <<<"$now" && missing+=" $name"
+  done <<<"$running"
+  if [[ -z $missing ]]; then ok "all $nrun containers that were running are running again"
+  else ok "containers not running again:$missing (no restart policy: start them by hand with docker start)"; fi
+  return 0
+}
+
+# dd_work: the whole step, reading and setting the locals of t_docker_daemon. tmp is its own temporary folder.
+dd_work() { local base new cur eff_root want d out vout help used avail par l hid
+  local dd_bak= moving=0 drift=0 changed=0
+  want=${data_root%/}
+  cur=$(docker info --format "{{.DockerRootDir}}" 2>/dev/null </dev/null) || cur=
+  if [[ -z $cur ]]; then
+    cur=/var/lib/docker
+    info "docker did not answer as $(id -un): its data directory is taken as $cur"
+  fi
+  cur=${cur%/}
+  # the current directory asked for again is no change: no key is written for it, so nothing restarts
+  eff_root=$data_root
+  [[ -n $want && $want == "$cur" ]] && eff_root=
+  if [[ -n $want && $want != "$cur" ]]; then drift=1; [[ -n $move ]] && moving=1; fi
+  if [[ -s $f ]]; then
+    [[ -r $f ]] || { if ((APPLY)); then conflict "$f is not readable"; else missing "$f was not readable as $(id -un): --apply, as root, reads it"; fi; return 0; }
+    base=$f
+  elif [[ -e $f && ! -r $f ]]; then
+    conflict "$f is not readable"; return 0
+  else
+    base=$tmp/empty.json; echo "{}" >"$base"
+  fi
+  new=$tmp/new.json
+  out=$(dd_merge "$base" "$new") && d=0 || d=$?
+  if ((d)); then conflict "$f is not valid JSON ($out): it is left as it is, fix it by hand"; return 0; fi
+  if command -v diff >/dev/null; then
+    d=$(diff -u -- "$base" "$new" 2>/dev/null) || true
+    [[ -z $d ]] || changed=1
+    while IFS= read -r l; do [[ -n $l ]] && info "  $l"; done <<<"$d"
+  else
+    cmp -s -- "$base" "$new" || changed=1
+  fi
+  if ((!changed && !drift)); then ok "$f already holds these values"; return 0; fi
+  if [[ -n $want && $want == "$cur" ]]; then info "$want is where docker keeps its data now: no move needed"; fi
+
+  if command -v dockerd >/dev/null; then help=$(dockerd --help 2>&1 </dev/null) || true; else help=; fi
+  if grep -q -- "--validate" <<<"$help"; then
+    vout=$(dockerd --validate --config-file "$new" 2>&1 </dev/null) || { vout=$(tr "\n" " " <<<"$vout"); conflict "dockerd rejects the new daemon.json: $vout" >&2; return 0; }
+    ok "dockerd accepts the new daemon.json"
+  else
+    info "this Docker cannot validate a config; checked as JSON only"
+  fi
+
+  running=$(docker ps --format "{{.Names}}" 2>/dev/null </dev/null) || running=
+  nrun=0; nopol=0
+  while IFS= read -r l; do
+    [[ -n $l ]] || continue
+    nrun=$((nrun + 1))
+    hid=$(docker inspect --format "{{.HostConfig.RestartPolicy.Name}}" "$l" 2>/dev/null </dev/null) || hid=
+    [[ -z $hid || $hid == no ]] && nopol=$((nopol + 1))
+  done <<<"$running"
+  if ((nrun)); then
+    info "$nrun containers are running; $nopol of them has no restart policy and stays stopped after docker is stopped or restarted, until it is started by hand"
+  fi
+
+  if ((moving)); then
+    command -v rsync >/dev/null || { conflict "rsync is not installed: it copies the data directory"; return 0; }
+    [[ -d $cur ]] || { conflict "the current data directory $cur is not a folder here"; return 0; }
+    case "$want/" in "$cur/"*) conflict "$want is inside the current data directory $cur"; return 0 ;; esac
+    case "$cur/" in "$want/"*) conflict "the current data directory $cur is inside $want"; return 0 ;; esac
+    if [[ -e $want ]]; then
+      [[ -d $want ]] || { conflict "$want is not a folder"; return 0; }
+      [[ -z $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) ]] || { conflict "$want is not empty: move its content away first, or pick an empty folder"; return 0; }
+    fi
+    used=$(du -sx --block-size=1 -- "$cur" 2>/dev/null | cut -f1) || used=
+    par=$want
+    while [[ ! -d $par && $par != / ]]; do par=$(dirname -- "$par"); done
+    avail=$(df --output=avail -B1 -- "$par" 2>/dev/null | tail -n 1 | tr -d " ") || avail=
+    if [[ $used =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]]; then
+      if ((avail < used + used / 20)); then conflict "no room: $cur holds $used bytes and $par has $avail free"; return 0; fi
+      ok "room for $cur ($used bytes) in $par ($avail free)"
+    else
+      info "the room for $cur in $par could not be measured as $(id -un)"
+    fi
+  elif ((drift)); then
+    info "data-root changes without the data: docker starts on an empty $want and does not see its images and containers until they are copied there"
+  fi
+
+  if ((moving)); then
+    act "stop docker, copy $cur to $want, write $f and start docker again (the old folder is kept)" || return 0
+    mkdir -p -- "$want" || { conflict "could not make $want"; return 0; }
+    if ! systemctl stop docker.socket docker; then
+      systemctl start docker || true
+      conflict "docker did not stop: the data was not copied and daemon.json is unchanged"; return 0
+    fi
+    if ! rsync -aHAX --numeric-ids --info=progress2 "$cur/" "$want/" </dev/null; then
+      systemctl start docker || true
+      conflict "rsync failed: daemon.json is unchanged and docker was started on $cur; $want holds what was copied, empty it before trying again"; return 0
+    fi
+    dd_write "$new" || { systemctl start docker || true; return 0; }
+    if ! systemctl start docker; then
+      dd_undo; systemctl start docker || true
+      conflict "docker did not start with the new daemon.json: the old one is back (kept as ${dd_bak:-none}); the data is copied to $want"; return 0
+    fi
+  else
+    act "write $f, then restart docker" || return 0
+    dd_write "$new" || return 0
+    if ! systemctl restart docker; then
+      dd_undo; systemctl restart docker || true
+      conflict "docker did not restart with the new daemon.json: the old one is back"; return 0
+    fi
+  fi
+  dd_back || return 0
+  dd_expect "data directory" "{{.DockerRootDir}}" "$eff_root" || return 0
+  dd_expect "log driver" "{{.LoggingDriver}}" "$logdrv" || return 0
+  dd_expect "storage driver" "{{.Driver}}" "$stor" || return 0
+  [[ -z $live ]] || dd_expect "live-restore" "{{.LiveRestoreEnabled}}" "$([[ $live == on ]] && echo true || echo false)" || return 0
+  if ((moving)); then ok "moved to $want. The old folder $cur is kept: once the containers are checked, remove it as root with rm -rf $cur"; fi
+  return 0
+}
+
+# t_docker_daemon DATA_ROOT MOVE_DATA LOG_DRIVER LOG_MAX_SIZE LOG_MAX_FILE LIVE_RESTORE REGISTRY_MIRRORS STORAGE_DRIVER
+t_docker_daemon() { local data_root=$1 move=$2 logdrv=$3 logsize=$4 logfile=$5 live=$6 mirrors=$7 stor=$8
+  local etc=/etc/docker f tmp ver bin running= nrun=0 nopol=0 DD_TOOL
+  ((EUID != 0)) && etc=${SF_DOCKER_ETC:-$etc}
+  f=$etc/daemon.json
+  command -v docker >/dev/null || { conflict "docker is not on this host"; return 0; }
+  bin=$(readlink -f -- "$(command -v docker)") || bin=
+  if [[ $bin == */snap/* ]]; then conflict "docker here is a snap: its settings are under /var/snap/docker, which this step does not edit"; return 0; fi
+  ver=$(docker --version 2>&1 </dev/null) || ver=
+  if [[ ${ver,,} == *podman* ]]; then conflict "docker here is Podman: its settings are not in daemon.json, and this step does not change them"; return 0; fi
+  if [[ $(docker info --format "{{.OperatingSystem}}" 2>/dev/null </dev/null) == *"Docker Desktop"* ]]; then conflict "this is Docker Desktop, which keeps its settings in its own app"; return 0; fi
+  if command -v python3 >/dev/null; then DD_TOOL=python3
+  elif command -v jq >/dev/null; then DD_TOOL=jq
+  else conflict "neither python3 nor jq is here, and daemon.json is not edited by hand: install one of them"; return 0; fi
+  tmp=$(mktemp -d) || { conflict "could not make a temporary folder"; return 0; }
+  dd_work || true
+  rm -rf -- "$tmp"
+  return 0
+}
+"""
+
+
+def _title(p):
+    bits = [x for x in (p['data_root'] and f'data directory {p["data_root"]}', p['log_driver'] and f'log driver {p["log_driver"]}',
+                        p['log_max_size'] and f'log size {p["log_max_size"]}', p['log_max_file'] and f'{p["log_max_file"]} log files',
+                        p['live_restore'] and f'live-restore {p["live_restore"]}', p['registry_mirrors'] and 'registry mirrors',
+                        p['storage_driver'] and f'storage driver {p["storage_driver"]}') if x]
+    return 'Docker engine settings: ' + ', '.join(bits)
+
+
+def _validate(p: dict, where: str):
+    if not any(p.get(k) for k in SETTINGS):
+        raise ValueError(f'{where}: set at least one engine setting')
+
+
+def _check(conn, c, h, p, say):
+    from .runtimes import docker
+    view = next(iter(docker.listing(conn, h['name'])), None)
+    engine = (view or {}).get('engine')
+    if engine == 'podman':
+        say('crit', f'{h["name"]} runs Podman: its storage is not in daemon.json, and this version only reads it. Change it by hand in storage.conf')
+        return
+    if not engine:
+        say('note', f'Docker was not read on {h["name"]} yet: the script looks when it runs')
+    st = (view or {}).get('engine_settings') or {}
+    cur = (st.get('root_dir') or '').rstrip('/') or ('/var/lib/docker' if engine else '')
+    if '/snap/' in cur + '/':
+        say('crit', f'Docker on {h["name"]} is a snap (its data is in {cur}): its settings are not in /etc/docker/daemon.json')
+        return
+    want = (p.get('data_root') or '').rstrip('/')
+    if p.get('data_root') and p['data_root'] == '/':
+        say('crit', 'the data directory cannot be /')
+    elif want and cur and want == cur:
+        say('note', f'{want} is where Docker keeps its data now: no move needed')
+    elif want and cur:
+        if want.startswith(cur + '/'):
+            say('crit', f'{want} is inside the current data directory {cur}: the copy would copy into itself')
+        elif cur.startswith(want + '/'):
+            say('crit', f'the current data directory {cur} is inside {want}: the copy would copy into itself')
+        where, fs = c.mount_at(want)
+        if where == '/':
+            say('warn', f'{want} is on the system disk (/): a full Docker folder fills the disk the system runs from')
+        elif fs and fs.lower() in NETWORK_FS:
+            say('warn', f'{want} is on a network filesystem ({fs}): Docker\'s overlay2 does not work on one, and every container waits on the network')
+        if p.get('move_data'):
+            say('note', f'docker is stopped, {cur} is copied to {want} with rsync (it must be empty or absent, with room), daemon.json is written, docker starts; {cur} is kept')
+        else:
+            say('warn', f'without the data moved, Docker starts on an empty {want}: its images and containers are not seen there until copied')
+    if p.get('log_max_file') and not 1 <= int(p['log_max_file']) <= 100:
+        say('crit', 'the number of log files is 1 to 100')
+    if p.get('log_driver') == 'none' and (p.get('log_max_size') or p.get('log_max_file')):
+        say('crit', 'the log driver none keeps no logs: it takes no max-size or max-file')
+    if p.get('storage_driver') and p['storage_driver'] != st.get('storage_driver'):
+        say('warn', f'another storage driver does not read the images and containers of {st.get("storage_driver") or "the current one"}: they stay on disk, unseen')
+    running = (view or {}).get('running') or 0
+    if running and not st.get('live_restore'):
+        none = sum(1 for s in view['stacks'] for x in s['containers'] if x['state'] == 'running' and (x.get('restart') or 'no') == 'no')
+        say('warn', f'docker is stopped or restarted: its {running} running container{"s" if running != 1 else ""} stop (live-restore is off); '
+                    f'{none} of them {"has" if none == 1 else "have"} no restart policy and stay{"s" if none == 1 else ""} stopped until started by hand')
+
+
+def _ansible(t):
+    import shlex
+    p = t['params']
+    words = [('1' if p.get(a) else '') if isinstance(p.get(a), bool) else str(p.get(a) or '') for a in ARGS]
+    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': ANSIBLE_HEAD + BASH + '\nt_docker_daemon ' + ' '.join(shlex.quote(w) for w in words) + '\n', 'executable': '/bin/bash'},
+            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+
+
+changes.VALIDATE['docker-daemon'] = _validate
+changes.register('docker-daemon', {'group': 'Workloads', 'label': 'Change the Docker engine settings', 'fields': [
+    F('data_root', 'path', 'Data directory (empty: as it is)', placeholder='/srv/docker'),
+    F('move_data', 'bool', 'Move the data there (docker is stopped for the copy)', default=True),
+    F('log_driver', 'choice', 'Log driver', options=LOG_DRIVERS, default=''),
+    F('log_max_size', 'dockersize', 'Log size per file (with json-file or local)', placeholder='10m'),
+    F('log_max_file', 'number', 'Log files kept, 1 to 100', placeholder='3'),
+    F('live_restore', 'choice', 'Live restore (containers keep running while docker restarts)', options=['', 'on', 'off'], default=''),
+    F('registry_mirrors', 'httpsurls', 'Registry mirrors (https URLs, spaces between)', placeholder='https://mirror.example.com'),
+    F('storage_driver', 'choice', 'Storage driver', options=STORAGE_DRIVERS, default='')],
+    'help': 'Merges only the settings given into /etc/docker/daemon.json and keeps every other key; empty leaves a setting as it is. dockerd validates the result, the old file is kept beside it, '
+            'and docker restarts: running containers without a restart policy stay stopped. A new data directory is copied with rsync while docker is stopped, and the old one is kept.'},
+    ARGS, _title, _check, _ansible)
+changes.EXTRA_BASH.append(BASH)
