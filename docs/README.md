@@ -18,13 +18,13 @@ The code lives in [`storageforge-indexer/`](../storageforge-indexer). Its [READM
 
 ## Every feature
 
-The [feature guide](features/README.md) catalogues every feature, with how it works and screenshots from the KVM lab.
+The [feature guide](features/README.md) catalogues every feature, with how it works and screenshots from the KVM lab. [What StorageForge can do](capabilities.md) is the same ground as one tree, from the code, with each leaf a thing it can do; read it when you want to know whether something exists.
 
 ## Using it
 
 | Page | What it covers |
 | :--- | :--- |
-| [Web UI](web-ui.md) | Topology, Graph and Tasks views, the side panels, context menus |
+| [Web UI](web-ui.md) | The views, the side panels, context menus, and the other pages the header links to, including [Workloads](workloads-page.md) |
 | [Planner](planner.md) | The design tool at `/planner`: devices, mounts, links, RAID, protection, export |
 | [Scanning and search](scanning-and-search.md) | What a scan reads, guardrails, incremental sync, read-only access, git and Docker discovery, search patterns |
 | [Plans and scripts](plans-and-scripts.md) | Staged changes, data moves, NFS/SMB shares and block-built storage tasks, and the scripts they produce |
@@ -35,13 +35,15 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Deployments](deployments.md) | Deploy access, the signed runner, deployed jobs, alerts and drift |
 | [Remote nodes](remote-nodes.md) | Hosts behind NAT that dial in through a locked-down tunnel |
 | [The agent](agent.md) | The optional agent, switched on per host: its two programs, accounts and one sudoers line, runtimes, signed plugins and manifest, and what it can and cannot do. Built, not lab-tested |
+| [Network filesystems and remote storage](network-filesystems.md) | Mounting an rclone remote (with rclone crypt on top), the share wizard's protocols beyond NFS and SMB (SFTP, S3, WebDAV, rclone serve, iSCSI, NVMe over TCP, NBD, virtiofs, GlusterFS), and where each secret lives. Built, not lab-tested |
 | [Proxmox, TrueNAS and XCP-ng](appliances.md) | Connecting to these platforms, and what StorageForge can do on each |
 
 ## Running it
 
 | Page | What it covers |
 | :--- | :--- |
-| [Security](security.md) | Key vault, audit log, accounts and sessions, host identity, container hardening |
+| [Security](security.md) | Key vault, the key enclave and its kernel with the VEX that goes with it, audit log, accounts and sessions, host identity, container hardening |
+| [Ransomware defense](ransomware-defense.md) | The Security panel: decoys, retention holds, the host-side brake, quarantine, playbooks, evidence and what has and has not been tested |
 | [Operations](operations.md) | Configuration, backups, certificates, retention, logs, upgrades, dependency updates |
 | [Disaster recovery](disaster-recovery.md) | What to keep elsewhere, and rebuilding on a new machine |
 | [Console](console.md) | A terminal on a host or VM in the browser: SSH over LAN or Tailscale, or a VM's serial console, with every session audited and optionally recorded in full |
@@ -51,6 +53,8 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | [Cloning and migrating hosts](host-migration.md) | Copying a server or desktop between physical machines and VMs in any direction, for testing or migration. Design; the package list is built |
 | [Target hosts](target-hosts.md) | What a scanned or changed machine needs, and SSH for sending snapshots |
 | [Network devices](network-devices.md) | Routers, switches and firewalls, the one network language, changes with a rollback on the device, the opt-in scanner, the management planner |
+| [Standardized firewall (MikroTik-style DSL)](standardized-firewall-mikrotik.md) | A specification for one firewall language for every host, compiled to each backend |
+| [Standardized network stack (MikroTik-style DSL)](standardized-network-stack-mikrotik.md) | A specification for one language for the whole network stack, compiled to each backend |
 | [Infrastructure map](infrastructure-map.md) | Networks, firewalls, listeners, containers and VMs across hosts, who can reach what, and planning from it |
 | [KVM lab](kvm-lab.md) | The disposable test VMs, the test tiers and the distributions they cover |
 | [Troubleshooting](troubleshooting.md) | Common messages, what causes them and what to do |
@@ -63,6 +67,9 @@ The [feature guide](features/README.md) catalogues every feature, with how it wo
 | Page | What it covers |
 | :--- | :--- |
 | [UI audit, 2026-11-04](audit-2026-11-04-ui.md) | How the screens are organised and behave, the planner against what the platform has learned since it was written, and 41 findings with evidence |
+| [Bug hunt, 2026-11-25](bug-hunt-2026-11-25.md) | The findings of the full-codebase audit that were still open when 0.6.0 was cut, each labelled confirmed, plausible or unverified |
+| [Bug reports, 2026-11-10](bug-reports-2026-11-10.md) | Six bug reports and UI defects, fixed in 0.5.1 |
+| [Lab validation, 2026-11-01](lab-validation-2026-11-01.md) | Storage orchestration in the KVM lab, aimed at edge cases and recovery |
 | [Test audit, 2026-11-03](test-audit-2026-11-03.md) | What the test suites covered, the lab tier and feature map added, and the bugs they found |
 | [Test report, 2026-11-16](test-report-2026-11-16.md) | The test blocks, random tests, coverage, stress runs on SQLite and PostgreSQL, the bugs they found, and the crash |
 | [Ransomware defense audit, 2026-11-02](audit-2026-11-02-ransomware-defense.md) | The first implementation of the roadmap, what was wrong with it, and what was found while replacing it |
