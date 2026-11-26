@@ -120,8 +120,8 @@ RUN apk add --no-cache build-base openssl-dev pcre2-dev \
 # that script's, and SHA256SUMS from either is the same, which is how a build of one's own is compared with a release's.
 FROM ${ENCLAVE_BUILD_IMAGE} AS enclave
 ARG ENCLAVE_EPOCH=1794960000
-ARG ENCLAVE_KERNEL=6.18.64
-ARG ENCLAVE_KERNEL_SHA256=020d45510c539972e6f14c5c71566878d3b7ef56fb082b3e09134f2ebaade562
+ARG ENCLAVE_KERNEL=6.18.65
+ARG ENCLAVE_KERNEL_SHA256=c92606f956f09dc50b5a0e2af9e86763fce27ada1647de97f8d1ac8cfc95801d
 ENV SRC=/ws/enclave WORKSPACE=/ws OUT=/out EPOCH=${ENCLAVE_EPOCH} KERNEL=${ENCLAVE_KERNEL} KERNEL_SHA256=${ENCLAVE_KERNEL_SHA256}
 # the kernel first, from its two files alone: a change to the program does not build it again
 COPY enclave/image/inside.sh enclave/image/kernel.config /ws/enclave/image/

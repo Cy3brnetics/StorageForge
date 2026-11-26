@@ -95,6 +95,18 @@ jobs:
           docker save storageforge:ci -o /tmp/image.tar
           docker run --rm -v /tmp/image.tar:/image.tar:ro -v "$PWD/.trivyignore:/.trivyignore:ro" aquasec/trivy:latest \
             image --quiet --input /image.tar --severity CRITICAL --exit-code 1 --ignorefile /.trivyignore
+      - name: Kernel VEX is for this kernel
+        run: |
+          # security/vex.json was made for one kernel version (its @id); the enclave builds the one in the Dockerfile.
+          want=$(sed -n 's/^ARG ENCLAVE_KERNEL=//p' storageforge-indexer/Dockerfile)
+          test -n "$want"
+          grep -Eq "\"@id\": \"[^\"]*/linux-kernel-$want\"," storageforge-indexer/security/vex.json \
+            || { echo "security/vex.json was not made for kernel $want: regenerate it (docs/security.md, Key enclave)"; exit 1; }
+      - name: Grype, with the kernel VEX
+        run: |
+          docker run --rm -v /tmp/image.tar:/image.tar:ro -v "$PWD/.grype.yaml:/.grype.yaml:ro" \
+            -v "$PWD/storageforge-indexer/security/vex.json:/vex.json:ro" anchore/grype:latest \
+            docker-archive:/image.tar --config /.grype.yaml --vex /vex.json --fail-on high
 
   enclave:
     # The key enclave's micro VM image (docs/security.md, "Key enclave"): built twice from pinned sources and the two compared, compared with
@@ -118,6 +130,8 @@ jobs:
         run: cmp /tmp/enclave-a/SHA256SUMS /tmp/enclave-b/SHA256SUMS
       - name: And they are the bytes the repository records
         run: diff enclave/image/SHA256SUMS /tmp/enclave-a/SHA256SUMS
+      - name: And the objects the kernel compiled
+        run: diff enclave/image/kernel-objects.txt /tmp/enclave-a/kernel-objects.txt
       - name: Dependencies scanned
         run: |
           docker run --rm -v "$PWD/Cargo.lock:/src/Cargo.lock:ro" aquasec/trivy:latest \
@@ -126,6 +140,7 @@ jobs:
         run: |
           ARCH=arm64 sh enclave/image/build.sh /tmp/enclave-arm64
           diff enclave/image/SHA256SUMS.arm64 /tmp/enclave-arm64/SHA256SUMS
+          diff enclave/image/kernel-objects.arm64.txt /tmp/enclave-arm64/kernel-objects.txt
       - name: Signed with the release key
         env:
           RELEASE_KEY: ${{ secrets.STORAGEFORGE_RELEASE_KEY }}

@@ -257,8 +257,10 @@ exit 0
         (self.stubs / name).write_text(text)
         (self.stubs / name).chmod(0o755)
 
-    def env(self, path=None):
-        return {**os.environ, 'PATH': path or f'{self.stubs}:{os.environ["PATH"]}', 'SF_DOCKER_ETC': str(self.etc), 'TMPDIR': str(self.tmpdir)}
+    def env(self, path=None, as_root=False):
+        """The test user stands in for root on the folders under the work folder; as_root=True leaves the real rule (owned by uid 0) in force."""
+        own = {} if as_root else {'SF_DOCKER_UID': str(os.getuid()), 'SF_DOCKER_TRUST': str(self.work)}
+        return {**os.environ, 'PATH': path or f'{self.stubs}:{os.environ["PATH"]}', 'SF_DOCKER_ETC': str(self.etc), 'TMPDIR': str(self.tmpdir), **own}
 
     def daemon(self):
         return json.loads((self.etc / 'daemon.json').read_text())
@@ -275,11 +277,11 @@ exit 0
         r = subprocess.run(['bash', '-s', '--', '--report'], input=text, env=self.env(), capture_output=True, text=True, timeout=120)
         return r.stdout + r.stderr
 
-    def export(self, path=None, **over):
+    def export(self, path=None, as_root=False, **over):
         doc = yaml.load(changes.ansible(self.conn, changes.normalize(plan(**over))), Loader)
         cmd = next(t['ansible.builtin.shell']['cmd'] for play in doc for t in play['tasks'] if 'ansible.builtin.shell' in t and 't_docker_daemon' in t['ansible.builtin.shell']['cmd'])
         self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, text=True, capture_output=True).returncode, 0)
-        return subprocess.run(['bash', '-c', cmd], env=self.env(path), capture_output=True, text=True, timeout=60)
+        return subprocess.run(['bash', '-c', cmd], env=self.env(path, as_root), capture_output=True, text=True, timeout=60)
 
     def backups(self):
         return sorted(self.etc.glob('daemon.json.storageforge-*'))
@@ -288,7 +290,7 @@ exit 0
         """A PATH of the basic tools the script needs and the named ones, with no python3 or jq unless named."""
         d = Path(tempfile.mkdtemp(dir=self.work))
         for t in ('bash', 'dirname', 'mktemp', 'rm', 'cp', 'cat', 'diff', 'mkdir', 'date', 'id', 'readlink', 'grep', 'find', 'du', 'cut', 'df', 'tail', 'tr', 'sleep',
-                  'mv', 'touch', 'install', 'head', 'wc', 'sed', 'env', 'sort', 'cmp', *names):
+                  'mv', 'touch', 'install', 'head', 'wc', 'sed', 'env', 'sort', 'cmp', 'stat', *names):
             src = shutil.which(t)
             if src:
                 (d / t).symlink_to(src)
@@ -627,9 +629,54 @@ exit 0
     def test_a_target_that_is_already_a_docker_root_is_taken_without_the_move(self):
         self.new.mkdir()
         (self.new / 'image').mkdir()
+        (self.new / 'overlay2').mkdir()
         r = self.export(data_root=str(self.new), move_data='', log_max_size='')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.daemon()['data-root'], str(self.new))
+
+    def test_one_marker_is_not_enough_to_look_like_a_docker_root(self):
+        for only in ('containers', 'image'):         # /usr/share holds a containers folder on a Podman host
+            with self.subTest(only=only):
+                shutil.rmtree(self.new, ignore_errors=True)
+                self.new.mkdir()
+                (self.new / only).mkdir()
+                (self.new / 'other').write_text('x')
+                self.assert_refused_untouched(self.export(data_root=str(self.new), move_data='', log_max_size=''), 'not empty')
+        shutil.rmtree(self.new)
+        self.new.mkdir()
+        (self.new / 'image').mkdir()
+        (self.new / 'engine-id').write_text('x')
+        self.assertEqual(self.export(data_root=str(self.new), move_data='', log_max_size='').returncode, 0)
+
+    # ── only root may be able to change the way to the folder, since the copy follows links minutes later ──
+    def test_a_target_under_a_folder_others_can_write_is_refused_before_anything_stops(self):
+        for mode in (0o777, 0o775, 0o757, 0o1777):
+            with self.subTest(mode=oct(mode)):
+                shared = self.work / f'shared{mode}'
+                shared.mkdir()
+                shared.chmod(mode)
+                for move in ('1', ''):
+                    self.assert_refused_untouched(self.export(data_root=str(shared / 'docker'), move_data=move, log_max_size=''), 'only root can change')
+                    self.assertEqual(self.calls('docker stop'), [])
+
+    def test_a_folder_that_is_writable_is_refused_in_the_middle_of_the_way_too(self):
+        mid = self.work / 'mid'
+        (mid / 'deeper').mkdir(parents=True)
+        mid.chmod(0o775)
+        self.assert_refused_untouched(self.export(data_root=str(mid / 'deeper' / 'docker'), log_max_size=''), str(mid))
+
+    def test_a_chain_of_folders_only_the_owner_can_change_is_accepted_and_one_not_owned_by_root_is_not(self):
+        chain = self.work / 'a' / 'b'
+        chain.mkdir(parents=True)
+        r = self.export(data_root=str(chain / 'docker'), log_max_size='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # the real rule asks for uid 0: the folders of this user are not that
+        self.assertEqual(self.daemon()['data-root'], str(chain / 'docker'))
+        self.etc.joinpath('daemon.json').write_text(json.dumps(self.OLD_DAEMON, indent=2) + '\n')
+        self.log.unlink()
+        for b in self.backups():
+            b.unlink()
+        self.assert_refused_untouched(self.export(data_root=str(chain / 'docker2'), as_root=True, log_max_size=''), 'only root can change')
 
     def test_the_report_refuses_them_too(self):
         out = self.report(data_root='/', log_max_size='')

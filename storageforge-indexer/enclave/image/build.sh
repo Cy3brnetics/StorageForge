@@ -16,8 +16,8 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 ARCH=${ARCH:-x86_64}
 OUT=${1:-$HERE/image/out$([ "$ARCH" = x86_64 ] || echo "-$ARCH")}
 RUST_IMAGE=rust@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33      # rust 1.100.0 on Alpine 3.24: musl, so the program is static
-KERNEL=6.18.64
-KERNEL_SHA256=020d45510c539972e6f14c5c71566878d3b7ef56fb082b3e09134f2ebaade562
+KERNEL=6.18.65
+KERNEL_SHA256=c92606f956f09dc50b5a0e2af9e86763fce27ada1647de97f8d1ac8cfc95801d
 EPOCH=1794960000                 # 2026-11-17: every file in the image carries this time
 JOBS=${JOBS:-4}
 mkdir -p "$OUT"

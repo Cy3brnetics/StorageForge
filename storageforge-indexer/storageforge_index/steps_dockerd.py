@@ -172,6 +172,23 @@ dd_move() {
 # dd_system PATH: true for the root and the folders the system itself lives in, whole paths only (/var/lib/docker2 is not one).
 dd_system() { case $1 in @SYSDIRS@) return 0 ;; esac; return 1; }
 
+# dd_walk PATH: PATH and every folder above it that exists must be owned by root and writable by no one else. The copy follows links minutes after the
+# decision, and whoever can change a folder on the way can turn it into a link to /. Prints the first folder that is not, and returns 1.
+# A user that is not root (the tests) has SF_DOCKER_UID for the owner, and SF_DOCKER_TRUST for the folder where the walk ends.
+dd_walk() { local p=$1 owner=0 trust= st u m
+  if ((EUID != 0)); then owner=${SF_DOCKER_UID:-0}; trust=${SF_DOCKER_TRUST:+$(readlink -m -- "$SF_DOCKER_TRUST")}; fi
+  while :; do
+    if [[ -e $p ]]; then
+      st=$(stat -c "%u %a" -- "$p" 2>/dev/null) || st=
+      u=${st%% *}; m=${st##* }
+      if [[ -z $st || $u != "$owner" ]] || ((8#$m & 0022)); then echo "$p"; return 1; fi
+    fi
+    if [[ $p == / ]] || [[ -n $trust && $p == "$trust" ]]; then break; fi
+    p=$(dirname -- "$p")
+  done
+  return 0
+}
+
 # dd_work: the whole step, reading and setting the locals of t_docker_daemon. tmp is its own temporary folder.
 dd_work() { local base new cur eff_root want rwant d out vout help used avail par l hid drv_before= want_drv stopped=
   local dd_bak= moving=0 drift=0 changed=0
@@ -190,7 +207,7 @@ dd_work() { local base new cur eff_root want rwant d out vout help used avail pa
       dd_conflict "the data directory $data_root is not an absolute path without .., . or double slashes"; return 0
     fi
     rwant=$(readlink -m -- "$want") || rwant=
-    [[ -n $rwant ]] || { dd_conflict "could not resolve $want"; return 0; }
+    if [[ -z $rwant || -L $rwant ]]; then dd_conflict "could not resolve $want"; return 0; fi
     # the folder itself or any link on the way to it may lead to the root or to a system folder
     par=$want
     while [[ $par != / && -n $par ]]; do
@@ -209,20 +226,21 @@ dd_work() { local base new cur eff_root want rwant d out vout help used avail pa
     if [[ $rwant != "$want" ]]; then info "$want resolves to $rwant: that is the folder used"; fi
     want=$rwant
   fi
-  cur=$(readlink -m -- "$cur") || true
+  cur=$(readlink -m -- "$cur") || cur=$cur
   # the current directory asked for again is no change: no key is written for it, so nothing restarts
   eff_root=$want
   [[ -n $want && $want == "$cur" ]] && eff_root=
   if [[ -n $want && $want != "$cur" ]]; then drift=1; [[ -n $move ]] && moving=1; fi
   if [[ -n $data_root ]]; then
     if ((drift)); then
+      l=$(dd_walk "$want") || { dd_conflict "$l is writable by other users or not owned by root: pick a folder only root can change"; return 0; }
       case "$want/" in "$cur/"*) dd_conflict "$want is inside the current data directory $cur"; return 0 ;; esac
       case "$cur/" in "$want/"*) dd_conflict "the current data directory $cur is inside $want"; return 0 ;; esac
     fi
     if ((drift && !moving)) && [[ -e $want ]]; then
       [[ -d $want ]] || { dd_conflict "$want is not a folder"; return 0; }
-      if [[ -n $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) && ! -d $want/image && ! -d $want/containers ]]; then
-        dd_conflict "$want is not empty and does not look like a Docker data directory (no image or containers folder in it): pick an empty folder"; return 0
+      if [[ -n $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) && ! ( -d $want/image && ( -d $want/overlay2 || -d $want/containers || -e $want/engine-id ) ) ]]; then
+        dd_conflict "$want is not empty and does not look like a Docker data directory (no image folder with overlay2, containers or engine-id beside it): pick an empty folder"; return 0
       fi
     fi
   fi
@@ -397,6 +415,7 @@ def _check(conn, c, h, p, say):
     elif want and cur and want == cur:
         say('note', f'{want} is where Docker keeps its data now: no move needed')
     elif want and cur:
+        say('note', f'the script also checks that {want} and every folder above it is owned by root and writable by no one else, since the copy follows links')
         if want.startswith(cur + '/'):
             say('crit', f'{want} is inside the current data directory {cur}: the copy would copy into itself')
         elif cur.startswith(want + '/'):

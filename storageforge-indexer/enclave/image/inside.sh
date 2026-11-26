@@ -72,6 +72,9 @@ kernel)
     cp arch/x86/boot/bzImage "$OUT/bzImage" && cp vmlinux "$OUT/vmlinux"
   fi
   cp .config "$OUT/kernel.config.full"
+  # What was compiled, as source paths without their extension: the evidence for "this CVE's code is not in the enclave's kernel"
+  # (security/kernel_vex.py). Not in SHA256SUMS; image/kernel-objects*.txt record it, and CI compares it like the sums.
+  find . -name "*.o" ! -path "./scripts/*" ! -path "./tools/*" ! -name "*.mod.o" ! -name "built-in.o" | sed "s|^\./||; s|\.o\$||" | LC_ALL=C sort -u > "$OUT/kernel-objects.txt"
   ;;
 sums)
   # shellcheck disable=SC2086  # KFILES is a list of names
