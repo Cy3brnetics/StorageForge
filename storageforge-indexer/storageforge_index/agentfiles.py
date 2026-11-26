@@ -104,7 +104,6 @@ def _apply_index(conn: Conn, host: str, path: str, act: str, st: dict | None) ->
     mount_id = found[0]
     parent, name = posixpath.split(path)
     sqlite = conn.dialect == 'sqlite'
-    ts = (lambda e: e) if sqlite else (lambda e: f'to_timestamp({e})')
     rows = conn.all("""SELECT r.file_id FROM file_records r JOIN directories d ON d.dir_id = r.dir_id
                        WHERE d.mount_id = :m AND d.path = :p AND r.filename = :n""", {'m': mount_id, 'p': parent, 'n': name})
     if act in ('delete', 'moved_from'):
@@ -120,13 +119,13 @@ def _apply_index(conn: Conn, host: str, path: str, act: str, st: dict | None) ->
     p = {'size': 0 if is_dir else st['size'], 'mtime': st['mtime'], 'uid': _int(st.get('uid'), 2**32), 'gid': _int(st.get('gid'), 2**32),
          'dir': is_dir if not sqlite else int(is_dir), 'link': (st.get('kind') == 'link') if not sqlite else int(st.get('kind') == 'link')}
     if rows:
-        conn.execute(f"""UPDATE file_records SET file_size_bytes = :size, modified_at = {ts(':mtime')}, owner_uid = :uid, group_gid = :gid,
+        conn.execute(f"""UPDATE file_records SET file_size_bytes = :size, modified_at = {conn.ts(':mtime')}, owner_uid = :uid, group_gid = :gid,
                              checksum_hash = CASE WHEN file_size_bytes <> :size THEN NULL ELSE checksum_hash END WHERE file_id = :i""", p | {'i': rows[0][0]})
         return 'updated'
     ext = '' if is_dir or '.' not in name.lstrip('.') else name.rsplit('.', 1)[1].lower()[:32]
     did = dir_id(conn, mount_id, parent)
     fid = conn.scalar(f"""INSERT INTO file_records (mount_id, dir_id, filename, extension, file_size_bytes, is_directory, is_symlink, owner_uid, group_gid, modified_at)
-                          VALUES (:m, :d, :n, :e, :size, :dir, :link, :uid, :gid, {ts(':mtime')})
+                          VALUES (:m, :d, :n, :e, :size, :dir, :link, :uid, :gid, {conn.ts(':mtime')})
                           ON CONFLICT (dir_id, filename) DO NOTHING RETURNING file_id""", p | {'m': mount_id, 'd': did, 'n': name, 'e': ext})
     if fid and sqlite:
         conn.execute('INSERT INTO file_fts (rowid, filename) VALUES (:i, :n)', {'i': fid, 'n': name})

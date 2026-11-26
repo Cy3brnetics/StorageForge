@@ -67,14 +67,6 @@ def take_inventory(conn: Conn, host: str, body: dict, at: int) -> int:
     return 1
 
 
-class _Dialect:
-    def __init__(self, dialect):
-        self.dialect = dialect
-
-    def ts(self, expr: str) -> str:
-        return expr if self.dialect == 'sqlite' else f'to_timestamp({expr})'
-
-
 def apply_monitoring(conn: Conn, host: str, sections: dict, at: int):
     """A monitoring-only host's inventory and mounts, from its agent: there is no SSH scan to take them from. Its machine id is not
     taken from here; it was pinned when an admin adopted the host, and what the agent claims is compared with it (agentwatch)."""
@@ -87,12 +79,10 @@ def apply_monitoring(conn: Conn, host: str, sections: dict, at: int):
     host_id, address = rows[0]
     inv = inventory_of(sections, address or host)
     data = json.loads(inv.to_json()) | {'source': 'agent', 'label': LABEL, 'agent_at': at}
-    dialect = _Dialect(conn.dialect)
-    cast = ':inv' if conn.dialect == 'sqlite' else 'CAST(:inv AS jsonb)'
-    conn.execute(f'UPDATE hosts SET inventory_json = {cast}, os_info = :os, last_scanned_at = {dialect.ts(":at")} WHERE host_id = :h',
+    conn.execute(f'UPDATE hosts SET inventory_json = {conn.jsonp(":inv")}, os_info = :os, last_scanned_at = {conn.ts(":at")} WHERE host_id = :h',
                  {'inv': json.dumps(data), 'os': inv.os_info, 'at': at, 'h': host_id})
     planned = plan_mounts(inv.mounts, ScanOptions())
-    Database.sync_mounts(dialect, conn, host_id, planned)
+    Database.sync_mounts(conn, host_id, planned)
     conn.execute("""INSERT INTO mount_usage (host_id, mount_point, at, used_bytes, total_bytes)
                     SELECT host_id, mount_point, :now, used_bytes, total_bytes FROM mounts
                     WHERE host_id = :h AND total_bytes > 0 AND used_bytes IS NOT NULL

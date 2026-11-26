@@ -62,7 +62,21 @@ def dir_id(conn: 'Conn', mount_id: int, path: str) -> int:
     return conn.scalar('SELECT dir_id FROM directories WHERE mount_id = :m AND path = :p', {'m': mount_id, 'p': path})
 
 
-class Conn:
+class Dialect:
+    """SQL spellings that differ between SQLite and PostgreSQL. Needs only .dialect, so a Conn and a Database both have them."""
+    dialect: str
+
+    def ts(self, expr: str) -> str:
+        return expr if self.dialect == 'sqlite' else f'to_timestamp({expr})'
+
+    def distinct(self, a: str, b: str) -> str:
+        return f'{a} IS NOT {b}' if self.dialect == 'sqlite' else f'{a} IS DISTINCT FROM {b}'
+
+    def jsonp(self, expr: str) -> str:
+        return expr if self.dialect == 'sqlite' else f'CAST({expr} AS jsonb)'
+
+
+class Conn(Dialect):
     def __init__(self, raw, dialect: str):
         self.raw, self.dialect = raw, dialect
 
@@ -131,7 +145,7 @@ def epoch(value) -> int | None:
 USAGE_DETAIL_DAYS = 90        # after that, one mount_usage row per day per mount
 
 
-class Database:
+class Database(Dialect):
     def __init__(self, url: str):
         self.url, self.busy_ms, self.cache_kib = url, 60000, 262144
         if url.startswith(('postgres://', 'postgresql://')):
@@ -153,16 +167,7 @@ class Database:
             if sqlite3.sqlite_version_info < (3, 35, 0):
                 raise SystemExit(f'SQLite {sqlite3.sqlite_version} is too old; 3.35 or newer is required')
 
-    # dialect helpers
-    def ts(self, expr: str) -> str:
-        return expr if self.dialect == 'sqlite' else f'to_timestamp({expr})'
-
-    def distinct(self, a: str, b: str) -> str:
-        return f'{a} IS NOT {b}' if self.dialect == 'sqlite' else f'{a} IS DISTINCT FROM {b}'
-
-    def jsonp(self, expr: str) -> str:
-        return expr if self.dialect == 'sqlite' else f'CAST({expr} AS jsonb)'
-
+    # dialect helpers: ts, distinct and jsonp come from Dialect, shared with Conn
     @property
     def boolean(self) -> str:
         return 'INTEGER' if self.dialect == 'sqlite' else 'BOOLEAN'
@@ -299,7 +304,9 @@ class Database:
                      {'h': rows[0][0], 'a': rows[0][1] or rows[0][0]})
         return rows[0]
 
-    def sync_mounts(self, conn: Conn, host_id: int, plans) -> None:
+    @staticmethod
+    def sync_mounts(conn: Conn, host_id: int, plans) -> None:
+        """A host's mounts table from its mount plans; needs only the connection, so the agent's monitoring-only path calls it too."""
         now = int(time.time())
         state = {'scan': 'indexed', 'skip': 'skipped', 'alias': 'bind-alias'}
         with conn.tx():
@@ -308,7 +315,7 @@ class Database:
                 p.mount_id = conn.scalar(f"""
                     INSERT INTO mounts (host_id, mount_point, source, filesystem_type, mount_options, dev_majmin,
                                         fs_root, total_bytes, used_bytes, scan_state, skip_reason, seen_at)
-                    VALUES (:h, :mp, :src, :fs, :opt, :mm, :root, :tot, :used, :st, :why, {self.ts(':now')})
+                    VALUES (:h, :mp, :src, :fs, :opt, :mm, :root, :tot, :used, :st, :why, {conn.ts(':now')})
                     ON CONFLICT (host_id, mount_point) DO UPDATE SET source = excluded.source,
                         filesystem_type = excluded.filesystem_type, mount_options = excluded.mount_options,
                         dev_majmin = excluded.dev_majmin, fs_root = excluded.fs_root,
