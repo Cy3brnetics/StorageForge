@@ -2,7 +2,9 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.6.0 — 2026-11-26
+
+The work the roadmap planned for 0.5.5 to 0.5.16, released together. Much of it is built and unit-tested but **not lab-tested**: each such item says so below and in `roadmap.md`. The PostgreSQL migrations of this release have not been run against PostgreSQL in this release's checks.
 
 ### Fixed
 - Requests no longer wait on the reverse proxy's name lookup. With `STORAGEFORGE_PROXY_HOST` set, a slow container resolver made sign-in, the first page and periodic host refreshes stall about 8 s at a time. The lookup now runs once at start (bounded) and then in the background.
