@@ -159,8 +159,7 @@ def _ansible(t, conn=None):
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'act() { echo "changed: $*"; }; durable() { sync; }\n')
     words = [p['target'], p['port'] or str(netconsole.DEFAULT_PORT), p['source_port'] or str(netconsole.DEFAULT_SOURCE_PORT), p['interface'] or '', p['state'] or 'present']
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + '\nt_netconsole ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, head + BASH + '\nt_netconsole ' + ' '.join(q(w) for w in words) + '\n')
 
 
 changes.register('netconsole', {'group': 'Monitoring', 'label': 'Send kernel messages to the controller (netconsole)', 'fields': [

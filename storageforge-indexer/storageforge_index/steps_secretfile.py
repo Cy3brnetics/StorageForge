@@ -96,9 +96,8 @@ def _ansible(t, conn=None):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
-    words = [('1' if p.get(a) is True else '' if p.get(a) is False else p.get(a) or '') for a in ARGS]
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + '\nt_secret_file ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    words = changes.words_of(p, ARGS)
+    return changes.shell_task(t, head + BASH + '\nt_secret_file ' + ' '.join(q(w) for w in words) + '\n')
 
 
 changes.register('secret-file', {'group': 'Software', 'label': 'Write a vault secret to a file', 'fields': [

@@ -502,13 +502,12 @@ def _ansible(fn: str, args: tuple):
     def render(t):
         q = shlex.quote
         p = t['params']
-        call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in args)
-        helpers = ''.join(re.search(rf'^{name}\(\) \{{.*?^\}}$', INFRA_BASH, re.M | re.S)[0] + '\n' for name in ('net_is_ssh_path', 'net_guard'))
+        call = ' '.join(q(w) for w in changes.words_of(p, args))
+        helpers = changes.bash_fn(INFRA_BASH, 'net_is_ssh_path', 'net_guard')
         head = ('set -u; APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }\n'
                 'info() { echo "$*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }\n'
                 'fw_arm() { :; }; fw_tool() { :; }\n')
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + helpers + BASH + f'\n{fn} {call}\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, head + helpers + BASH + f'\n{fn} {call}\n')
     return render
 
 

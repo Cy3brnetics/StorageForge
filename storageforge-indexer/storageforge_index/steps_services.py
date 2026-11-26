@@ -165,8 +165,7 @@ def _ansible(t, conn):
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; }; info() { :; }; skip() { :; }\n'
             'act() { echo "changed: $*"; }\n')
     call = ' '.join(q(a) for a in [p['from_host'], '1' if p.get('timers') else '', *extra])
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\nt_services {call}\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, head + BASH + f'\nt_services {call}\n')
 
 
 changes.register('services', {'group': 'Software', 'label': 'Start the services of another host', 'fields': [
@@ -230,8 +229,7 @@ def _unit_ansible(t, conn=None):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; }; info() { :; }; skip() { :; }\n'
             'act() { echo "changed: $*"; }\n')
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + UNIT_BASH + f'\nt_unit_state {q(p["unit"])} {q(p["state"])}\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, head + UNIT_BASH + f'\nt_unit_state {q(p["unit"])} {q(p["state"])}\n')
 
 
 changes.register('unit-state', {'group': 'Software', 'label': 'Start, restart or stop a service', 'fields': [

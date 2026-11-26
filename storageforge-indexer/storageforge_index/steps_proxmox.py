@@ -226,16 +226,15 @@ ANSIBLE_HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*
 def _vm_helpers() -> str:
     """The cloud image catalog and the download-and-check function of vm-create, which t_pve_vm calls: an export holds one step, so it carries them."""
     from . import steps_vm
-    return ''.join(re.search(rf'^{fn}\(\) \{{.*?^\}}$', steps_vm.bash(), re.M | re.S)[0] + '\n' for fn in ('sf_vm_image', 'sf_vm_fetch'))
+    return changes.bash_fn(steps_vm.bash(), 'sf_vm_image', 'sf_vm_fetch')
 
 
 def ansible_of(fn: str, args: tuple, destructive=False):
     def render(t):
         q = shlex.quote
         p = t['params']
-        words = [('1' if p.get(a) else '') if isinstance(p.get(a), bool) else str(p.get(a) or '') for a in args]
-        task = {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': ANSIBLE_HEAD + (_vm_helpers() if fn == 't_pve_vm' else '') + BASH + f'\n{fn} ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        words = changes.words_of(p, args)
+        task = changes.shell_task(t, ANSIBLE_HEAD + (_vm_helpers() if fn == 't_pve_vm' else '') + BASH + f'\n{fn} ' + ' '.join(q(w) for w in words) + '\n')
         if destructive:
             task.update(tags=['destructive'], when='storageforge_destructive | default(false) | bool')
         return task

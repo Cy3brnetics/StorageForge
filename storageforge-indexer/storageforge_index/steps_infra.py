@@ -1243,10 +1243,6 @@ def _check_zfs_rollback(conn, c, h, p, say):
 
 
 # ── Ansible ─────────────────────────────────────────────────────────
-def _shell(name: str, cmd: str, changed='changed') -> dict:
-    return {'name': name, 'ansible.builtin.shell': {'cmd': cmd, 'executable': '/bin/bash'}, 'register': 'sf_out', 'changed_when': f"'{changed}' in sf_out.stdout"}
-
-
 def _helper_tasks() -> list[dict]:
     return [{'name': 'storageforge-fwrules', 'ansible.builtin.copy': {'dest': '/usr/local/sbin/storageforge-fwrules', 'mode': '0755', 'content': FWRULES}}]
 
@@ -1263,7 +1259,7 @@ def _ansible_fw_rule(t):
         body = f'if storageforge-fwrules has {args}; then storageforge-fwrules remove {args} && echo changed; fi'
     else:
         body = f'if ! storageforge-fwrules has {args}; then storageforge-fwrules ensure {args} && echo changed; fi'
-    return _helper_tasks() + [_shell(changes.title(t), 'export PATH=$PATH:/usr/local/sbin; ' + body)]
+    return _helper_tasks() + [changes.shell_task(t, 'export PATH=$PATH:/usr/local/sbin; ' + body)]
 
 
 def _ansible_fw_fence(t):
@@ -1275,7 +1271,7 @@ def _ansible_fw_fence(t):
     else:
         args = ' '.join(q(x) for x in (p['name'], ports, p['clients'], p['iface'] or '-'))
         body = f'if ! storageforge-fwrules fence-has {args}; then storageforge-fwrules fence-set {args} && echo changed; fi'
-    return _helper_tasks() + [_shell(changes.title(t), 'export PATH=$PATH:/usr/local/sbin; ' + body)]
+    return _helper_tasks() + [changes.shell_task(t, 'export PATH=$PATH:/usr/local/sbin; ' + body)]
 
 
 def _ansible_bash(fn: str, args: tuple):
@@ -1283,16 +1279,16 @@ def _ansible_bash(fn: str, args: tuple):
     def render(t):
         q = shlex.quote
         p = t['params']
-        call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in args)
-        body = re.search(rf'^{fn}\(\) \{{.*?^\}}$', BASH, re.M | re.S)[0]
+        call = ' '.join(q(w) for w in changes.words_of(p, args))
+        body = changes.bash_fn(BASH, fn)
         # the network steps lean on these helpers, and a missing one would only look like "command not found, return 0"
-        helpers = ''.join(re.search(pat, BASH, re.M | re.S)[0] + '\n' for pat in (r'^net_manager\(\) \{.*?^\}$', r'^net_is_ssh_path\(\) .*$', r'^net_guard\(\) \{.*?^\}$'))
+        helpers = changes.bash_fn(BASH, 'net_manager', 'net_is_ssh_path', 'net_guard')
         # A rollback timer needs the storageforge-fwrules program: a playbook run refuses one instead of dropping it.
         fw = 'fw_arm() { [[ -n $1 ]] || return 0; conflict "a rollback timer is not available from an Ansible export: leave the rollback empty"; }; fw_tool() { :; }'
         fwprog = '/usr/local/sbin/storageforge-fwrules' if fn == 't_wg_forward' else '/bin/true'
-        task = _shell(changes.title(t), (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
+        task = changes.shell_task(t, (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
                                          'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }; FW=' + fwprog + '\n'
-                                         + helpers + fw + '\n' + body + f'\n{fn} {call}\n'))
+                                         + helpers + fw + '\n' + body + f'{fn} {call}\n'))
         return _helper_tasks() + [task] if fn == 't_wg_forward' else task
     return render
 

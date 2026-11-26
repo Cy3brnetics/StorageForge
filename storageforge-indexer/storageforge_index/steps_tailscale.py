@@ -105,9 +105,8 @@ def _ansible(t):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }\n')
-    call = ' '.join(q(str((p.get(a) or '') if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in ARGS)
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\nt_tailscale {call}\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    call = ' '.join(q(w) for w in changes.words_of(p, ARGS))
+    return changes.shell_task(t, head + BASH + f'\nt_tailscale {call}\n')
 
 
 changes.register('tailscale', {'group': 'Network', 'label': 'Join a tailnet (Tailscale)', 'fields': [

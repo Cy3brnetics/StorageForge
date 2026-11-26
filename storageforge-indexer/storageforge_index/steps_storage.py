@@ -429,8 +429,7 @@ def _ansible_edit(t: dict) -> dict:
 
 def _ansible_guards() -> str:
     """The host-side refusals of the script (device in use, holds RAID/LVM/LUKS), so a playbook run keeps them too."""
-    head = next(v for v in vars(changes).values() if isinstance(v, str) and 'dev_guard()' in v)
-    guard = head[head.index('dev_guard()'):].split('\n}\n')[0] + '\n}\n'
+    guard = changes.bash_fn(changes.CHANGE_BODY_3, 'dev_guard')
     return ('APPLY=1; conflict() { echo "conflict: $*" >&2; exit 1; }; later() { conflict "$*"; }\n' + guard)
 
 

@@ -453,9 +453,8 @@ def _ansible(t):
     import shlex
     from .steps_proxmox import ANSIBLE_HEAD     # here, not at the top: changes.py imports both modules, and either may be the first
     p = t['params']
-    words = [('1' if p.get(a) else '') if isinstance(p.get(a), bool) else str(p.get(a) or '') for a in ARGS]
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': ANSIBLE_HEAD + BASH + '\nt_docker_daemon ' + ' '.join(shlex.quote(w) for w in words) + '\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    words = changes.words_of(p, ARGS)
+    return changes.shell_task(t, ANSIBLE_HEAD + BASH + '\nt_docker_daemon ' + ' '.join(shlex.quote(w) for w in words) + '\n')
 
 
 changes.VALIDATE['docker-daemon'] = _validate

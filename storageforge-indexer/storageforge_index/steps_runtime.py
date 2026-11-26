@@ -379,8 +379,7 @@ def _ansible(t, conn=None):
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'doing() { echo "changed: $*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
     words = [p['runtime'], p.get('source') or 'distro', '1' if p.get('rootless') else '', p.get('user') or '']
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + '\nt_runtime_install ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, head + BASH + '\nt_runtime_install ' + ' '.join(q(w) for w in words) + '\n')
 
 
 changes.register('runtime-install', {'group': 'Workloads', 'label': 'Install a container or VM runtime', 'fields': [

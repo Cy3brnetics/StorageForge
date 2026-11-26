@@ -183,9 +183,8 @@ def _ansible(t, conn=None):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { echo "$*"; }\n'
             'later() { conflict "$*"; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; durable() { sync; }\n')
-    words = [str(p.get(a) or '') for a in ARGS]
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + RELOAD_SYSTEMD + BASH + '\nt_restore_test ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    words = changes.words_of(p, ARGS)
+    return changes.shell_task(t, head + RELOAD_SYSTEMD + BASH + '\nt_restore_test ' + ' '.join(q(w) for w in words) + '\n')
 
 
 changes.register('restore-test', {'group': 'Toolbox', 'label': 'Restore test of a backup', 'fields': [

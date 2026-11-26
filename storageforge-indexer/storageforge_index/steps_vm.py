@@ -428,11 +428,10 @@ def _check(conn, c, h, p, say):
 def _ansible(t):
     q = shlex.quote
     p = t['params']
-    call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in ARGS)
+    call = ' '.join(q(w) for w in changes.words_of(p, ARGS))
     head = (pvenode.NOT_ON_PVE_BASH + '\n' + 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + bash() + f'\nt_vm_create {call}\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, head + bash() + f'\nt_vm_create {call}\n')
 
 
 def _title(p):

@@ -247,10 +247,9 @@ def _ansible(fn: str, args_of):
     def render(t, conn):
         q = shlex.quote
         p = t['params']
-        own = [('1' if p[a] else '') if isinstance(p.get(a), bool) else str(p.get(a) or '') for a in changes.ARGS[t['type']]]
+        own = changes.words_of(p, changes.ARGS[t['type']])
         extra = args_of(conn, t) if conn is not None else []
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': HEAD + BASH + f'\n{fn} ' + ' '.join(q(a) for a in own + extra) + '\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, HEAD + BASH + f'\n{fn} ' + ' '.join(q(a) for a in own + extra) + '\n')
     return render
 
 

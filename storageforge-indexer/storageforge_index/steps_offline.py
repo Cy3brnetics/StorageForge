@@ -80,8 +80,7 @@ def _ansible(fn, args):
         p = t['params']
         head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { echo "$*"; }\n'
                 'act() { echo "changed: $*"; }; durable() { sync; }\n')
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\n{fn} ' + ' '.join(q(str(p.get(a) or '')) for a in args) + '\n',
-                'executable': '/bin/bash'}, 'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, head + BASH + f'\n{fn} ' + ' '.join(q(w) for w in changes.words_of(p, args)) + '\n')
     return render
 
 

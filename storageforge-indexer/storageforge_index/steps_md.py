@@ -104,8 +104,7 @@ def _ansible(t):
            'c=/etc/mdadm.conf; [ -d /etc/mdadm ] && c=/etc/mdadm/mdadm.conf; '
            f'u=$(mdadm --detail --export {q(dev)} | sed -n "s/^MD_UUID=//p"); grep -qs -- "$u" "$c" || {{ mdadm --detail --brief {q(dev)} >>"$c"; echo changed; }}; '
            + mk)
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': cmd, 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, cmd)
 
 
 changes.register('md-array', {'group': 'mdadm', 'label': 'Create an mdadm array', 'destructive': True, 'fields': FIELDS,

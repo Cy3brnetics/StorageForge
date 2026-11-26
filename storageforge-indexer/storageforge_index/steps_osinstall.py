@@ -479,11 +479,10 @@ def _ansible(fn: str, args: tuple):
     def render(t):
         q = shlex.quote
         p = t['params']
-        call = ' '.join(q(str(p.get(a) or '')) for a in args)
+        call = ' '.join(q(w) for w in changes.words_of(p, args))
         head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
                 'doing() { :; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + steps_vm.bash() + bash() + f'\n{fn} {call}\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, head + steps_vm.bash() + bash() + f'\n{fn} {call}\n')
     return render
 
 

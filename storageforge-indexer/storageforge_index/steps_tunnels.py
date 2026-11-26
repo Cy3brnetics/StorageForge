@@ -199,9 +199,8 @@ HEAD = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; co
 def _ansible(fn: str, args: tuple):
     def render(t):
         q = shlex.quote
-        call = ' '.join(q(str(t['params'].get(a) or '')) for a in args)
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': HEAD + BASH + f'\n{fn} {call}\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        call = ' '.join(q(w) for w in changes.words_of(t['params'], args))
+        return changes.shell_task(t, HEAD + BASH + f'\n{fn} {call}\n')
     return render
 
 

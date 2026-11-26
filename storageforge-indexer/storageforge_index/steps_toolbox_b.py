@@ -213,11 +213,10 @@ def _ansible(fn: str, args: tuple, extra=None):
     def render(t, conn=None):
         q = shlex.quote
         p = t['params']
-        words = [str(p.get(a) or '') for a in args] + ((extra(conn, t) if conn is not None else ['refused', 'written without the index', '', '']) if extra else [])
+        words = changes.words_of(p, args) + ((extra(conn, t) if conn is not None else ['refused', 'written without the index', '', '']) if extra else [])
         head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }; doing() { :; }\n'
                 'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }; durable() { sync; }\n')
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\n{fn} ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, head + BASH + f'\n{fn} ' + ' '.join(q(w) for w in words) + '\n')
     return render
 
 

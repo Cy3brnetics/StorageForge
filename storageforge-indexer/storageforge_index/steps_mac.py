@@ -100,8 +100,7 @@ def _ansible(t):
     p = t['params']
     head = ('APPLY=1; ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; info() { :; }\n'
             'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n')
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + BASH + f'\nt_vm_mac {q(p["path"])} {q(p.get("system") or "")}\n', 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+    return changes.shell_task(t, head + BASH + f'\nt_vm_mac {q(p["path"])} {q(p.get("system") or "")}\n')
 
 
 changes.register('vm-mac', {'group': 'VMs', 'label': 'Let VMs use a folder of disks (SELinux or AppArmor)', 'fields': [

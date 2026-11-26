@@ -295,6 +295,32 @@ def title(t: dict) -> str:
     }[k]()
 
 
+# ── the Ansible task that runs a step's Bash function: built here, and each task still carries every helper it runs ──
+def shell_task(t: dict | str, cmd: str, changed: str = 'changed') -> dict:
+    """One ansible.builtin.shell task that runs cmd in Bash. t is the step (its title names the task) or the name itself;
+    the task counts as changed when its output holds the word changed."""
+    return {'name': title(t) if isinstance(t, dict) else t, 'ansible.builtin.shell': {'cmd': cmd, 'executable': '/bin/bash'},
+            'register': 'sf_out', 'changed_when': f"'{changed}' in sf_out.stdout"}
+
+
+def words_of(p: dict, args) -> list[str]:
+    """A step's parameters as the words its Bash function takes, in the order of args: a yes/no is 1 or empty, and a parameter the
+    step does not have (a plan saved before the field was added) is empty, not the word None."""
+    return [('1' if v else '') if isinstance(v, bool) else '' if v is None else str(v) for v in (p.get(a) for a in args)]
+
+
+def bash_fn(text: str, *names: str) -> str:
+    """The Bash functions of these names, cut out of text, each with its newline: the export carries them whole. A function
+    is either one line that ends in '; }', or runs to the first line that is a lone '}'."""
+    out = []
+    for name in names:
+        m = re.search(rf'^{re.escape(name)}\(\) \{{(?:[^\n]*; \}}|.*?^\}})$', text, re.M | re.S)
+        if not m:
+            raise ValueError(f'no Bash function {name}() in the text')
+        out.append(m[0] + '\n')
+    return ''.join(out)
+
+
 def normalize(body: dict) -> dict:
     name = str(body.get('name') or '').strip()
     if not name or len(name) > 80 or '\n' in name:

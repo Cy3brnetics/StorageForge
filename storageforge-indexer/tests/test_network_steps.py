@@ -425,6 +425,39 @@ class Checks(Db):
         self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, capture_output=True, text=True).returncode, 0)
 
 
+class AnsibleTask(unittest.TestCase):
+    """The one builder of the Ansible task that runs a step's Bash function (changes.shell_task, words_of, bash_fn)."""
+
+    def test_words_of_turns_parameters_into_the_words_of_the_bash_function(self):
+        p = {'on': True, 'off': False, 'zero': '0', 'spaced': 'a b', 'empty': ''}
+        self.assertEqual(changes.words_of(p, ('on', 'off', 'zero', 'spaced', 'empty', 'not_saved')), ['1', '', '0', 'a b', '', ''])
+
+    def test_bash_fn_cuts_whole_functions_and_refuses_a_missing_one(self):
+        text = 'one() { echo 1; }\ntwo() {\n  echo 2\n}\nthree() { echo 3; }\n'
+        self.assertEqual(changes.bash_fn(text, 'one', 'two'), 'one() { echo 1; }\ntwo() {\n  echo 2\n}\n')
+        with self.assertRaises(ValueError):
+            changes.bash_fn(text, 'four')
+
+    def test_shell_task_registers_the_output_and_counts_the_changed_word(self):
+        self.assertEqual(changes.shell_task('n', 'true', changed='installed'),
+                         {'name': 'n', 'ansible.builtin.shell': {'cmd': 'true', 'executable': '/bin/bash'}, 'register': 'sf_out',
+                          'changed_when': "'installed' in sf_out.stdout"})
+
+    def test_an_exported_network_step_carries_its_helpers_once(self):
+        # net-bridge is built from steps_infra, net-address from steps_network: both cut their helpers out of steps_infra.BASH
+        for kind, params, fn, helpers in (
+                ('net-bridge', {'name': 'br0', 'ports': 'eth1', 'address': '', 'rollback': ''}, 't_net_bridge', {'net_manager', 'net_is_ssh_path', 'net_guard', 'fw_arm', 'fw_tool'}),
+                ('net-address', {'iface': 'eth1', 'address': '10.0.5.2/24', 'state': 'present', 'rollback': ''}, 't_net_address', {'net_is_ssh_path', 'net_guard', 'fw_arm', 'fw_tool'})):
+            cmd = changes._ansible_task({'id': 't1', 'type': kind, 'host': 'nas', 'params': params}, None)['ansible.builtin.shell']['cmd']
+            defined = re.findall(r'(?:^|[;{] *)(\w+)\(\) \{', cmd, re.M)
+            self.assertEqual(defined.count('net_guard'), 1, kind)
+            self.assertIn(fn, defined, kind)
+            if kind == 'net-bridge':    # steps_infra cuts out the one function it runs (steps_network carries its own whole BASH)
+                self.assertEqual([d for d in defined if d.startswith('t_')], [fn])
+            self.assertLessEqual(helpers, set(defined), kind)
+            self.assertEqual(subprocess.run(['bash', '-n'], input=cmd, capture_output=True, text=True).returncode, 0, kind)
+
+
 class _Loader(yaml.SafeLoader):
     pass
 

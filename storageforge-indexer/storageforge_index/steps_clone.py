@@ -115,8 +115,7 @@ def _ansible(t, conn):
     p = t['params']
     text = _script_for(conn, t) if conn is not None else ''
     args = ' '.join(['--apply'] + ([] if p['apps'] else ['--no-apps']) + [f'--skip {q(s)}' for s in filter(None, (p['skip'] or '').split(','))])
-    return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': f"bash -s -- {args} <<'SF_PACKAGES'\n{text}\nSF_PACKAGES\n", 'executable': '/bin/bash'},
-            'register': 'sf_out', 'changed_when': "'installed' in sf_out.stdout"}
+    return changes.shell_task(t, f"bash -s -- {args} <<'SF_PACKAGES'\n{text}\nSF_PACKAGES\n", changed='installed')
 
 
 changes.register('packages', {'group': 'Software', 'label': 'Install the packages of another host', 'fields': FIELDS,
@@ -262,8 +261,7 @@ def _ansible_lines(fn: str, head: str):
         args = [p['from_host']] + ([('1' if p.get('homes') else '')] if fn == 't_accounts' else []) + extra
         prelude = ('APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }\n'
                    'info() { :; }; doing() { echo "changed: $*"; }\n')
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': prelude + ACCOUNTS_BASH + f'\n{fn} ' + ' '.join(q(a) for a in args) + '\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, prelude + ACCOUNTS_BASH + f'\n{fn} ' + ' '.join(q(a) for a in args) + '\n')
     return render
 
 
@@ -339,10 +337,9 @@ def _ansible_phase7(fn: str, args: tuple):
     def render(t):
         q = shlex.quote
         p = t['params']
-        call = ' '.join(q(str(p.get(a) if not isinstance(p.get(a), bool) else ('1' if p[a] else ''))) for a in args)
+        call = ' '.join(q(w) for w in changes.words_of(p, args))
         head = 'APPLY=1; STAMP=$(date +%Y%m%d-%H%M%S); ok() { echo "ok: $*"; }; missing() { echo "missing: $*"; }; conflict() { echo "conflict: $*" >&2; exit 1; }; act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n'
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': head + PHASE7_BASH + f'\n{fn} {call}\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, head + PHASE7_BASH + f'\n{fn} {call}\n')
     return render
 
 

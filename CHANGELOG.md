@@ -2,6 +2,17 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Changed
+
+- **The Ansible task of a bridge, VLAN, MTU, SSH option, AppArmor, SELinux or AppArmor setup, NTS time, WireGuard, workload action or removal, or ZFS rollback step carries only the Bash it runs.** Each such task held about 500 lines of other steps' functions, because the pattern that cut out one helper ran to the end of the text; the tasks of the network address, bond, route and DHCP steps held their interface guard twice. The tasks now carry the function they run and each helper it calls once, and do the same on the host.
+- **A step parameter missing from a saved plan reaches the step's Bash function in an Ansible export as an empty word, not the word `None`.** This happened in the exports of the LUKS, network, infrastructure, libvirt, VM, VM from ISO, ZFS hold and disk image steps, for a plan saved before a field was added.
+
+### Internal
+
+- The Ansible task that runs a step's Bash function is built by `changes.shell_task`, its parameters become words by `changes.words_of`, and helper functions are cut out of a Bash text by `changes.bash_fn`, in place of copies in 28 step modules. Each task still carries every helper it runs (BE-35).
+
 ## 0.6.3.1 — 2026-11-26
 
 The fixes for GitHub CI's test jobs, which had failed since 0.6.0 on PostgreSQL and since 0.6.2 on SQLite: two product bugs found that way are fixed below, and the rest were tests written for SQLite only or for a fast machine. Checked here (GitHub has not run it yet) with every block on SQLite and light and medium on PostgreSQL 16. The image scan job still fails on vulnerabilities in the key enclave's kernel and the Wolfi base, which needs a decision of its own.

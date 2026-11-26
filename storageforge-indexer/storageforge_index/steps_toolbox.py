@@ -477,10 +477,9 @@ def _ansible(fn: str, args: tuple, extra):
     def render(t, conn=None):
         q = shlex.quote
         p = t['params']
-        words = [str(p.get(a) or '') for a in args] + (extra(conn, t) if conn is not None else ['refused', 'written without the index'])
+        words = changes.words_of(p, args) + (extra(conn, t) if conn is not None else ['refused', 'written without the index'])
         body = ANSIBLE_HEAD + steps_runtime.BASH + steps_workloads.BASH + BASH
-        return {'name': changes.title(t), 'ansible.builtin.shell': {'cmd': body + f'\n{fn} ' + ' '.join(q(w) for w in words) + '\n', 'executable': '/bin/bash'},
-                'register': 'sf_out', 'changed_when': "'changed' in sf_out.stdout"}
+        return changes.shell_task(t, body + f'\n{fn} ' + ' '.join(q(w) for w in words) + '\n')
     return render
 
 
