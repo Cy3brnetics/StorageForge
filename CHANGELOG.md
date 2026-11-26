@@ -19,6 +19,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The three hash terms of a folder's fingerprint are written once, in `folders.file_term`, `folders.folder_print` and `folders.child_term`, for the per-mount folder index and the per-subtree compare of folder copies. The per-file loop of the mount index keeps its file term inline for speed, with a comment that points at it (BE-20).
 - The first-level folders under a path, with their sizes, are listed by one query, `moves.first_level`, for the Moves folder picker and the file map. Each keeps its own handling of mounts below the path and its own answer for a host that was never scanned (BE-21).
 - The platform readers share one module, `apiparse`, for loading JSON answers, taking the list or the `data` of an envelope, the bounded readers of untrusted values and the date reader, in place of copies in Xen Orchestra, TrueNAS, Dockhand, Portainer, Komodo and the Proxmox readers and read-backs. Pangolin keeps its own envelope reader, which needs `data` to be an object and reads the page total (BE-16).
+- The Proxmox Backup Server and Proxmox Datacenter Manager readers read the `/version` answer with the Proxmox VE reader's `parse_version` in place of their own copies (BE-17).
 
 ## 0.6.2 — 2026-11-26
 

@@ -15,17 +15,12 @@ from __future__ import annotations
 
 import time
 
-from .apiparse import _b, _data, _i, _items, _s
+from .apiparse import _b, _i, _items, _s
+from .apipve import parse_version
 
 MAX_SNAPSHOTS = 5000
 STALE_BACKUP = 7 * 86400
 FULL_SOON = 30 * 86400
-
-
-def parse_version(text: str) -> dict:
-    data = _data(text)
-    data = data if isinstance(data, dict) else {}
-    return {'version': _s(data.get('version'), 60), 'release': _s(data.get('release'), 20)}
 
 
 def parse_usage(text: str) -> dict:

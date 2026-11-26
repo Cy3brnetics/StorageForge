@@ -17,15 +17,10 @@ never raises.
 from __future__ import annotations
 
 from .apipbs import parse_snapshots
-from .apiparse import _b, _data, _f, _i, _items, _s
+from .apiparse import _b, _f, _i, _items, _s
+from .apipve import parse_version
 
 MAX_SNAPSHOTS = 5000
-
-
-def parse_version(text: str) -> dict:
-    data = _data(text)
-    data = data if isinstance(data, dict) else {}
-    return {'version': _s(data.get('version'), 60), 'release': _s(data.get('release'), 20)}
 
 
 def parse_remotes(text: str) -> dict:
