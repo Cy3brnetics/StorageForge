@@ -6,11 +6,11 @@ It was written on 2026-11-26 from the [backend consolidation survey](docs/audit-
 
 ## How to read this
 
-An item is `BE` and a number. **Fix** means the item changes what StorageForge does, because one copy was wrong: its changelog line says what changed for the user. **Same behaviour** means nothing a user, a test or a host can see changes: the same script text, the same API answers, the same errors. The **Status** cell is the ledger: whoever finishes an item writes the commit that finished it. There are no time estimates on this page.
+An item is `BE` and a number. Each was found either as a **bug in one copy** or as a **duplicate**. **Fix** (a bug in one copy) means the item changes what StorageForge does, because one copy was wrong: its changelog line says what changed for the user. **Duplicate** means the item was found as a plain duplicate with no bug in it. It may still leave every caller with the best copy's behaviour (see rule 1). The **Status** cell is the ledger: whoever finishes an item writes the commit that finished it. There are no time estimates on this page.
 
 ## Rules for the release
 
-1. **A same-behaviour item changes no output.** Generated scripts, Ansible exports, API answers and error texts are the same byte for byte before and after, and the commit says how that was checked. Where a copy differs on purpose (a message, an error type, a default), the shared code takes it as a parameter and the difference stays.
+1. **Combining may improve behaviour, and stays backwards compatible** (the owner, 2026-11-26). Where copies differ, the shared code takes the better behaviour for every caller: the stricter check, the clearer message, the retry or the lock wait one copy had and the others lacked. It need not reproduce each copy byte for byte. What must keep working is what others depend on: a saved plan, schedule or design still loads and runs, an API route keeps its path, its fields and its status codes, a CLI command keeps its name and flags, a stored format is read as before, and a script already deployed on a host keeps working with the controller. A difference that is there on purpose (a security check, an error type a caller catches) stays. Every behaviour that changes gets a changelog line saying what changed.
 2. **A fix is its own commit,** apart from the consolidation that exposed it, with a test that failed before it.
 3. **Old names stay where tests or other modules use them,** as a one-line alias to the shared function. An alias is removed only when nothing reads it.
 4. **A boundary the design keeps apart is not combined:** the agent and SSH (roadmap 11.2), the enclave, the signed deploy run, the security actions and the change engine. *Will not be combined* lists what was looked at and left.
@@ -26,7 +26,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | :--- | :--- | :--- | :--- |
 | **0.6.2** | What the survey found broken | BE-01 to BE-10, in the table below | The release · tell the owner of BE-01, BE-03 and BE-10, which are security fixes |
 | **0.6.3** | Shared primitives | BE-11 to BE-34, in the table below | The release |
-| **0.6.4** | One script kit | BE-35 to BE-47, in the table below | The Ansible exports compared before and after, byte for byte · the release |
+| **0.6.4** | One script kit | BE-35 to BE-47, in the table below | The Ansible exports compared before and after, each difference named · the release |
 | **0.6.5** | Platform APIs, network devices and the Toolbox | BE-48 to BE-58, in the table below | The API connection kind is a security boundary: BE-48 and BE-49 before they merge · the release |
 | **0.6.6** | Hosts, keys and credentials | BE-59 to BE-66, in the table below | BE-59, BE-61 and BE-62 each, before they merge: every private key and the KEK rotation pass through them · the release |
 | **0.6.7** | Plans, jobs, alerts and routes | BE-67 to BE-75, in the table below | BE-73 changes who is notified and when · the release |
@@ -36,126 +36,126 @@ The order goes from what is wrong today, to the small shared pieces everything e
 
 ## 0.6.2: What the survey found broken
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-01** | A certificate that changes, or a connection that loses its pin, in the middle of a platform read stops the read for every platform. Today six readers record it as a skipped line and store the rest as a good reading | Fix | |
-| **BE-02** | A Xen Orchestra host with no address is no longer matched to whichever scanned host has no address either | Fix | |
-| **BE-03** | An NVMe over TCP share formats a disk only when `blkid` says it is blank (exit 2), as iSCSI and NBD do. Today any probe that prints nothing, a read error included, is taken as blank | Fix | |
-| **BE-04** | The tunnel, overlay, restore-test and Toolbox steps reload systemd through `reload_systemd`, so a dead hard NFS or CIFS mount can't make them block logins | Fix | |
-| **BE-05** | A network scan left `running` by a restart is closed as interrupted at start, as deploys, change runs and file scans are | Fix | |
-| **BE-06** | One host's malformed agent manifest no longer stops the agent's disk, file and scan alerts for every host | Fix | |
-| **BE-07** | Retiring a host removes everything it owns: its security readings, ban history, graph snapshots, waivers, retention policies and per-host settings are left behind today. A test lists every table with a host column and fails when retire names neither it nor an exception | Fix | |
-| **BE-08** | A workload managed through a platform API is named by the platform's title (Portainer), as label evidence names it, not by the connection kind (portainer) | Fix | |
-| **BE-09** | A plan run as root with `SF_SECRET_DIR` set delivers a secret to the folder its steps then read. Today delivery uses the fixed folder and the tunnel and overlay steps read the variable's | Fix | |
-| **BE-10** | A stored secret can't silently replace a credential of another kind that holds the same name: `secret-add`, `headscale-key` and the device-credentials route check first, and a re-sealed secret keeps its policy | Fix | |
+| **BE-01** | A certificate that changes, or a connection that loses its pin, in the middle of a platform read stops the read for every platform. Today six readers record it as a skipped line and store the rest as a good reading | Bug in one copy | |
+| **BE-02** | A Xen Orchestra host with no address is no longer matched to whichever scanned host has no address either | Bug in one copy | |
+| **BE-03** | An NVMe over TCP share formats a disk only when `blkid` says it is blank (exit 2), as iSCSI and NBD do. Today any probe that prints nothing, a read error included, is taken as blank | Bug in one copy | |
+| **BE-04** | The tunnel, overlay, restore-test and Toolbox steps reload systemd through `reload_systemd`, so a dead hard NFS or CIFS mount can't make them block logins | Bug in one copy | |
+| **BE-05** | A network scan left `running` by a restart is closed as interrupted at start, as deploys, change runs and file scans are | Bug in one copy | |
+| **BE-06** | One host's malformed agent manifest no longer stops the agent's disk, file and scan alerts for every host | Bug in one copy | |
+| **BE-07** | Retiring a host removes everything it owns: its security readings, ban history, graph snapshots, waivers, retention policies and per-host settings are left behind today. A test lists every table with a host column and fails when retire names neither it nor an exception | Bug in one copy | |
+| **BE-08** | A workload managed through a platform API is named by the platform's title (Portainer), as label evidence names it, not by the connection kind (portainer) | Bug in one copy | |
+| **BE-09** | A plan run as root with `SF_SECRET_DIR` set delivers a secret to the folder its steps then read. Today delivery uses the fixed folder and the tunnel and overlay steps read the variable's | Bug in one copy | |
+| **BE-10** | A stored secret can't silently replace a credential of another kind that holds the same name: `secret-add`, `headscale-key` and the device-credentials route check first, and a re-sealed secret keeps its policy | Bug in one copy | |
 
 ## 0.6.3: Shared primitives
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-11** | One splitter for the `@@section` output of host and device scripts (netfacts, OpenWrt, pfSense, the infrastructure reading) | Same behaviour | |
-| **BE-12** | One module for SSH wire strings and key fingerprints, in place of copies in eight modules. Signature checking keeps its own refusals | Same behaviour | |
-| **BE-13** | One reader of a host's pinned keys in `known_hosts`, in place of four `ssh-keygen -F` parsers | Same behaviour | |
-| **BE-14** | One pair of functions for *is this path under that folder* and *which mount holds this path* | Same behaviour | |
-| **BE-15** | One fstab octal decoder, and the design versions' size text from `capacity.fmt_bin` | Same behaviour | |
-| **BE-16** | One module for reading platform JSON answers: the envelope loaders, list filters, bounded scalar readers and date normaliser copied in eight API modules | Same behaviour | |
-| **BE-17** | The three Proxmox readers share one version parser | Same behaviour | |
-| **BE-18** | One parser for the *ports to publish* text, with one record shape, behind the what-if, the Terraform export and the firewall step | Same behaviour | |
-| **BE-19** | One function hides a network-language secret in compiled output | Same behaviour | |
-| **BE-20** | The folder fingerprint's hash terms are written once, for the per-mount index and the per-subtree compare | Same behaviour | |
-| **BE-21** | One query lists the first-level folders under a path with their sizes, for Moves and the file map | Same behaviour | |
-| **BE-22** | One `ufw` opener for the NFS and SMB script and the other share kinds | Same behaviour | |
-| **BE-23** | SQLite-or-PostgreSQL spellings (`ts`, `jsonp`) live on the connection, and the agent's writes into scan tables stop calling `Database.sync_mounts` with a stand-in for `self` | Same behaviour | |
-| **BE-24** | One function for a host's short name, and one host-name pattern | Same behaviour | |
-| **BE-25** | One reader of a host's JSON-lines run log, for confirmations, jobs and schedules | Same behaviour | |
-| **BE-26** | A test reads the protocol constants written once in Python and once in Rust and fails when they differ | Same behaviour | |
-| **BE-27** | Kernel lines from netconsole and pstore are built by one `hostlogs` function, and the side-source status row is written in one place | Same behaviour | |
-| **BE-28** | The agent's record queue has one *forget these records* and one batch size | Same behaviour | |
-| **BE-29** | The Proxmox steps share their VMID lookup and their new-VMID check | Same behaviour | |
-| **BE-30** | One function returns all containers of a host (scan stacks and rootless Podman), for Workloads and the Toolbox adapters | Same behaviour | |
-| **BE-31** | One place answers *which plugins does a host's manifest name*, and the label `reported by agent` is defined once | Same behaviour | |
-| **BE-32** | One function turns a typed host name into the scanned host, behind the three known-host checks, each keeping its own error | Same behaviour | |
-| **BE-33** | One lookup for *the interface that carries this address*, and one list of the controller's addresses | Same behaviour | |
-| **BE-34** | The device adapters take their gateway list and their mask-to-prefix from `netfacts` | Same behaviour | |
+| **BE-11** | One splitter for the `@@section` output of host and device scripts (netfacts, OpenWrt, pfSense, the infrastructure reading) | Duplicate | |
+| **BE-12** | One module for SSH wire strings and key fingerprints, in place of copies in eight modules. Signature checking keeps its own refusals | Duplicate | |
+| **BE-13** | One reader of a host's pinned keys in `known_hosts`, in place of four `ssh-keygen -F` parsers | Duplicate | |
+| **BE-14** | One pair of functions for *is this path under that folder* and *which mount holds this path* | Duplicate | |
+| **BE-15** | One fstab octal decoder, and the design versions' size text from `capacity.fmt_bin` | Duplicate | |
+| **BE-16** | One module for reading platform JSON answers: the envelope loaders, list filters, bounded scalar readers and date normaliser copied in eight API modules | Duplicate | |
+| **BE-17** | The three Proxmox readers share one version parser | Duplicate | |
+| **BE-18** | One parser for the *ports to publish* text, with one record shape, behind the what-if, the Terraform export and the firewall step | Duplicate | |
+| **BE-19** | One function hides a network-language secret in compiled output | Duplicate | |
+| **BE-20** | The folder fingerprint's hash terms are written once, for the per-mount index and the per-subtree compare | Duplicate | |
+| **BE-21** | One query lists the first-level folders under a path with their sizes, for Moves and the file map | Duplicate | |
+| **BE-22** | One `ufw` opener for the NFS and SMB script and the other share kinds | Duplicate | |
+| **BE-23** | SQLite-or-PostgreSQL spellings (`ts`, `jsonp`) live on the connection, and the agent's writes into scan tables stop calling `Database.sync_mounts` with a stand-in for `self` | Duplicate | |
+| **BE-24** | One function for a host's short name, and one host-name pattern | Duplicate | |
+| **BE-25** | One reader of a host's JSON-lines run log, for confirmations, jobs and schedules | Duplicate | |
+| **BE-26** | A test reads the protocol constants written once in Python and once in Rust and fails when they differ | Duplicate | |
+| **BE-27** | Kernel lines from netconsole and pstore are built by one `hostlogs` function, and the side-source status row is written in one place | Duplicate | |
+| **BE-28** | The agent's record queue has one *forget these records* and one batch size | Duplicate | |
+| **BE-29** | The Proxmox steps share their VMID lookup and their new-VMID check | Duplicate | |
+| **BE-30** | One function returns all containers of a host (scan stacks and rootless Podman), for Workloads and the Toolbox adapters | Duplicate | |
+| **BE-31** | One place answers *which plugins does a host's manifest name*, and the label `reported by agent` is defined once | Duplicate | |
+| **BE-32** | One function turns a typed host name into the scanned host, behind the three known-host checks, each keeping its own error | Duplicate | |
+| **BE-33** | One lookup for *the interface that carries this address*, and one list of the controller's addresses | Duplicate | |
+| **BE-34** | The device adapters take their gateway list and their mask-to-prefix from `netfacts` | Duplicate | |
 
 ## 0.6.4: One script kit
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-35** | One builder for the Ansible task that runs a step's Bash function (`shell_task`, `bash_fn`, `words_of`), in place of about 27 copies. The exported text stays the same byte for byte | Same behaviour | |
-| **BE-36** | One builder for the head of those tasks, used first where the heads are already identical | Same behaviour | |
-| **BE-37** | Every destructive step's Ansible export carries the destructive gate. Some exports have none today, because each module writes its own | Fix | |
-| **BE-38** | One definition of the secrets folder and the secret-name rule, and one Python check for a step's `secret` field | Same behaviour | |
-| **BE-39** | One checked download for VM images: `os-install` and `vm-iso` call `sf_vm_fetch` instead of carrying its body | Same behaviour | |
-| **BE-40** | One reading of a scan's package list, and one table of package names per package manager for the generated scripts and the reinstall plan | Same behaviour | |
-| **BE-41** | The share drivers take their *make the share folder* step from the driver helper set | Same behaviour | |
-| **BE-42** | The rclone-served share kinds share their secret-key list and their mount report | Same behaviour | |
-| **BE-43** | One compression codec table for Moves, the job program and the archive step | Same behaviour | |
-| **BE-44** | One Bash kit for what Moves, `storageforge-job` and the archive step all carry: the idle wrapper, the rsync compression probe and the compress-and-verify command | Same behaviour | |
-| **BE-45** | One function stages tasks as a named change plan, with the clash rule chosen by the caller | Same behaviour | |
-| **BE-46** | One function forgets a deployed unit's mark, and one connection helper for the after-deploy hooks | Same behaviour | |
-| **BE-47** | The Ansible export of `md-array` runs the step's own Bash function instead of a second implementation of it | Fix | |
+| **BE-35** | One builder for the Ansible task that runs a step's Bash function (`shell_task`, `bash_fn`, `words_of`), in place of about 27 copies. | Duplicate | |
+| **BE-36** | One builder for the head of those tasks, used first where the heads are already identical | Duplicate | |
+| **BE-37** | Every destructive step's Ansible export carries the destructive gate. Some exports have none today, because each module writes its own | Bug in one copy | |
+| **BE-38** | One definition of the secrets folder and the secret-name rule, and one Python check for a step's `secret` field | Duplicate | |
+| **BE-39** | One checked download for VM images: `os-install` and `vm-iso` call `sf_vm_fetch` instead of carrying its body | Duplicate | |
+| **BE-40** | One reading of a scan's package list, and one table of package names per package manager for the generated scripts and the reinstall plan | Duplicate | |
+| **BE-41** | The share drivers take their *make the share folder* step from the driver helper set | Duplicate | |
+| **BE-42** | The rclone-served share kinds share their secret-key list and their mount report | Duplicate | |
+| **BE-43** | One compression codec table for Moves, the job program and the archive step | Duplicate | |
+| **BE-44** | One Bash kit for what Moves, `storageforge-job` and the archive step all carry: the idle wrapper, the rsync compression probe and the compress-and-verify command | Duplicate | |
+| **BE-45** | One function stages tasks as a named change plan, with the clash rule chosen by the caller | Duplicate | |
+| **BE-46** | One function forgets a deployed unit's mark, and one connection helper for the after-deploy hooks | Duplicate | |
+| **BE-47** | The Ansible export of `md-array` runs the step's own Bash function instead of a second implementation of it | Bug in one copy | |
 
 ## 0.6.5: Platform APIs, network devices and the Toolbox
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-48** | One platform registry and module contract, so Proxmox VE, PBS and PDM stop being a special case beside the six registered platforms | Same behaviour | |
-| **BE-49** | One guarded reading loop for every platform reader (the collector behind BE-01), with one way to count a capped list | Same behaviour | |
-| **BE-50** | The read-back's token notes (disabled, no expiry, expired) come from one helper | Same behaviour | |
-| **BE-51** | One resolver from a platform's node, environment or site to the scanned host it is, without a query per object | Same behaviour | |
-| **BE-52** | One table of container panels (name, image pattern, label prefixes, unit names, API kind) in place of four partial lists | Same behaviour | |
-| **BE-53** | The OpenWrt and pfSense appliers share one rollback-timer base | Same behaviour | |
-| **BE-54** | The SSH password environment and options are written once, and `netdevice.session` builds its transport from one table | Same behaviour | |
-| **BE-55** | A what-if over a firewall lays the new rules onto the machine's real chains the same way for a device change and for the planner | Fix | |
-| **BE-56** | Exposure classifies VPN interfaces with the overlay naming table, by name only: a WAN address behind carrier-grade NAT stays WAN | Fix | |
-| **BE-57** | One adapter kit for the Toolbox's container, unit and program adapters, in place of three sets | Same behaviour | |
-| **BE-58** | One permission gate for staging a tool, a bundle and a role profile, and a refused staging is audited on all three | Fix | |
+| **BE-48** | One platform registry and module contract, so Proxmox VE, PBS and PDM stop being a special case beside the six registered platforms | Duplicate | |
+| **BE-49** | One guarded reading loop for every platform reader (the collector behind BE-01), with one way to count a capped list | Duplicate | |
+| **BE-50** | The read-back's token notes (disabled, no expiry, expired) come from one helper | Duplicate | |
+| **BE-51** | One resolver from a platform's node, environment or site to the scanned host it is, without a query per object | Duplicate | |
+| **BE-52** | One table of container panels (name, image pattern, label prefixes, unit names, API kind) in place of four partial lists | Duplicate | |
+| **BE-53** | The OpenWrt and pfSense appliers share one rollback-timer base | Duplicate | |
+| **BE-54** | The SSH password environment and options are written once, and `netdevice.session` builds its transport from one table | Duplicate | |
+| **BE-55** | A what-if over a firewall lays the new rules onto the machine's real chains the same way for a device change and for the planner | Bug in one copy | |
+| **BE-56** | Exposure classifies VPN interfaces with the overlay naming table, by name only: a WAN address behind carrier-grade NAT stays WAN | Bug in one copy | |
+| **BE-57** | One adapter kit for the Toolbox's container, unit and program adapters, in place of three sets | Duplicate | |
+| **BE-58** | One permission gate for staging a tool, a bundle and a role profile, and a refused staging is audited on all three | Bug in one copy | |
 
 ## 0.6.6: Hosts, keys and credentials
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-59** | One vault-key signer behind deploys, the agent, SSH certificates and overlay keys | Same behaviour | |
-| **BE-60** | One builder of the operator-login SSH command for `send-secret`, `nebula-issue` and `headscale-key` | Same behaviour | |
-| **BE-61** | One *log in with a named vault key* helper for rotation, key install and sudo access | Same behaviour | |
-| **BE-62** | The KEK rotation walks its sealed tables from one list, for the local vault and the enclave | Same behaviour | |
-| **BE-63** | Remembering a host key a person confirmed is one function for the Keys page and monitoring-only adoption | Same behaviour | |
-| **BE-64** | The name rules copied between modules (secret name, Unix login, machine id, hex digest) are defined once | Same behaviour | |
-| **BE-65** | `security.py` and `secplus.py` share a host-action module instead of one reaching into the other's private functions | Same behaviour | |
-| **BE-66** | One store for host readings (security, infrastructure, device, package), in place of raw SQL in ten modules | Same behaviour | |
+| **BE-59** | One vault-key signer behind deploys, the agent, SSH certificates and overlay keys | Duplicate | |
+| **BE-60** | One builder of the operator-login SSH command for `send-secret`, `nebula-issue` and `headscale-key` | Duplicate | |
+| **BE-61** | One *log in with a named vault key* helper for rotation, key install and sudo access | Duplicate | |
+| **BE-62** | The KEK rotation walks its sealed tables from one list, for the local vault and the enclave | Duplicate | |
+| **BE-63** | Remembering a host key a person confirmed is one function for the Keys page and monitoring-only adoption | Duplicate | |
+| **BE-64** | The name rules copied between modules (secret name, Unix login, machine id, hex digest) are defined once | Duplicate | |
+| **BE-65** | `security.py` and `secplus.py` share a host-action module instead of one reaching into the other's private functions | Duplicate | |
+| **BE-66** | One store for host readings (security, infrastructure, device, package), in place of raw SQL in ten modules | Duplicate | |
 
 ## 0.6.7: Plans, jobs, alerts and routes
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-67** | One named-plan store behind move plans, change plans and storage tasks, each keeping its own errors | Same behaviour | |
-| **BE-68** | One table of deployable kinds replaces the if-chains over deploy kind in the server and over task type in the scheduler | Same behaviour | |
-| **BE-69** | The route modules take *audit and answer* and the script download from the shared route context | Same behaviour | |
-| **BE-70** | Deployed jobs and imported snapshot jobs share their listing parser and their after-action update | Same behaviour | |
-| **BE-71** | The controller's restart clean-up and its periodic loops are started from one place | Same behaviour | |
-| **BE-72** | Alert sources are separate functions, and one that raises no longer stops every alert from opening, resolving or being pushed | Fix | |
-| **BE-73** | A failed schedule is pushed once, through the alert state machine with its mute and its history, not a second time at level `failed` | Fix | |
-| **BE-74** | Queries that list their columns twice use one connection method that returns dictionaries | Same behaviour | |
-| **BE-75** | The forty places that print a moment as `YYYY-MM-DD HH:MM` use one function that says which clock it is | Fix | |
+| **BE-67** | One named-plan store behind move plans, change plans and storage tasks, each keeping its own errors | Duplicate | |
+| **BE-68** | One table of deployable kinds replaces the if-chains over deploy kind in the server and over task type in the scheduler | Duplicate | |
+| **BE-69** | The route modules take *audit and answer* and the script download from the shared route context | Duplicate | |
+| **BE-70** | Deployed jobs and imported snapshot jobs share their listing parser and their after-action update | Duplicate | |
+| **BE-71** | The controller's restart clean-up and its periodic loops are started from one place | Duplicate | |
+| **BE-72** | Alert sources are separate functions, and one that raises no longer stops every alert from opening, resolving or being pushed | Bug in one copy | |
+| **BE-73** | A failed schedule is pushed once, through the alert state machine with its mute and its history, not a second time at level `failed` | Bug in one copy | |
+| **BE-74** | Queries that list their columns twice use one connection method that returns dictionaries | Duplicate | |
+| **BE-75** | The forty places that print a moment as `YYYY-MM-DD HH:MM` use one function that says which clock it is | Bug in one copy | |
 
 ## 0.6.8: Shares, archives and quarantine
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-76** | The Ansible exports of the partition, wipe, secure-delete and archive steps run the steps' own Bash functions | Fix | |
-| **BE-77** | The three rclone-served share kinds write their serve unit and login file through `rclone.LIB`, each unit's text unchanged | Same behaviour | |
-| **BE-78** | The three block-disk share kinds share the sparse image file, the blank-disk decision and the one-client rule | Same behaviour | |
-| **BE-79** | One file quarantine for ClamAV detections and threat kills. The threat copy gains the resolved-path check it lacks today | Fix | |
-| **BE-80** | One package-manager layer in the generated scripts: detect, wait for the lock, retry the update, install | Same behaviour | |
+| **BE-76** | The Ansible exports of the partition, wipe, secure-delete and archive steps run the steps' own Bash functions | Bug in one copy | |
+| **BE-77** | The three rclone-served share kinds write their serve unit and login file through `rclone.LIB`, each unit's text unchanged | Duplicate | |
+| **BE-78** | The three block-disk share kinds share the sparse image file, the blank-disk decision and the one-client rule | Duplicate | |
+| **BE-79** | One file quarantine for ClamAV detections and threat kills. The threat copy gains the resolved-path check it lacks today | Bug in one copy | |
+| **BE-80** | One package-manager layer in the generated scripts: detect, wait for the lock, retry the update, install | Duplicate | |
 
 ## 0.6.9: The Rust programs and the secure channels
 
-| Item | What is combined | Kind | Status |
+| Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-81** | The agent's plugin programs take their bounded file read, disk list, clock and hex from the agent library | Same behaviour | |
-| **BE-82** | The two Python Noise implementations (the agent tunnel and the enclave channel) share one symmetric state, cipher and framing | Same behaviour | |
-| **BE-83** | The enclave takes its Noise primitives from the `wire` crate instead of its own copy | Same behaviour | |
+| **BE-81** | The agent's plugin programs take their bounded file read, disk list, clock and hex from the agent library | Duplicate | |
+| **BE-82** | The two Python Noise implementations (the agent tunnel and the enclave channel) share one symmetric state, cipher and framing | Duplicate | |
+| **BE-83** | The enclave takes its Noise primitives from the `wire` crate instead of its own copy | Duplicate | |
 
 ## 0.7.0: The release
 
