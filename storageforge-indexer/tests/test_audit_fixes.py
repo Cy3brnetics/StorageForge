@@ -1,5 +1,6 @@
 """Small fixes from the 2026-11-01 code audit that have no better home."""
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -163,6 +164,51 @@ class Db(unittest.TestCase):
         self.conn.execute("INSERT INTO deploy_access (host, state, detail, updated_at, updated_by) VALUES ('nas', 'ready', '', 1, 'a')")
         self.assertIn('still_on_host', retire.retire(self.conn, 'nas'))
         self.assertEqual(reset._blocking(reset.left_behind(self.conn)), [])
+
+    def test_retiring_removes_the_readings_history_and_settings_the_host_owned(self):
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, inventory_json) VALUES ('pc', '10.0.0.6', '{}')")
+        for host in ('NAS', 'pc', '*'):         # a row is found without regard to case, as the host is
+            for sql in ("INSERT INTO security_readings (host, kind, at, value) VALUES (:h, 'lynis', 1, 70)",
+                        "INSERT INTO security_ban_history (host, ip_address, tier, at) VALUES (:h, '10.9.9.9', 1, 1)",
+                        "INSERT INTO graph_snapshots (host, taken_at, graph_hash) VALUES (:h, 1, 'x')",
+                        "INSERT INTO security_waivers (host, finding, reason, approver, created_at) VALUES (:h, 'f', 'r', 'a', 1)",
+                        "INSERT INTO security_retention_policies (host, pattern, days, updated_at) VALUES (:h, '/srv/*', 30, 1)"):
+                self.conn.execute(sql, {'h': host})
+        for key in ('security.drift.nas', 'security.identity.Nas', 'security.drift.pc', 'security.identity.pc', 'security.drift.nas2', 'security.vip'):
+            alerts.set_setting(self.conn, key, {'x': 1}, 't')
+        gone = retire.retire(self.conn, 'nas')
+        for table in ('security_readings', 'security_ban_history', 'graph_snapshots', 'security_waivers', 'security_retention_policies'):
+            left = sorted(r[0] for r in self.conn.all(f'SELECT host FROM {table}'))
+            self.assertEqual(left, ['*', 'pc'], table)      # another host's rows, and a waiver or policy for every host, stay
+        keys = sorted(r[0] for r in self.conn.all("SELECT key FROM settings WHERE key LIKE 'security.%'"))
+        self.assertEqual(keys, ['security.drift.nas2', 'security.drift.pc', 'security.identity.pc', 'security.vip'])
+        self.assertEqual((gone['waivers'], gone['retention_policies']), (1, 1))     # an operator made these: the audit entry counts them
+
+    HOST_COLUMN = r'host|hostname|host_id|host_pattern|[a-z_]+_host'
+
+    def host_tables(self) -> dict:
+        """Every table with a column that names a host, and whether it goes with the hosts row by a foreign key."""
+        out = {}
+        for (table,) in self.conn.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'file_fts%'"):
+            cols = [r[1] for r in self.conn.all(f"SELECT * FROM pragma_table_info('{table}')")]
+            if any(re.fullmatch(self.HOST_COLUMN, c) for c in cols):
+                out[table] = any(r[2] == 'hosts' and r[6] == 'CASCADE' for r in self.conn.all(f"SELECT * FROM pragma_foreign_key_list('{table}')"))
+        return out
+
+    def test_every_table_with_a_host_column_is_removed_by_retire_or_kept_for_a_reason(self):
+        tables = self.host_tables()
+        self.assertGreater(len(tables), 60)                 # the reading of the schema itself works
+        self.assertIn('mounts', [t for t, cascades in tables.items() if cascades])
+        removed = {t for t, _column, _counted in retire.HOST_TABLES}
+        named = removed | set(retire.KEPT)
+        self.assertEqual(removed & set(retire.KEPT), set(), 'both removed and kept')
+        self.assertEqual(sorted(t for t, cascades in tables.items() if not cascades and t not in named), [],
+                         'a new table names a host: add it to retire.HOST_TABLES, or to retire.KEPT with the reason it stays')
+        self.assertEqual(sorted(named - set(tables)), [], 'no such table, or it goes with the hosts row by a foreign key')
+        for table, column, _counted in retire.HOST_TABLES:
+            self.assertIn(column, [r[1] for r in self.conn.all(f"SELECT * FROM pragma_table_info('{table}')")], table)
+        for table, why in retire.KEPT.items():
+            self.assertGreater(len(why), 20, table)
 
     def test_a_mistyped_scan_stops_alerting(self):
         insert = "INSERT INTO scan_jobs (host, requested_by, queued_at, status, result_json) VALUES (:h, 'a', :t, 'failed', '{}')"

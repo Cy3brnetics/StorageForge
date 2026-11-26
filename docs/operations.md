@@ -235,7 +235,7 @@ To use your own, put `tls_cert` and `tls_key` in `./secrets` before that second 
 1. Remove what you deployed to it, from the **Deploy** tab. Retiring is refused while anything is deployed there or a scan is running.
 2. Choose **Retire…** on the host's menu in the topology, or run `storageforge-index hosts remove NAME`. Add `--keep-design` to keep its design.
 
-The host leaves search, the graph, the scheduler and the alerts. The audit log and deploy history stay.
+The host leaves search, the graph, the scheduler and the alerts. What was kept for that host alone goes with it: its security events, readings and ban history, its quarantine list, its waivers and retention policies (one made for every host stays), the map's history of it, and its security settings. The audit log, deploy history and the versions of its design stay. Retiring can't be undone.
 
 ## Retention
 
