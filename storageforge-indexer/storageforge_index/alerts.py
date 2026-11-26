@@ -448,6 +448,14 @@ def scan_problems(conn: Conn) -> dict:
             elif pct >= DISK_WARN:
                 now[f'disk-warn:{host}:{mp}'] = ('disk-warn', f'{host}:{mp}', f'{mp} is {pct:.0f}% full on {host}',
                                                  f'{free / 2**30:,.1f} GiB free at the last scan', 'warn')
+        from .hostconfig import parse_fstab_verify
+        if errs := parse_fstab_verify(inv.get('fstab_verify') or ''):
+            now[f'fstab:{host}'] = ('fstab', host, f'/etc/fstab on {host} has {len(errs)} line{"s" if len(errs) != 1 else ""} findmnt --verify rejects',
+                                    '; '.join(f'{e["target"]}: {e["error"]}' for e in errs)
+                                    + ('. A line required at boot whose disk or folder is missing can stop the host starting.' if any(e['boot'] for e in errs) else '.')
+                                    + ' To fix: an Unmount step on that mount point (Changes) comments the line out, or Mount options adds nofail'
+                                    ' if the disk comes and goes. Deploys that edit fstab leave these lines alone and report them.',
+                                    'crit' if any(e['boot'] for e in errs) else 'warn')
         try:
             node = node_from_index(conn, host, symlink_limit=0, stats=False)
             pools = node['pools']

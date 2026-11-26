@@ -87,19 +87,27 @@ PY
   fi
 }
 
+# dd_why TEXT: the reason a helper failed, kept in a file because the helper may run in a subshell. The caller says it with dd_conflict, once docker is running again.
+dd_why() { echo "$*" >"$tmp/why"; }
+# dd_conflict TEXT: the temporary folder goes first, since conflict ends an Ansible run.
+dd_conflict() { local m=$*; rm -rf -- "$tmp"; conflict "$m"; }
+# dd_fail: dd_conflict with the reason a helper left in dd_why.
+dd_fail() { dd_conflict "$(cat -- "$tmp/why" 2>/dev/null || echo "the step stopped")"; }
+
 # dd_write NEW: NEW becomes daemon.json, the old file kept as daemon.json.storageforge-STAMP. Sets dd_bak to the backup, or empty when there was no file.
+# It never calls conflict (that may end the run): on failure it returns 1 with the reason in dd_why, and the file is as it was.
 dd_write() { local tmpf=$f.storageforge-new
   STAMP=${STAMP:-$(date +%Y%m%d-%H%M%S)}
   dd_bak=
-  mkdir -p -- "$etc" || { conflict "could not make $etc"; return 1; }
+  mkdir -p -- "$etc" || { dd_why "could not make $etc"; return 1; }
   if [[ -e $f ]]; then
     dd_bak=$f.storageforge-$STAMP
-    cp -p -- "$f" "$dd_bak" || { dd_bak=; conflict "could not back up $f"; return 1; }
-    cp -p -- "$f" "$tmpf" && cat -- "$1" >"$tmpf" || { rm -f -- "$tmpf"; conflict "could not write $tmpf"; return 1; }
+    cp -p -- "$f" "$dd_bak" || { dd_bak=; dd_why "could not back up $f"; return 1; }
+    cp -p -- "$f" "$tmpf" && cat -- "$1" >"$tmpf" || { rm -f -- "$tmpf"; dd_why "could not write $tmpf"; return 1; }
   else
-    install -m 0644 -- "$1" "$tmpf" || { conflict "could not write $tmpf"; return 1; }
+    install -m 0644 -- "$1" "$tmpf" || { dd_why "could not write $tmpf"; return 1; }
   fi
-  mv -f -- "$tmpf" "$f" || { rm -f -- "$tmpf"; conflict "could not replace $f"; return 1; }
+  mv -f -- "$tmpf" "$f" || { rm -f -- "$tmpf"; dd_why "could not replace $f"; return 1; }
   ok "wrote $f${dd_bak:+ (the old one is kept as $dd_bak)}"
 }
 
@@ -112,7 +120,7 @@ dd_undo() {
 dd_expect() { local got
   [[ -n $3 ]] || return 0
   got=$(docker info --format "$2" 2>/dev/null </dev/null) || got=
-  if [[ ${got%/} == "${3%/}" ]]; then ok "docker reports $1 $3"; else conflict "docker reports $1 ${got:-nothing}, not $3"; return 1; fi
+  if [[ ${got%/} == "${3%/}" ]]; then ok "docker reports $1 $3"; else dd_conflict "docker reports $1 ${got:-nothing}, not $3"; return 1; fi
 }
 
 # dd_back: waits for docker to answer, then says which of the containers that ran before are running again.
@@ -121,7 +129,7 @@ dd_back() { local i name now missing=
     docker info >/dev/null 2>&1 </dev/null && break
     sleep 1
   done
-  docker info >/dev/null 2>&1 </dev/null || { conflict "docker does not answer after the restart: look at systemctl status docker"; return 1; }
+  docker info >/dev/null 2>&1 </dev/null || { dd_conflict "docker does not answer after the restart: look at systemctl status docker"; return 1; }
   [[ -n $running ]] || return 0
   now=$(docker ps --format "{{.Names}}" 2>/dev/null </dev/null) || now=
   while IFS= read -r name; do
@@ -130,6 +138,22 @@ dd_back() { local i name now missing=
   if [[ -z $missing ]]; then ok "all $nrun containers that were running are running again"
   else ok "containers not running again:$missing (no restart policy: start them by hand with docker start)"; fi
   return 0
+}
+
+# dd_move: docker stopped, the data copied, the file written, docker started. Runs in a subshell: its EXIT trap starts docker unless it was started here,
+# so no failure and no conflict that ends an Ansible run can leave it stopped. Failures return 1 with the reason in dd_why; the caller says it.
+dd_move() {
+  started=0      # not local: the EXIT trap runs after this function has returned
+  trap "((started)) || systemctl start docker >/dev/null 2>&1" EXIT
+  systemctl stop docker.socket docker || { dd_why "docker did not stop: the data was not copied and daemon.json is unchanged"; return 1; }
+  rsync -aHAX --numeric-ids --info=progress2 "$cur/" "$want/" </dev/null || { dd_why "rsync failed: daemon.json is unchanged and docker was started on $cur; $want holds what was copied, empty it before trying again"; return 1; }
+  dd_write "$new" || return 1
+  if systemctl start docker; then started=1
+  else
+    dd_undo
+    dd_why "docker did not start with the new daemon.json: the old one is back (kept as ${dd_bak:-none}); the data is copied to $want"
+    return 1
+  fi
 }
 
 # dd_work: the whole step, reading and setting the locals of t_docker_daemon. tmp is its own temporary folder.
@@ -147,16 +171,16 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
   [[ -n $want && $want == "$cur" ]] && eff_root=
   if [[ -n $want && $want != "$cur" ]]; then drift=1; [[ -n $move ]] && moving=1; fi
   if [[ -s $f ]]; then
-    [[ -r $f ]] || { if ((APPLY)); then conflict "$f is not readable"; else missing "$f was not readable as $(id -un): --apply, as root, reads it"; fi; return 0; }
+    [[ -r $f ]] || { if ((APPLY)); then dd_conflict "$f is not readable"; else missing "$f was not readable as $(id -un): --apply, as root, reads it"; fi; return 0; }
     base=$f
   elif [[ -e $f && ! -r $f ]]; then
-    conflict "$f is not readable"; return 0
+    dd_conflict "$f is not readable"; return 0
   else
     base=$tmp/empty.json; echo "{}" >"$base"
   fi
   new=$tmp/new.json
   out=$(dd_merge "$base" "$new") && d=0 || d=$?
-  if ((d)); then conflict "$f is not valid JSON ($out): it is left as it is, fix it by hand"; return 0; fi
+  if ((d)); then dd_conflict "$f is not valid JSON ($out): it is left as it is, fix it by hand"; return 0; fi
   if command -v diff >/dev/null; then
     d=$(diff -u -- "$base" "$new" 2>/dev/null) || true
     [[ -z $d ]] || changed=1
@@ -169,7 +193,7 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
 
   if command -v dockerd >/dev/null; then help=$(dockerd --help 2>&1 </dev/null) || true; else help=; fi
   if grep -q -- "--validate" <<<"$help"; then
-    vout=$(dockerd --validate --config-file "$new" 2>&1 </dev/null) || { vout=$(tr "\n" " " <<<"$vout"); conflict "dockerd rejects the new daemon.json: $vout" >&2; return 0; }
+    vout=$(dockerd --validate --config-file "$new" 2>&1 </dev/null) || { vout=$(tr "\n" " " <<<"$vout"); dd_conflict "dockerd rejects the new daemon.json: $vout" >&2; return 0; }
     ok "dockerd accepts the new daemon.json"
   else
     info "this Docker cannot validate a config; checked as JSON only"
@@ -188,20 +212,20 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
   fi
 
   if ((moving)); then
-    command -v rsync >/dev/null || { conflict "rsync is not installed: it copies the data directory"; return 0; }
-    [[ -d $cur ]] || { conflict "the current data directory $cur is not a folder here"; return 0; }
-    case "$want/" in "$cur/"*) conflict "$want is inside the current data directory $cur"; return 0 ;; esac
-    case "$cur/" in "$want/"*) conflict "the current data directory $cur is inside $want"; return 0 ;; esac
+    command -v rsync >/dev/null || { dd_conflict "rsync is not installed: it copies the data directory"; return 0; }
+    [[ -d $cur ]] || { dd_conflict "the current data directory $cur is not a folder here"; return 0; }
+    case "$want/" in "$cur/"*) dd_conflict "$want is inside the current data directory $cur"; return 0 ;; esac
+    case "$cur/" in "$want/"*) dd_conflict "the current data directory $cur is inside $want"; return 0 ;; esac
     if [[ -e $want ]]; then
-      [[ -d $want ]] || { conflict "$want is not a folder"; return 0; }
-      [[ -z $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) ]] || { conflict "$want is not empty: move its content away first, or pick an empty folder"; return 0; }
+      [[ -d $want ]] || { dd_conflict "$want is not a folder"; return 0; }
+      [[ -z $(find "$want" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) ]] || { dd_conflict "$want is not empty: move its content away first, or pick an empty folder"; return 0; }
     fi
     used=$(du -sx --block-size=1 -- "$cur" 2>/dev/null | cut -f1) || used=
     par=$want
     while [[ ! -d $par && $par != / ]]; do par=$(dirname -- "$par"); done
     avail=$(df --output=avail -B1 -- "$par" 2>/dev/null | tail -n 1 | tr -d " ") || avail=
     if [[ $used =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]]; then
-      if ((avail < used + used / 20)); then conflict "no room: $cur holds $used bytes and $par has $avail free"; return 0; fi
+      if ((avail < used + used / 20)); then dd_conflict "no room: $cur holds $used bytes and $par has $avail free"; return 0; fi
       ok "room for $cur ($used bytes) in $par ($avail free)"
     else
       info "the room for $cur in $par could not be measured as $(id -un)"
@@ -212,26 +236,23 @@ dd_work() { local base new cur eff_root want d out vout help used avail par l hi
 
   if ((moving)); then
     act "stop docker, copy $cur to $want, write $f and start docker again (the old folder is kept)" || return 0
-    mkdir -p -- "$want" || { conflict "could not make $want"; return 0; }
-    if ! systemctl stop docker.socket docker; then
-      systemctl start docker || true
-      conflict "docker did not stop: the data was not copied and daemon.json is unchanged"; return 0
+    mkdir -p -- "$want" || { dd_conflict "could not make $want"; return 0; }
+    # with live-restore the containers outlive docker: stopped here, or rsync copies live data and they keep running on the old folder
+    if [[ $(docker info --format "{{.LiveRestoreEnabled}}" 2>/dev/null </dev/null) == true && $nrun -gt 0 ]]; then
+      info "live-restore is on: stopping the $nrun running containers first ($(tr "\n" " " <<<"$running")), so that the copy is whole"
+      while IFS= read -r l; do
+        [[ -n $l ]] || continue
+        docker stop "$l" >/dev/null </dev/null || { dd_conflict "could not stop the container $l: nothing was changed"; return 0; }
+      done <<<"$running"
     fi
-    if ! rsync -aHAX --numeric-ids --info=progress2 "$cur/" "$want/" </dev/null; then
-      systemctl start docker || true
-      conflict "rsync failed: daemon.json is unchanged and docker was started on $cur; $want holds what was copied, empty it before trying again"; return 0
-    fi
-    dd_write "$new" || { systemctl start docker || true; return 0; }
-    if ! systemctl start docker; then
-      dd_undo; systemctl start docker || true
-      conflict "docker did not start with the new daemon.json: the old one is back (kept as ${dd_bak:-none}); the data is copied to $want"; return 0
-    fi
+    # the part with docker stopped runs in a subshell whose exit starts docker again, whatever ends it
+    ( dd_move ) || { dd_fail; return 0; }
   else
     act "write $f, then restart docker" || return 0
-    dd_write "$new" || return 0
+    dd_write "$new" || { dd_fail; return 0; }
     if ! systemctl restart docker; then
       dd_undo; systemctl restart docker || true
-      conflict "docker did not restart with the new daemon.json: the old one is back"; return 0
+      dd_conflict "docker did not restart with the new daemon.json: the old one is back"; return 0
     fi
   fi
   dd_back || return 0
@@ -318,10 +339,15 @@ def _check(conn, c, h, p, say):
     if p.get('storage_driver') and p['storage_driver'] != st.get('storage_driver'):
         say('warn', f'another storage driver does not read the images and containers of {st.get("storage_driver") or "the current one"}: they stay on disk, unseen')
     running = (view or {}).get('running') or 0
-    if running and not st.get('live_restore'):
+    if running:
         none = sum(1 for s in view['stacks'] for x in s['containers'] if x['state'] == 'running' and (x.get('restart') or 'no') == 'no')
-        say('warn', f'docker is stopped or restarted: its {running} running container{"s" if running != 1 else ""} stop (live-restore is off); '
-                    f'{none} of them {"has" if none == 1 else "have"} no restart policy and stay{"s" if none == 1 else ""} stopped until started by hand')
+        left = (f'{none} of them {"has" if none == 1 else "have"} no restart policy and stay{"s" if none == 1 else ""} stopped until started by hand '
+                '(so does any with unless-stopped, when it was stopped by this step)')
+        n = f'{running} running container{"s" if running != 1 else ""}'
+        if want and cur and want != cur and p.get('move_data'):
+            say('warn', f'moving the data stops its {n}, whatever live-restore says (they would keep running on the old folder otherwise); {left}')
+        elif not st.get('live_restore'):
+            say('warn', f'docker is stopped or restarted: its {n} stop (live-restore is off); {left}')
 
 
 def _ansible(t):

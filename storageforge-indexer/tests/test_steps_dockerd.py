@@ -115,6 +115,14 @@ class Check(Index):
         self.assertIn('2 running containers', warn[0])
         self.assertIn('1 of them has no restart policy', warn[0])
 
+    def test_a_move_warns_about_the_running_containers_whatever_live_restore_says(self):
+        self.scan(containers=[container('web'), container('db', 'no')], settings={'live_restore': True})
+        warn = [t for lv, t in self.items(data_root='/mnt/backup/docker') if lv == 'warn' and 'running container' in t]
+        self.assertEqual(len(warn), 1)
+        self.assertIn('2 running containers', warn[0])
+        self.assertIn('whatever live-restore says', warn[0])
+        self.assertIn('1 of them has no restart policy', warn[0])
+
     def test_live_restore_on_the_engine_removes_the_warning(self):
         self.scan(containers=[container('web')], settings={'live_restore': True})
         self.assertFalse(any('restart policy' in t for _, t in self.items()))
@@ -158,7 +166,8 @@ class Script(Index):
         self.work = Path(tempfile.mkdtemp(dir=self.tmp))
         self.etc, self.stubs, self.log = self.work / 'etc', self.work / 'stubs', self.work / 'argv.log'
         self.old, self.new = self.work / 'old-root', self.work / 'new-root'
-        for d in (self.etc, self.stubs, self.old):
+        self.tmpdir = self.work / 'tmp'
+        for d in (self.etc, self.stubs, self.old, self.tmpdir):
             d.mkdir()
         (self.old / 'data').write_text('x' * 4096)
         (self.etc / 'daemon.json').write_text(json.dumps(self.OLD_DAEMON, indent=2) + '\n')
@@ -196,6 +205,7 @@ esac
 ''')
         self.stub('systemctl', f'''#!/bin/sh
 echo "systemctl $* | daemon.json then: $(tr -d ' \\n' < {etc}/daemon.json)" >> {log}
+if [ "$1" = start ] && [ -e "{work}/start-fails-on-new" ] && grep -q data-root {etc}/daemon.json; then exit 1; fi
 case "$1" in stop) touch {work}/down ;; start|restart) rm -f {work}/down; touch {work}/restarted ;; esac
 ''')
         self.stub('rsync', f'''#!/bin/sh
@@ -210,7 +220,7 @@ exit 0
         (self.stubs / name).chmod(0o755)
 
     def env(self, path=None):
-        return {**os.environ, 'PATH': path or f'{self.stubs}:{os.environ["PATH"]}', 'SF_DOCKER_ETC': str(self.etc)}
+        return {**os.environ, 'PATH': path or f'{self.stubs}:{os.environ["PATH"]}', 'SF_DOCKER_ETC': str(self.etc), 'TMPDIR': str(self.tmpdir)}
 
     def daemon(self):
         return json.loads((self.etc / 'daemon.json').read_text())
@@ -433,6 +443,109 @@ exit 0
         self.assertNotEqual(r.returncode, 0)
         self.assertRegex(r.stderr, r'python3 nor jq')
         self.assertEqual((self.etc / 'daemon.json').read_text(), before)
+
+    # ── docker is never left stopped ──
+    def assert_docker_started_after_the_stop(self):
+        stop, starts = self.calls('systemctl stop docker.socket docker'), self.calls('systemctl start docker')
+        self.assertEqual(len(stop), 1)
+        self.assertTrue(starts and starts[-1] > stop[0], self.logged())
+        self.assertFalse((self.work / 'down').exists())
+
+    def assert_no_temporary_folder_left(self):
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
+
+    def test_a_write_that_fails_after_the_stop_still_starts_docker(self):
+        before = (self.etc / 'daemon.json').read_text()
+        self.etc.chmod(0o555)                                     # the backup cannot be made
+        self.addCleanup(self.etc.chmod, 0o755)
+        r = self.export(data_root=str(self.new))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('daemon.json', r.stderr)
+        self.assertEqual(len(self.calls('rsync')), 1)
+        self.assert_docker_started_after_the_stop()
+        self.assertEqual((self.etc / 'daemon.json').read_text(), before)
+        self.assert_no_temporary_folder_left()
+
+    def test_a_failing_cp_or_mv_in_the_write_still_starts_docker(self):
+        for tool in ('cp', 'mv'):
+            with self.subTest(tool=tool):
+                self.log.unlink(missing_ok=True)
+                (self.work / 'down').unlink(missing_ok=True)
+                self.stub(tool, '#!/bin/sh\nexit 1\n')
+                before = (self.etc / 'daemon.json').read_text()
+                r = self.export(data_root=str(self.new / tool))
+                self.assertNotEqual(r.returncode, 0)
+                self.assertRegex(r.stderr, r'conflict: could not')
+                self.assert_docker_started_after_the_stop()
+                self.assertEqual((self.etc / 'daemon.json').read_text(), before)
+                (self.stubs / tool).unlink()
+
+    def test_a_docker_that_will_not_start_on_the_new_file_gets_the_old_one_back(self):
+        (self.work / 'start-fails-on-new').write_text('')
+        before = (self.etc / 'daemon.json').read_text()
+        r = self.export(data_root=str(self.new))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('the old one is back', r.stderr)
+        self.assertEqual((self.etc / 'daemon.json').read_text(), before)
+        self.assertEqual(len(self.calls('systemctl start docker')), 2)       # the failed one, and once on the old file
+        self.assert_docker_started_after_the_stop()
+        self.assertEqual(len(self.calls('systemctl start docker')), 2)        # the exit trap adds none: docker was started
+
+    def test_a_restart_that_fails_puts_the_old_file_back_and_restarts(self):
+        self.stub('systemctl', f"""#!/bin/sh
+echo "systemctl $* | daemon.json then: $(tr -d ' \\n' < {self.etc}/daemon.json)" >> {self.log}
+if [ "$1" = restart ] && grep -q max-size {self.etc}/daemon.json; then exit 1; fi
+exit 0
+""")
+        before = (self.etc / 'daemon.json').read_text()
+        r = self.export()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual((self.etc / 'daemon.json').read_text(), before)
+        self.assertEqual(len(self.calls('systemctl restart docker')), 2)
+
+    def test_a_config_dockerd_rejects_is_refused_before_a_move_stops_anything(self):
+        (self.work / 'invalid').write_text('')
+        r = self.export(data_root=str(self.new))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual((self.calls('systemctl'), self.calls('rsync')), ([], []))
+        self.assertFalse(self.new.exists())
+
+    def test_a_conflict_before_any_change_leaves_no_temporary_folder(self):
+        (self.etc / 'daemon.json').write_text('{"hosts": [')
+        self.assertNotEqual(self.export().returncode, 0)
+        self.assert_no_temporary_folder_left()
+        self.new.mkdir()
+        (self.new / 'x').write_text('x')
+        (self.etc / 'daemon.json').write_text('{}')
+        self.assertNotEqual(self.export(data_root=str(self.new)).returncode, 0)
+        self.assert_no_temporary_folder_left()
+
+    def test_a_clean_run_leaves_no_temporary_folder(self):
+        self.assertEqual(self.export().returncode, 0)
+        self.assert_no_temporary_folder_left()
+
+    # ── live-restore ──
+    def test_a_move_with_live_restore_on_stops_the_containers_before_the_copy(self):
+        (self.etc / 'daemon.json').write_text(json.dumps({'live-restore': True}))
+        r = self.export(data_root=str(self.new))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        stops = self.calls('docker stop')
+        self.assertEqual([self.logged()[i] for i in stops], ['docker stop web', 'docker stop tmp'])
+        self.assertLess(stops[-1], self.calls('systemctl stop docker.socket docker')[0])
+        self.assertLess(stops[-1], self.calls('rsync')[0])
+
+    def test_a_move_without_live_restore_stops_no_container_itself(self):
+        r = self.export(data_root=str(self.new))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls('docker stop'), [])
+
+    def test_a_container_that_will_not_stop_stops_the_move_before_docker(self):
+        (self.etc / 'daemon.json').write_text(json.dumps({'live-restore': True}))
+        self.stub('docker', (self.stubs / 'docker').read_text().replace('if a[:1] == ["--version"]:', 'if a[:1] == ["stop"]:\n    sys.exit(1)\nif a[:1] == ["--version"]:', 1))
+        r = self.export(data_root=str(self.new))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('could not stop the container', r.stderr)
+        self.assertEqual((self.calls('systemctl'), self.calls('rsync')), ([], []))
 
     def test_values_reach_python_as_words_never_as_source(self):
         evil = f'{self.work}/$(touch {self.work}/pwned)"x'

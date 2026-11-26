@@ -93,6 +93,23 @@ def parse_accounts(text: str) -> dict:
             'groups': sorted(({**g, 'members': [m for m in g['members'] if m in names]} for g in groups), key=lambda g: g['gid'])}
 
 
+def parse_fstab_verify(text: str) -> list[dict]:
+    """findmnt --verify's errors, each with the mount point of its line: [{'target', 'error', 'boot'}]. boot: the line is required at
+    boot (not nofail), so it can stop the host starting. Warnings are left out; what cannot be read is dropped."""
+    out, target = [], None
+    for line in (text or '').splitlines():
+        if not line.strip() or line[0].isdigit() or line.startswith(('Success', 'Parse')):
+            continue
+        if not line[0].isspace():
+            target = line.strip()
+            continue
+        msg = line.strip()
+        if target and msg.startswith('[E]'):
+            error = msg[3:].strip()
+            out.append({'target': target, 'error': error, 'boot': 'required' in error and 'nofail' not in error})
+    return out
+
+
 def parse_fstab_lines(text: str) -> list[dict]:
     """fstab entries with their exact line, and their target and spec decoded."""
     out = []

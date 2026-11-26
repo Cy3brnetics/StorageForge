@@ -342,6 +342,7 @@ echo '@@findmnt'; bounded findmnt -J -b -l -o TARGET,SOURCE,FSTYPE,SIZE,USED,OPT
 echo '@@mountinfo'; cat /proc/self/mountinfo 2>/dev/null
 echo '@@df'; bounded df -B1 -P 2>/dev/null || df -B1 -P -l 2>/dev/null
 echo '@@mergerfs'; for p in $(pgrep -x mergerfs 2>/dev/null); do xargs -0 </proc/$p/cmdline; done; awk '$1 !~ /^#/ && $3 ~ /mergerfs/ {print $1, $2}' /etc/fstab 2>/dev/null
+echo '@@fstabverify'; command -v findmnt >/dev/null 2>&1 && LC_ALL=C findmnt --verify --tab-file /etc/fstab 2>&1 | head -n 200
 echo '@@btrfs'; for d in /sys/fs/btrfs/*-*/; do [ -d "$d" ] || continue; printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(ls -d "$d"allocation/data/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(ls -d "$d"allocation/metadata/*/ 2>/dev/null | xargs -rn1 basename | paste -sd, -)" "$(cat "$d"label 2>/dev/null)" "$(a="$d"allocation; v() { cat "$@" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s}'; }; printf 'dev=%s alloc=%s datat=%s datau=%s metat=%s metau=%s rsv=%s missing=%s op=%s' "$(cat "$d"devices/*/size 2>/dev/null | awk '{s+=$1*512} END {printf "%.0f", s}')" "$(v "$a"/*/disk_total)" "$(v "$a"/data/total_bytes)" "$(v "$a"/data/bytes_used)" "$(v "$a"/metadata/total_bytes)" "$(v "$a"/metadata/bytes_used)" "$(v "$a"/global_rsv_size)" "$(v "$d"devinfo/*/missing)" "$(cat "$d"exclusive_operation 2>/dev/null)")"; done
 echo '@@jobs'; for f in /var/lib/storageforge/jobs/*/runs.jsonl; do [ -r "$f" ] && tail -n 50 "$f"; done
 echo '@@clamav'; [ -r /var/lib/storageforge/clamav/last.tsv ] && head -n 5001 /var/lib/storageforge/clamav/last.tsv
@@ -480,6 +481,7 @@ class HostInventory:
     zfs_props: str = ''            # ZFS properties set on purpose, not inherited: name, property, value per line
     pkglist: dict | None = None    # distro, packages installed on purpose, Flatpak and Snap apps, package sources (pkglist.py)
     services: dict | None = None   # the init system and what it starts: enabled systemd units, OpenRC services by runlevel
+    fstab_verify: str = ''         # what findmnt --verify says of /etc/fstab (an alert when it finds errors)
 
     def to_json(self) -> str:
         return json.dumps({
@@ -487,7 +489,7 @@ class HostInventory:
             'lsblk': self.lsblk, 'zpool_status': self.zpool_status, 'zfs_props': self.zfs_props, 'df': self.df, 'lvs': self.lvs, 'access': self.access, 'scan_user': self.user, 'nfs': self.nfs, 'smb': self.smb, 'btrfs': self.btrfs,
             'jobs': self.jobs, 'tasks': self.tasks, 'schedules': self.schedules, 'runs': self.runs, 'managed': self.managed, 'ids': self.ids, 'packages': self.packages,
             'configs': self.configs, 'accounts': self.accounts, 'authkeys': self.authkeys, 'moves': self.moves, 'health': self.health, 'snapshots': self.snapshots, 'snapjobs': self.snapjobs,
-            'pkglist': self.pkglist, 'services': self.services, 'mounts': [asdict(m) for m in self.mounts],
+            'pkglist': self.pkglist, 'services': self.services, 'fstab_verify': self.fstab_verify, 'mounts': [asdict(m) for m in self.mounts],
         })
 
 
@@ -622,7 +624,7 @@ def inventory_of(sec: dict[str, str], host: str, local: bool = False) -> HostInv
                          access=access, user=user, nfs=sec.get('nfs', '').strip(), smb=sec.get('smb', '').strip(),
                          btrfs=sec.get('btrfs', '').strip(), jobs=sec.get('jobs', '').strip(), clamav=sec.get('clamav', '').strip(), secevents=sec.get('secevents', '').strip(),
                          tasks=sec.get('tasks', '').strip(), schedules=sec.get('schedules', '').strip(),
-                         runs=sec.get('runs', '').strip(),
+                         runs=sec.get('runs', '').strip(), fstab_verify=sec.get('fstabverify', '').strip(),
                          managed=sec.get('managed', '').strip(), ids=sec.get('ids', '').strip(),
                          packages=sec.get('packages', '').strip(), moves=sec.get('moves', '').strip(),
                          health=parse_report(sec.get('health', '')), snapshots=parse_snapshots(sec.get('snapshots', '')),

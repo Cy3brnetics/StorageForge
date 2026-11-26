@@ -1,6 +1,8 @@
 """The engine settings the scan reads (runtimes/docker.py), what is stored of daemon.json, and what the Workloads listing carries."""
 import json
+import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +52,9 @@ class Parse(unittest.TestCase):
         for k in ('splunk-token', 'X_API_KEY', 'password', 'my-secret'):
             self.assertEqual(opts[k], '***', k)
         self.assertEqual(got['daemon_json']['registry-mirrors'], ['https://***@mirror.example/', 'https://plain.example/'])
+        raw = json.dumps({'log-opts': {'syslog-address': 'tcp://bob:hunter3@logs.example:514', 'max-size': '1m'}})
+        opts = docker.parse_engine(probe(daemon=raw))['settings']['daemon_json']['log-opts']
+        self.assertEqual((opts['syslog-address'], opts['max-size']), ('tcp://***@logs.example:514', '1m'))
         self.assertEqual(got['registry_mirrors'], ['https://***@mirror.example/'])
         self.assertNotIn('hunter2', json.dumps(got))
         self.assertNotIn('abc-123', json.dumps(got))
@@ -81,9 +86,26 @@ class Parse(unittest.TestCase):
         self.assertIn('65536', docker.ENGINE)
         self.assertIn("S='sudo -n'", docker.ENGINE)
 
+    def read_daemon_json(self, content: bytes) -> str:
+        """The probe's own daemon.json block, run by sh against a real file."""
+        block = re.search(r'  S=;.*?\n  else echo \'@@daemonjson-unreadable\'; fi', docker.ENGINE, re.S)[0]
+        path = Path(tempfile.mkdtemp()) / 'daemon.json'
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_bytes(content)
+        block = block.replace('f=/etc/docker/daemon.json', f'f={path}')
+        return subprocess.run(['sh', '-c', 'how=direct\n' + block], capture_output=True, text=True, encoding='utf-8').stdout
+
     def test_the_cap_counts_bytes_not_characters(self):
-        self.assertIn('LC_ALL=C wc -c', docker.ENGINE)
-        self.assertNotIn('${#dj}', docker.ENGINE)
+        two_byte = '{"x": "' + 'é' * 30000 + '"}'              # 60 KB in 30 thousand characters
+        self.assertIn('@@daemonjson\n', self.read_daemon_json(two_byte.encode()))
+        too_big = '{"x": "' + 'é' * 40000 + '"}'              # 80 KB in 40 thousand characters: over the cap by bytes, under it by characters
+        self.assertEqual(self.read_daemon_json(too_big.encode()).strip(), '@@daemonjson-unreadable')
+
+    def test_the_cap_is_the_files_size_with_its_trailing_newlines(self):
+        body = b'{"a": "' + b'x' * 65000 + b'"}'
+        # 65.6 KB with the newlines: over the cap, which head and a command substitution would have counted as 65,007 and let through
+        self.assertEqual(self.read_daemon_json(body + b'\n' * 600).strip(), '@@daemonjson-unreadable')
+        self.assertTrue(self.read_daemon_json(body + b'\n').startswith('@@daemonjson\n'))
 
 
 class Stored(unittest.TestCase):

@@ -73,7 +73,9 @@ if [ "${D##* }" = docker ]; then
   # daemon.json is read the way the engine was reached: root may own the folder; a file over 64 KiB (bytes, not characters) is not the one we want in the index
   S=; [ "$how" = sudo ] && S='sudo -n'; f=/etc/docker/daemon.json
   if $S test -e $f 2>/dev/null; then
-    dj=$($S head -c 65537 -- $f 2>/dev/null) && [ "$(printf %s "$dj" | LC_ALL=C wc -c)" -le 65536 ] && printf '@@daemonjson\n%s\n' "$dj" || echo '@@daemonjson-unreadable'
+    # the size is the file's own byte count (command substitution would drop trailing newlines), then the file is read only when it is small enough
+    n=$($S wc -c -- $f 2>/dev/null | { read -r a _; echo "$a"; })
+    if [ -n "$n" ] && [ "$n" -le 65536 ] && dj=$($S cat -- $f 2>/dev/null); then printf '@@daemonjson\n%s\n' "$dj"; else echo '@@daemonjson-unreadable'; fi
   elif $S test -x /etc/docker 2>/dev/null; then echo '@@daemonjson'
   else echo '@@daemonjson-unreadable'; fi
 fi
@@ -163,13 +165,13 @@ URL_AUTH = re.compile(r'^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]*@')
 
 
 def _mask_mirror(url: str) -> str:
-    """A mirror URL may carry user:password: it never reaches the index."""
+    """A mirror URL (or a log option that is one) may carry user:password: it never reaches the index."""
     return URL_AUTH.sub(r'\1***@', url)
 
 
 def _mask_known(key: str, v):
     if key == 'log-opts' and isinstance(v, dict):
-        return {k: ('***' if SECRET_KEY.search(str(k)) else x) for k, x in v.items()}
+        return {k: ('***' if SECRET_KEY.search(str(k)) else _mask_mirror(x) if isinstance(x, str) else x) for k, x in v.items()}
     if key == 'registry-mirrors' and isinstance(v, list):
         return [_mask_mirror(x) if isinstance(x, str) else x for x in v]
     return v
