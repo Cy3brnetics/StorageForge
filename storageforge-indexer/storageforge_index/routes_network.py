@@ -212,11 +212,8 @@ def register(web, ctx):
             raise rostranspiler.DslError('targets: a list of at most ' + str(len(rostranspiler.TARGETS)) + ' different names, from ' + ', '.join(rostranspiler.TARGETS))
         out ={t: rostranspiler.emit(stmts, t) for t in wanted}
         for got in out.values():         # a private key stays out of what's shown
-            for s in stmts:
-                for k in rostranspiler.SECRET_ATTRS:
-                    if s.get(k):
-                        got['text'] = got['text'].replace(s[k], '<hidden>')
-                        got['files'] = {n: v.replace(s[k], '<hidden>') for n, v in got['files'].items()}
+            got['text'] = rostranspiler.redact_text(got['text'], stmts)
+            got['files'] = {n: rostranspiler.redact_text(v, stmts) for n, v in got['files'].items()}
         return jsonify(statements=[s.text() for s in stmts], targets=out)
 
     @web.get('/api/dsl/of')

@@ -408,7 +408,7 @@ def report(db, conn: Conn, name: str, text: str, actor: str) -> dict:
     risk = cuts_off(conn, d, stmts)
     now = int(time.time())
     result = {'statements': compiled['statements'], 'native': _redacted(compiled, stmts), 'unsupported': compiled['unsupported'], 'notes': compiled['notes'], 'cuts_off': risk, 'platform': d['platform']}
-    secret = any(s.get(k) for s in stmts for k in rostranspiler.SECRET_ATTRS)
+    secret = bool(rostranspiler.secrets_of(stmts))
     cid = conn.scalar("""INSERT INTO network_changes (device, dsl, source, report_json, status, actor, created_at) VALUES (:d, :s, :src, :r, 'reported', :a, :t) RETURNING change_id""",
                       {'d': d['name'], 's': json.dumps(compiled['statements']), 'src': None if secret else text, 'r': json.dumps(result), 'a': actor[:60], 't': now})
     if secret:           # a private key is never written down in the clear: this report only lasts as long as this process
@@ -420,12 +420,7 @@ _SOURCES: dict = {}
 
 
 def _redacted(compiled: dict, stmts: list) -> str:
-    text = compiled['text']
-    for s in stmts:
-        for k in rostranspiler.SECRET_ATTRS:
-            if s.get(k):
-                text = text.replace(s[k], '<hidden>')
-    return text
+    return rostranspiler.redact_text(compiled['text'], stmts)
 
 
 def change(conn: Conn, cid: int) -> dict:

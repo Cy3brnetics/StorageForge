@@ -245,6 +245,18 @@ class Stmt:
         return '/' + ' '.join(self.path) + f' {self.verb} ' + ' '.join(parts)
 
 
+def secrets_of(stmts: list) -> list:
+    """The secret values the statements carry (a WireGuard private key), in statement order."""
+    return [s[k] for s in stmts for k in SECRET_ATTRS if s.get(k)]
+
+
+def redact_text(text: str, stmts: list) -> str:
+    """The compiled text with each secret value the statements carry replaced by '<hidden>', wherever it appears."""
+    for v in secrets_of(stmts):
+        text = text.replace(v, '<hidden>')
+    return text
+
+
 TOKEN = re.compile(r'''([A-Za-z.][\w.-]*)=(?:"([^"]*)"|([^\s"]*))|(\S+)''')
 
 
