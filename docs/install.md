@@ -234,7 +234,30 @@ See [Console](console.md).
 
 ### Tailscale
 
-To join hosts to a tailnet with a plan step, keep the auth key in the vault rather than in a plan:
+**The stack on your tailnet.** Give the stack a Tailscale auth key and it joins your tailnet itself: the web UI is then also at `https://storageforge.<your-tailnet>.ts.net` with a certificate browsers trust, and StorageForge reaches hosts by their Tailscale (100.x) address over the tailnet, while LAN hosts stay on the LAN. The Docker host does not need Tailscale.
+
+1. In the Tailscale admin console, turn on MagicDNS and HTTPS certificates, and make an auth key (reusable is not needed: the node is kept in the `sf-tailscale` volume after the first start; tag it if your ACLs use tags).
+2. Put the key in a file only root can read, and point the stack at it:
+
+   ```bash
+   sudo install -m 0600 /dev/stdin /etc/storageforge/ts-authkey <<<'tskey-auth-…'
+   echo 'STORAGEFORGE_TS_AUTHKEY_FILE=/etc/storageforge/ts-authkey' >> .env
+   docker compose up -d
+   ```
+
+   `STORAGEFORGE_TS_AUTHKEY` in the environment works too, but `docker inspect` shows it. `STORAGEFORGE_TS_HOSTNAME` changes the name (default `storageforge`).
+3. `docker compose logs tailscale` says where the UI is, or why not. Without a key the container joins nothing and waits.
+
+What it does and does not do:
+
+- It runs in a `tailscale` container that shares the server's network, as the remote-node tunnel does. Only that container holds `NET_ADMIN`; the server keeps none. It takes no subnet routes, no exit node and no tailnet DNS, so a host on the LAN is reached the LAN way and compose's own names keep working. Add tailnet hosts by their 100.x address: tailnet names are not resolved inside the stack.
+- From the tailnet only the web UI comes in. A chain on `tailscale0` drops everything else, such as the server's own plain-HTTP port. Who may open the UI at all is your tailnet's ACLs, then StorageForge's sign-in.
+- The UI is still served on the LAN at port 8443. `STORAGEFORGE_HTTPS_BIND=127.0.0.1` keeps it to this machine and the tailnet.
+- People who come in over the tailnet are logged and rate-limited under the server's own address, since the tailnet connection reaches the proxy from inside the stack. Sign-in limits per account still apply.
+- With `docker/egress-firewall.sh`, tailnet traffic leaves over UDP: add `41641/udp 3478/udp` to `STORAGEFORGE_EGRESS_PORTS` for direct connections, or it falls back to Tailscale's relays over 443.
+- To leave the tailnet, remove the node in the admin console, then `docker compose down` and `docker volume rm storageforge_sf-tailscale`.
+
+**Joining managed hosts to a tailnet.** To join hosts to a tailnet with a plan step, keep the auth key in the vault rather than in a plan:
 
 ```bash
 docker compose exec -T storageforge storageforge-index vault secret-add tailscale-key < key.txt     # one line: the auth key

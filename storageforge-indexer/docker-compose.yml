@@ -158,11 +158,50 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: "3" }
 
+  # The stack on a tailnet, when there is a key (docker/tailscale/entrypoint.sh). Without STORAGEFORGE_TS_AUTHKEY or
+  # STORAGEFORGE_TS_AUTHKEY_FILE it joins nothing and waits. With one, the web UI is also at https://storageforge.<tailnet>.ts.net
+  # (turn on MagicDNS and HTTPS certificates in the Tailscale admin console), and the server reaches tailnet addresses over the
+  # tailnet while the LAN stays the LAN. It shares the server's network, as the remote-node tunnel does: only this container
+  # holds NET_ADMIN, and from the tailnet only the web UI comes in. Add tailnet hosts by their 100.x address: tailnet names
+  # are not resolved here, so compose's own names keep working.
+  tailscale:
+    build:
+      context: .
+      target: tailscale
+    image: storageforge-tailscale:0.5.4.1
+    restart: unless-stopped
+    depends_on:
+      storageforge: { condition: service_healthy, restart: true }   # a new server container is a new network to join
+    network_mode: "service:storageforge"
+    user: "0:0"                # tailscaled makes tailscale0 and its routes in the shared network
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, MKNOD]   # the interface, its one firewall chain, and /dev/net/tun when the host did not pass it
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      STORAGEFORGE_TS_AUTHKEY: ${STORAGEFORGE_TS_AUTHKEY:-}          # or, better, a file: STORAGEFORGE_TS_AUTHKEY_FILE
+      STORAGEFORGE_TS_HOSTNAME: ${STORAGEFORGE_TS_HOSTNAME:-storageforge}
+    volumes:
+      - sf-tailscale:/var/lib/tailscale                                # the node, so the key is needed only once
+      - ${STORAGEFORGE_TS_AUTHKEY_FILE:-/dev/null}:/run/ts-authkey:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 128m, pids: 64 }
+    healthcheck:
+      disable: true
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+
 volumes:
   sf-secrets:
   sf-tls:
   sf-data:
   sf-backups:
+  sf-tailscale:
 
 networks:
   sf:

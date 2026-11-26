@@ -48,6 +48,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The sign-in form waits for its submit handler and uses POST for native submissions so credentials stay out of URLs.
 
 ### Added
+- **The stack on a tailnet:** with `STORAGEFORGE_TS_AUTHKEY_FILE` (or `STORAGEFORGE_TS_AUTHKEY`) set, a `tailscale` container sharing the server's network joins your tailnet. The web UI is also served at `https://storageforge.<tailnet>.ts.net` with a tailnet certificate, through the proxy. The server reaches tailnet (100.x) addresses over the tailnet while LAN hosts stay on the LAN, and from the tailnet only the web UI comes in. Without a key the container joins nothing. Tailscale 1.104.7, pinned by checksum. See `docs/install.md`, Tailscale.
 - The planner's unified design preview can edit and save a host's `networks`, `workloads` and `firewall` sections (`PUT /api/planner/infrastructure`) with optimistic revision checks against concurrent map-design changes.
 - Planner storage saves now update a per-host storage section. Upgrades preserve the original v1 blueprints and their import times for rollback.
 - Hosts saved only in a map design now appear in the planner. Open one to review its design or start its storage blueprint before its first scan.

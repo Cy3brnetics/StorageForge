@@ -182,6 +182,26 @@ ADD --checksum=sha256:1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca
 RUN tar -xzf /src/firecracker.tgz -C /src --strip-components=1 \
  && install -D -m 0755 /src/firecracker-${FIRECRACKER_VERSION}-x86_64 /out/usr/bin/firecracker
 
+# ── tailscale: the stack's own place on a tailnet (docker-compose.yml, service tailscale). Static programs, pinned by the
+# checksum pkgs.tailscale.com publishes beside each tarball. When bumping, read tailscale.com/changelog and its security
+# bulletins (tailscale.com/security-bulletins), and take the new .sha256 from the same place. README "Updating dependencies".
+FROM ${BASE_IMAGE} AS tailscale-bin
+ARG TAILSCALE_VERSION=1.104.7
+ADD --checksum=sha256:e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c \
+    https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz /src/tailscale.tgz
+RUN tar -xzf /src/tailscale.tgz -C /src --strip-components=1 \
+ && install -D -m 0755 /src/tailscaled /out/usr/bin/tailscaled \
+ && install -D -m 0755 /src/tailscale /out/usr/bin/tailscale
+
+FROM ${BASE_IMAGE} AS tailscale
+# iptables (nft) for the one chain the entrypoint keeps on tailscale0; busybox stays for the entrypoint's shell.
+RUN apk add --no-cache iptables \
+ && rm -rf /var/cache/apk /etc/apk/cache
+COPY --from=tailscale-bin /out/ /
+COPY docker/tailscale/entrypoint.sh /usr/local/bin/storageforge-tailscale
+RUN ["/usr/bin/tailscale", "version"]
+ENTRYPOINT ["/usr/local/bin/storageforge-tailscale"]
+
 # ── proxy: nginx with its config inside, so a deploy does not need the repo's files on the Docker host ─
 FROM ${BASE_IMAGE} AS proxy
 # uid 101 is the one docker-compose.yml and init-volumes.sh already give the TLS files and the /tmp tmpfs to.
