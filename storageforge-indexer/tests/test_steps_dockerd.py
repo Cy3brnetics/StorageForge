@@ -90,6 +90,18 @@ class Normalize(unittest.TestCase):
         self.assertTrue(changes.normalize(plan(data_root='/srv/docker'))['tasks'][0]['params']['move_data'])
 
 
+class Timeout(Index):
+    def timeout(self, **over):
+        items = changes.deploy_items(self.db, self.conn, plan(**over), 'apply', 'tester')
+        return next(i for i in items if i['kind'] == 'changes').get('timeout')
+
+    def test_a_data_move_gets_the_long_timeout_and_an_ordinary_plan_does_not(self):
+        from storageforge_index import receiving
+        self.assertEqual(self.timeout(data_root='/srv/docker'), receiving.LONG_RUN)
+        self.assertIsNone(self.timeout(data_root='/srv/docker', move_data=False))
+        self.assertIsNone(self.timeout())
+
+
 class Check(Index):
     def test_a_podman_host_is_a_crit(self):
         self.scan(engine='podman', root='/var/lib/containers/storage')

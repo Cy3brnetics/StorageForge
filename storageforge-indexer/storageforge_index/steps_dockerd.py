@@ -411,6 +411,7 @@ def _ansible(t):
 
 
 changes.VALIDATE['docker-daemon'] = _validate
+changes.LONG_RUN['docker-daemon'] = lambda p: bool(p.get('data_root') and p.get('move_data'))
 changes.register('docker-daemon', {'group': 'Workloads', 'label': 'Change the Docker engine settings', 'fields': [
     F('data_root', 'path', 'Data directory (empty: as it is)', placeholder='/srv/docker'),
     F('move_data', 'bool', 'Move the data there (docker is stopped for the copy)', default=True),

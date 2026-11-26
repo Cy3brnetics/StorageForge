@@ -46,6 +46,7 @@ def F(name, kind, label, **kw):
 EXTRA: dict[str, dict] = {}
 EXTRA_BASH: list[str] = []
 VALIDATE: dict = {}    # step type -> (params, where) raising ValueError: a rule across fields (docker-daemon: at least one setting), kept apart from TYPES, which is served as JSON
+LONG_RUN: dict = {}    # step type -> (params) true when one run of it may take hours (a data move, a disk import): the deploy gives the plan receiving.LONG_RUN, not the default 1800 s
 PREPARE: list = []     # (conn, body) -> body, before a plan is checked or saved: steps_vm.py fills a VM step from its spec
 
 
@@ -1085,7 +1086,8 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, actor: str, destructive:
             finally:
                 c.close()
         return hook
-    long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in SEND_TYPES for t in plan['tasks']) else {}    # stopped halfway, a send starts again from nothing
+    # stopped halfway, a send starts again from nothing, and a data move or a disk import leaves a half-done copy
+    long_run = {'timeout': receiving.LONG_RUN} if any(t['type'] in SEND_TYPES or (t['type'] in LONG_RUN and LONG_RUN[t['type']](t['params'])) for t in plan['tasks']) else {}
     carried = secretstore.items_data(db, conn, plan, mode)          # the secrets its steps name, on the runner's stdin, in an apply only
     return [*before, *({'host': h, 'script': text, 'args': args + (['--secrets-stdin'] if h in carried else []), 'kind': 'changes', 'ref': plan['name'],
                         'mode': mode, **long_run, **carried.get(h, {}), **({'on_ok': mark(h)} if mode == 'apply' and plan_id else {})} for h in order), *after]

@@ -339,6 +339,14 @@ class Vm(CtRun):
         env = {**self.env(tmp), 'TMPDIR': str(tmp / 'tmpdir')}
         return subprocess.run(['bash', '-c', self.vm_export_cmd(**over)], env=env, capture_output=True, text=True, timeout=60)
 
+    def test_an_image_import_gets_the_long_timeout_and_an_iso_vm_does_not(self):
+        from storageforge_index import receiving
+
+        def timeout(**over):
+            return next(i for i in changes.deploy_items(self.db, self.conn, self.prepared(**over), 'apply', 'tester') if i['kind'] == 'changes').get('timeout')
+        self.assertEqual(timeout(source='image', iso='', image='debian13'), receiving.LONG_RUN)
+        self.assertIsNone(timeout())
+
     def test_a_source_brings_its_own_field_and_not_the_others(self):
         for over in ({'iso': ''}, {'image': 'debian13'}, {'source': 'image', 'iso': '', 'image': ''}, {'source': 'image', 'image': 'debian13'}):
             with self.subTest(over):

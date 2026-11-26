@@ -461,6 +461,7 @@ def _vm_fields():
 
 changes.CHECKS['pveiso'] = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:iso/[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}')
 changes.PREPARE.append(validate_vm)
+changes.LONG_RUN['pve-vm'] = lambda p: p.get('source') == 'image'     # a cloud image is downloaded and imported
 changes.register('pve-vm', {'group': 'Proxmox VE', 'label': 'Create a Proxmox VM', 'fields': _vm_fields(),
     'help': 'Created with qm on the node, so Proxmox shows it. From an ISO on the node it boots the installer. From a cloud image it downloads the image to a temporary folder, '
             'checks it against the publisher checksum, imports it as the disk and sets a cloud-init login for your key. An existing VMID is left alone.'},
