@@ -129,6 +129,22 @@ def _text(value, limit: int) -> str:
     return _CONTROL.sub(' ', value).strip()[:limit]
 
 
+
+def kernel_message(text) -> str:
+    """A kernel line's message from netconsole or pstore as it is stored: one safe line, scrubbed of secrets. Empty means skip it."""
+    return scrub(_text(text, MESSAGE_CHARS))
+
+
+def kernel_line(key: str, at_us: int, priority: int, message: str) -> dict:
+    """A kernel line from beside the journal (SIDE) as a hostlogs line. The caller hashes its own key: it is stored and dedupes re-reads."""
+    return {'key': key, 'at_us': at_us, 'priority': priority, 'unit': None, 'ident': 'kernel', 'pid': None, 'message': message,
+            'uid': None, 'comm': None, 'exe': None, 'seqnum': None, 'seqnum_id': None}
+
+
+def ensure_side_status(conn: Conn, host: str, now: float):
+    """The host's status row, made as 'side' when only netconsole or pstore lines are here: they never say how the journal's pickup went."""
+    conn.execute("INSERT INTO host_log_status (host, collected_at, state, note) VALUES (:h, :t, 'side', '') ON CONFLICT (host) DO NOTHING", {'h': host, 't': int(now)})
+
 # ── reading what the host sent ──────────────────────────────────────
 def parse(output: str, now: float | None = None) -> dict:
     """{'state': ok|partial|limited|no_journal, 'lines': [...], 'cut': bool}. Hosts are not trusted to send sense: a bad
@@ -272,7 +288,7 @@ def store(conn: Conn, host: str, parsed: dict, now: float | None = None, via: st
             note = (f'{over} line(s) were over this host\'s rate of {int(RATE_PER_DAY)} a day and were not stored, routine ones first. They are counted. '
                     'Raise STORAGEFORGE_LOG_KEEP_ROWS or STORAGEFORGE_LOG_RATE_PER_DAY to keep more.')
         if side:                    # how the journal's own pickup went is not theirs to say: only the rate they used is kept
-            conn.execute("INSERT INTO host_log_status (host, collected_at, state, note) VALUES (:h, :t, 'side', '') ON CONFLICT (host) DO NOTHING", {'h': host, 't': int(now)})
+            ensure_side_status(conn, host, now)
             conn.execute('UPDATE host_log_status SET rate_tokens = :l, rate_at = :t, over_total = over_total + :o WHERE host = :h', {'h': host, 'l': left, 't': int(now), 'o': over})
         else:
             _set_status(conn, host, int(now), state, new, cut, max(seen) if seen else None, note)

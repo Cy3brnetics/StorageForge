@@ -90,11 +90,10 @@ def parse_packet(data: bytes, now: float | None = None) -> list[dict]:
                 out.append((prio, msg, f'nc|p|{now}|{n}|{msg}'))
     lines = []
     for priority, message, key in out:
-        message = hostlogs.scrub(hostlogs._text(message, hostlogs.MESSAGE_CHARS))
+        message = hostlogs.kernel_message(message)
         if not message:
             continue
-        lines.append({'key': hashlib.sha256(key.encode('utf-8', 'replace')).hexdigest()[:32], 'at_us': int(now * 1e6), 'priority': priority, 'unit': None,
-                      'ident': 'kernel', 'pid': None, 'message': message, 'uid': None, 'comm': None, 'exe': None, 'seqnum': None, 'seqnum_id': None})
+        lines.append(hostlogs.kernel_line(hashlib.sha256(key.encode('utf-8', 'replace')).hexdigest()[:32], int(now * 1e6), priority, message))
     return lines
 
 

@@ -88,12 +88,11 @@ def lines_of(host: str, f: dict) -> list[dict]:
     for i, raw in enumerate(f['lines']):
         m = _KMSG.match(raw)
         priority, text = (int(m[1]) & 7, m[2]) if m else (6, (_STAMP.match(raw) or [None, raw])[1])
-        message = hostlogs.scrub(hostlogs._text(text, hostlogs.MESSAGE_CHARS))
+        message = hostlogs.kernel_message(text)
         if not message:
             continue
         key = hashlib.sha256(f'pstore|{f["path"]}|{f["at"]}|{i}|{message}'.encode('utf-8', 'replace')).hexdigest()[:32]
-        out.append({'key': key, 'at_us': base + i, 'priority': priority, 'unit': None, 'ident': 'kernel', 'pid': None, 'message': message,
-                    'uid': None, 'comm': None, 'exe': None, 'seqnum': None, 'seqnum_id': None})
+        out.append(hostlogs.kernel_line(key, base + i, priority, message))
     return out
 
 
@@ -111,7 +110,7 @@ def store(conn: Conn, host: str, got: dict, now: float | None = None) -> dict:
         note = 'the scan stopped before it had read pstore to the end'
     new = hostlogs.store(conn, host, {'state': 'ok', 'lines': lines, 'cut': False}, now, via='pstore') if lines else 0
     with conn.tx():
-        conn.execute("INSERT INTO host_log_status (host, collected_at, state, note) VALUES (:h, :t, 'side', '') ON CONFLICT (host) DO NOTHING", {'h': host, 't': int(now)})
+        hostlogs.ensure_side_status(conn, host, now)
         conn.execute("""UPDATE host_log_status SET pstore_at = :a, pstore_records = :n, pstore_read = :r, pstore_note = :o, pstore_checked_at = :t WHERE host = :h""",
                      {'a': newest, 'n': len(dmesg), 'r': 1 if got['files'] else 0, 'o': note[:500], 't': int(now), 'h': host})
     return {'records': len(dmesg), 'read': bool(got['files']), 'new': new, 'note': note}
