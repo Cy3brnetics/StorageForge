@@ -1028,6 +1028,17 @@ def save_plan(conn: Conn, body: dict, actor: str, plan_id: int | None = None) ->
                            {'n': plan['name'], 'b': json.dumps(plan), 't': now, 'a': actor})
 
 
+def stage(conn: Conn, name: str, tasks: list[dict], actor: str, on_clash: str = 'replace') -> int:
+    """Tasks staged as the plan called name (any case), made when there is none; returns its id. on_clash says what
+    happens to a plan already there: 'replace' swaps its tasks for these, 'append' adds these after its own."""
+    if on_clash not in ('replace', 'append'):
+        raise ValueError(f'on_clash must be replace or append, not {on_clash!r}')
+    pid = conn.scalar('SELECT plan_id FROM change_plans WHERE lower(name) = lower(:n)', {'n': name})
+    if pid and on_clash == 'append':
+        tasks = (get_plan(conn, pid).get('tasks') or []) + list(tasks)
+    return save_plan(conn, {'name': name, 'tasks': tasks}, actor, pid)
+
+
 def delete_plan(conn: Conn, plan_id: int):
     conn.execute('DELETE FROM change_plans WHERE plan_id = :i', {'i': plan_id})
     conn.execute("DELETE FROM deployed WHERE kind = 'changes' AND ref = :r", {'r': str(plan_id)})    # ids can be reused

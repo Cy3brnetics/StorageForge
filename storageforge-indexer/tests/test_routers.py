@@ -1042,6 +1042,24 @@ class Api(Base):
         self.assertEqual((plan['tasks'][0]['type'], plan['tasks'][0]['params']['source']), ('fw-rule', '10.0.0.0/8'))
         self.assertEqual(self.client.post('/api/dsl/stage', json={'host': 'gw', 'dsl': '/ip firewall filter add chain=input action=drop'}).status_code, 400)
 
+    def test_staging_into_a_named_plan_appends_or_replaces_as_the_caller_says(self):
+        rule = '/ip firewall filter add chain=input protocol=tcp dst-port={} action=accept'
+        first = self.client.post('/api/dsl/stage', json={'host': 'dmzbox', 'dsl': rule.format(8080)}).get_json()
+        again = self.client.post('/api/dsl/stage', json={'host': 'dmzbox', 'dsl': rule.format(8443)}).get_json()
+        self.assertEqual((first['plan_id'], again['tasks']), (again['plan_id'], 1))
+        plan = changes.get_plan(self.conn, again['plan_id'])
+        self.assertEqual([t['params']['port'] for t in plan['tasks']], ['8080', '8443'])
+        task = plan['tasks'][0]
+        self.assertEqual(changes.stage(self.conn, 'NETWORK: dmzbox', [task], 'admin1'), plan['id'])    # any case is the same plan
+        self.assertEqual(len(changes.get_plan(self.conn, plan['id'])['tasks']), 1)
+        self.assertEqual(len(changes.get_plan(self.conn, changes.stage(self.conn, 'Network: dmzbox', [task], 'admin1', on_clash='append'))['tasks']), 2)
+        mapped = self.client.post('/api/map/stage', json={'plan': 'network: DMZBOX', 'tasks': [task]}).get_json()
+        self.assertEqual((mapped['plan_id'], mapped['tasks']), (plan['id'], 3))    # the map's count is the whole plan's
+        fresh = changes.stage(self.conn, 'Somewhere new', [task], 'admin1', on_clash='append')
+        self.assertNotEqual(fresh, plan['id'])
+        with self.assertRaises(ValueError):
+            changes.stage(self.conn, 'Somewhere new', [task], 'admin1', on_clash='refuse')
+
     def test_a_key_bound_for_reading_a_device_does_not_get_it_scanned(self):
         with vault.Vault(self.db, self.conn).unlock() as v:
             v.generate_key('net')

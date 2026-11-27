@@ -161,11 +161,10 @@ def register(web, ctx):
         body = json_body()
         name = str(body.get('plan') or 'From the map').strip()[:80]
         new = body.get('tasks') or []
-        pid = conn().scalar('SELECT plan_id FROM change_plans WHERE lower(name) = lower(:n)', {'n': name})
-        tasks = (changes.get_plan(conn(), pid).get('tasks') if pid else []) + new
-        plan_id = changes.save_plan(conn(), {'name': name, 'tasks': tasks}, actor(), pid)
+        plan_id = changes.stage(conn(), name, new, actor(), on_clash='append')
         core.audit(conn(), actor(), 'map.stage', 'ok', None, {'plan': plan_id, 'steps': len(new)})
-        return jsonify(ok=True, plan_id=plan_id, tasks=len(tasks), check=changes.check(conn(), changes.get_plan(conn(), plan_id)))
+        plan = changes.get_plan(conn(), plan_id)
+        return jsonify(ok=True, plan_id=plan_id, tasks=len(plan.get('tasks') or []), check=changes.check(conn(), plan))
 
     @web.post('/api/map/placeholders/<path:node_id>/promote')
     @login_required
@@ -289,8 +288,7 @@ def register(web, ctx):
         if not tasks:
             return jsonify(ok=True, plan_id=None, tasks=0, message='nothing in this design is missing')
         name = f'Design: {d["name"]}'[:80]
-        pid = conn().scalar('SELECT plan_id FROM change_plans WHERE lower(name) = lower(:n)', {'n': name})
-        plan_id = changes.save_plan(conn(), {'name': name, 'tasks': tasks}, actor(), pid)
+        plan_id = changes.stage(conn(), name, tasks, actor())
         core.audit(conn(), actor(), 'map.design.stage', 'ok', None, {'plan': plan_id, 'steps': len(tasks)})
         return jsonify(ok=True, plan_id=plan_id, tasks=len(tasks))
 

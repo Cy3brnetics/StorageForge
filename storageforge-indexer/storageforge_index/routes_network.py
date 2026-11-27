@@ -260,9 +260,7 @@ def register(web, ctx):
         for t in tasks:
             t['host'] = known
         name = f'Network: {known}'[:80]
-        pid = conn().scalar('SELECT plan_id FROM change_plans WHERE lower(name) = lower(:n)', {'n': name})
-        have = changes.get_plan(conn(), pid).get('tasks') if pid else []
-        plan_id = changes.save_plan(conn(), {'name': name, 'tasks': have + tasks}, actor(), pid)
+        plan_id = changes.stage(conn(), name, tasks, actor(), on_clash='append')
         core.audit(conn(), actor(), 'dsl.stage', 'ok', known, {'plan': plan_id, 'steps': len(tasks)})
         return jsonify(ok=True, plan_id=plan_id, tasks=len(tasks), left=left, check=changes.check(conn(), changes.get_plan(conn(), plan_id)))
 

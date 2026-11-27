@@ -317,8 +317,7 @@ def problems(conn: Conn) -> dict:
 
 # ── findings become plans ────────────────────────────────────────────
 def stage_plan(conn: Conn, name: str, tasks: list[dict], actor: str) -> int:
-    pid = conn.scalar('SELECT plan_id FROM change_plans WHERE lower(name) = lower(:n)', {'n': name})
-    return changes.save_plan(conn, {'name': name, 'tasks': tasks}, actor, pid)
+    return changes.stage(conn, name, tasks, actor)
 
 
 def lynis_tasks(host: str, m: dict) -> tuple[list[dict], list[dict]]:
