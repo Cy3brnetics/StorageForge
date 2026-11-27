@@ -80,6 +80,11 @@ def run_class(name: str, ids: list[str]) -> dict:
     if str(HERE) not in sys.path:
         sys.path.insert(0, str(HERE))
     blocking()
+    try:
+        import pagewait             # a browser test that stalls says what the in-process server was doing
+        pagewait.install()
+    except ImportError:
+        pass
     stream = io.StringIO()
     started = time.perf_counter()
     try:
