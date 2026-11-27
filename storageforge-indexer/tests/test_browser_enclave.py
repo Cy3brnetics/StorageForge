@@ -16,6 +16,10 @@ try:
 except ImportError:
     sync_playwright = None
 
+try:
+    import pagewait
+except ImportError:
+    from tests import pagewait
 from storageforge_index import enclave, server, users, vault
 from storageforge_index.db import Database
 from test_enclave import SECRET, build
@@ -83,7 +87,7 @@ class BrowserEnclave(unittest.TestCase):
         self.page.press('input[type=password]', 'Enter')
         self.page.wait_for_url(self.base + '/**')
         self.page.wait_for_selector('.tabs button')
-        self.page.wait_for_selector('html[data-route-ready]', state='attached')
+        pagewait.ready(self, self.page, self.errors, 'the main page')
 
     def keys(self):
         self.page.goto(self.base + '/admin#/enclave')

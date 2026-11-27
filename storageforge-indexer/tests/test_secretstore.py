@@ -550,6 +550,10 @@ class BrowserSecrets(Db):
     def test_the_section_under_secrets(self):
         import threading
         from werkzeug.serving import make_server
+        try:
+            import pagewait
+        except ImportError:
+            from tests import pagewait
         users.create(self.conn, 'admin', PW, 'admin')
         http = make_server('127.0.0.1', 0, server.create_app(server.App(self.db), 's' * 48), threaded=True)
         threading.Thread(target=http.serve_forever, daemon=True).start()
@@ -566,12 +570,9 @@ class BrowserSecrets(Db):
         page.fill('input[type=password]', PW)
         page.press('input[type=password]', 'Enter')
         page.wait_for_url(base + '/**')
-        page.wait_for_selector('html[data-route-ready]', state='attached')
+        pagewait.ready(self, page, errors, 'the main page')
         page.goto(base + '/admin#/secrets')
-        try:
-            page.wait_for_selector('html[data-route-ready]', state='attached')
-        except Exception as exc:        # seen once on GitHub CI: say what the page raised, if anything, rather than only that it timed out
-            self.fail(f'the admin page never said it was ready ({type(exc).__name__}); script errors: {errors}')
+        pagewait.ready(self, page, errors, 'the admin page')
         page.wait_for_selector('#secretbox li:has-text("No secrets yet.")')
         page.click('#secretbox summary')
         page.fill('#secname', 'grafana-admin')
