@@ -42,7 +42,7 @@ server_sftp() {
   for i in "${idx[@]}"; do
     changed=0; chroot=$SFTP_ROOT/${E_NAME[$i]}; inner=$chroot/${E_NAME[$i]}; unit=$(sftp_bind_unit "$inner"); keep+=("$unit")
     users=$(par users "${E_PARAM[$i]}"); ro=$(par readonly "${E_PARAM[$i]}"); um=$(par umask "${E_PARAM[$i]}")
-    [[ -d ${E_PATH[$i]} ]] && ok "${E_PATH[$i]} exists" || { if ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p -- "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi; }
+    share_dir "${E_PATH[$i]}"
     if [[ -d $chroot ]] && [[ $(stat -c "%U %a" "$chroot") == "root 755" ]]; then ok "chroot $chroot"
     elif ((APPLY)); then mkdir -p -- "$inner" && chown root:root "$SFTP_ROOT" "$chroot" && chmod 755 "$SFTP_ROOT" "$chroot" && doing "chroot $chroot (root, 755)"
     else missing "chroot $chroot (root-owned, 755: sshd refuses any other)"; fi

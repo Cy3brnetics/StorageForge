@@ -205,6 +205,7 @@ open_port() { # LABEL PORT/PROTO CLIENTS -> the port open to those clients (addr
     ufw_allow "$label" "$port" "$proto" "$3"   # shares.py
   else info "no active firewalld or ufw: nothing to open for $label"; fi
 }
+share_dir() { [[ -d $1 ]] && ok "$1 exists" || { if ((APPLY)); then doing "mkdir -p $1"; mkdir -p -- "$1"; else missing "$1"; fi; }; }   # PATH -> the folder a share serves, made when it is not there
 indices_of() { local i; for i in "${!E_PROTO[@]}"; do [[ ${E_PROTO[$i]} == "$1" ]] && echo "$i"; done; return 0; }
 unit_file() { # NAME CONTENT -> a unit of StorageForge: written whole when it differs, systemd told; 0 if it changed
   local f=/etc/systemd/system/$1

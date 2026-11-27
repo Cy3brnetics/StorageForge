@@ -132,7 +132,7 @@ server_nvme() {
       ok "backing device $dev"
     else
       file=${E_PATH[$i]}/$name.img
-      [[ -d ${E_PATH[$i]} ]] && ok "${E_PATH[$i]} exists" || { if ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p -- "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi; }
+      share_dir "${E_PATH[$i]}"
       if [[ -f $file ]]; then
         ok "$file ($(stat -c %s "$file") bytes)"
         [[ $(stat -c %s "$file") -ge $((size * 1073741824)) ]] || info "$file is smaller than the ${size} GB the design asks for: StorageForge never resizes a disk that clients may hold data on"

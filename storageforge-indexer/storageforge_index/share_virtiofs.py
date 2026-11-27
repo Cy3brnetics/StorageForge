@@ -161,7 +161,7 @@ server_virtiofs() {
   for i in ${idx[@]+"${idx[@]}"}; do
     tag=$(par tag "${E_PARAM[$i]}")
     [[ $tag =~ ^sf-[A-Za-z0-9][A-Za-z0-9_.-]{0,32}$ ]] || { conflict "${E_NAME[$i]}: not a usable virtiofs tag (the share name is letters, digits, . _ - and at most 33 characters)"; continue; }
-    [[ -d ${E_PATH[$i]} ]] && ok "${E_PATH[$i]} exists" || { if ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p -- "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi; }
+    share_dir "${E_PATH[$i]}"
     for j in "${!C_PROTO[@]}"; do [[ ${C_PROTO[$j]} == VIRTIOFS && ${C_NAME[$j]} == "${E_NAME[$i]}" ]] || continue
       d=$(par domain "${C_PARAM[$j]}")
       [[ $d =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || { conflict "${C_HOST[$j]}:${C_TARGET[$j]} names no usable libvirt domain"; continue; }

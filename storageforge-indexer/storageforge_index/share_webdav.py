@@ -59,7 +59,7 @@ server_webdav() {
     sec=$(par users_secret "${E_PARAM[$i]}")
     if [[ $ports == *" $port "* ]]; then conflict "port $port is already used by another WebDAV share on this host: give $name its own"; continue; fi
     ports+="$port "
-    [[ -d $path ]] && ok "$path exists" || { if ((APPLY)); then doing "mkdir -p $path"; mkdir -p -- "$path"; else missing "$path"; fi; }
+    share_dir "$path"
     if [[ -n $cert ]]; then
       if [[ -r $cert && -r $key ]]; then ok "TLS certificate $cert"
       elif ((APPLY)); then conflict "the TLS certificate $cert or its key $key cannot be read on this host"; continue

@@ -110,7 +110,7 @@ server_nbd() {
         conflict "NBD share $name: the TLS files ($cert, $key${ca:+, $ca}) are not all on this host: put them there, StorageForge does not make certificates"; continue
       fi
     fi
-    [[ -d ${E_PATH[$i]} ]] && ok "${E_PATH[$i]} exists" || { if ((APPLY)); then doing "mkdir -p ${E_PATH[$i]}"; mkdir -p -- "${E_PATH[$i]}"; else missing "${E_PATH[$i]}"; fi; }
+    share_dir "${E_PATH[$i]}"
     nbd_image "$img" "$size"
     extra=""
     [[ -n $cert ]] && extra="
