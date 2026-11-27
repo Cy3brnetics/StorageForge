@@ -75,6 +75,18 @@ class Guide(unittest.TestCase):
             apiguide.steps('pbs', scope="x'y")
 
 
+class Registry(unittest.TestCase):
+    def test_every_platform_has_a_connection_kind_a_guide_and_a_reader_in_one_order(self):
+        from storageforge_index import apiread
+        self.assertEqual(list(apiguide.READER_MODULES), list(apiguide.GUIDES))
+        self.assertEqual(set(apiconn.KINDS), set(apiguide.GUIDES))
+        self.assertEqual(list(apiguide.GUIDES)[:3], ['pve', 'pbs', 'pdm'])
+        self.assertLessEqual(set(apiconn.REFUSED), set(apiconn.KINDS))
+        for kind, name in apiguide.READER_MODULES.items():
+            self.assertEqual(apiread.reader(kind).__name__, f'storageforge_index.{name}')
+        self.assertIsNone(apiread.reader('apiconn'))
+
+
 class Web(Base):
     def client(self, role):
         users.create(self.conn, role, PW, role)

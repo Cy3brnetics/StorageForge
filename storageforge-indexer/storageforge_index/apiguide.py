@@ -236,6 +236,10 @@ def kinds() -> list[dict]:
 # The platforms beyond Proxmox each keep their guide beside their reader: GUIDE (the same fields as GUIDES above), SOURCES (the pages it
 # was written from, fetched on the date each gives), steps(user, token, scope, expire) and action_steps(action, spec, user).
 PLATFORMS = {}
+# The one map of every platform kind to the module that reads it: the Proxmox trio, whose guides are kept above, then each registered
+# platform. apiread looks readers up here only, so a kind cannot have a guide and no reader. apiconn keeps its own KINDS and REFUSED, because
+# the client must not import readers; a test holds the three key sets equal.
+READER_MODULES = {'pve': 'apipve', 'pbs': 'apipbs', 'pdm': 'apipdm'}
 
 
 def module(kind: str):
@@ -245,6 +249,7 @@ def module(kind: str):
 
 def register(kind: str, module_name: str) -> None:
     PLATFORMS[kind] = module_name
+    READER_MODULES[kind] = module_name
     mod = module(kind)
     GUIDES[kind] = mod.GUIDE
     SOURCES[kind] = mod.SOURCES

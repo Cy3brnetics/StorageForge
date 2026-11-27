@@ -2,6 +2,12 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
+## Unreleased
+
+### Internal
+
+- Every platform kind maps to the module that reads it in one table, `apiguide.READER_MODULES`: the Proxmox VE, Backup Server and Datacenter Manager readers no longer sit in a separate table in `apiread`, and a test holds the connection kinds, the guides and the readers to the same set, in the connect screen's order. The client still does not import readers, and what each platform reads is unchanged (BE-48).
+
 ## 0.6.4 — 2026-11-26
 
 The third version of the [0.7.0 roadmap](roadmap-0.7.0.md): one script kit. The Ansible exports of every plan step are built by one set of helpers, which closed two gaps one copy had: seven destructive steps ran in a playbook without `-e storageforge_destructive=true`, and the mdadm array step's export skipped the device checks the plan's script makes. Moves, `storageforge-job` and the archive step share one compression kit, and each script still carries all of it, so it keeps working on a host with the controller gone. Built and unit-tested on SQLite and PostgreSQL 16, light, medium and heavy on each; **not lab-tested**. Browser tests that wait for a page sometimes time out under load, as they did before this release: they now print the page's script errors and the server's threads when they do.

@@ -14,12 +14,11 @@ from . import apiconn, apireadback
 from .db import Conn, loads
 
 INTERVAL = 3600
-READERS = {'pve': 'apipve', 'pbs': 'apipbs', 'pdm': 'apipdm'}
 
 
 def reader(kind: str):
     from . import apiguide
-    name = READERS.get(kind) or apiguide.PLATFORMS.get(kind)
+    name = apiguide.READER_MODULES.get(kind)
     if not name:
         return None
     try:
