@@ -113,27 +113,44 @@ def _containers(ctx: dict, tool: str, image_part: str) -> list[dict]:
             or image_part in (c.get('image') or '')]
 
 
+def _container_found(ctx: dict, tool: str, image_part: str, parts: bool = False) -> dict | None:
+    """What the container adapters detect (the kit UptimeKuma and the ContainerTools of tbadapters_a and tbadapters_c share): the main
+    container is the one named sf-<tool>, else the first that is not a sidecar (label storageforge.part), else the first found. The
+    version is the image's tag, read after the last '/', so a registry port (localhost:5000/x) is never taken for one. With parts, how
+    many sidecars there are and how many run."""
+    cs = _containers(ctx, tool, image_part)
+    if not cs:
+        return None
+    main = next((c for c in cs if c.get('name') == f'sf-{tool}'), None) or next((c for c in cs if not (c.get('labels') or {}).get('storageforge.part')), cs[0])
+    tag = (main.get('image') or '').split('@')[0].rsplit('/', 1)[-1].rsplit(':', 1)
+    found = {'running': main.get('state') == 'running', 'how': main.get('how') or 'container', 'container': main.get('name'),
+             'managed': (main.get('labels') or {}).get('storageforge.tool') == tool, 'version': tag[1] if len(tag) == 2 else None}
+    if parts:
+        side = [c for c in cs if (c.get('labels') or {}).get('storageforge.part')]
+        found.update(parts=len(side), parts_running=sum(1 for c in side if c.get('state') == 'running'))
+    return found
+
+
+def _container_tiles(found: dict, code, between: list[dict] = ()) -> list[dict]:
+    """The container adapters' tiles: the container and whether it runs, the version, the adapter's own tiles in between, and the
+    loopback health check when one was made (ok on HTTP 200, after redirects)."""
+    tiles = [_tile('Container', f'{found["container"]}, {"running" if found["running"] else "stopped"}', 'ok' if found['running'] else 'crit'),
+             _tile('Version', found.get('version') or 'unknown'), *between]
+    if code is not None:
+        tiles.append(_tile('Health check', f'HTTP {code}' if code else 'no answer', 'ok' if code == 200 else 'crit'))
+    return tiles
+
+
 class UptimeKuma(Adapter):
     name = 'uptime-kuma'
 
     def detect(self, reading, ctx):
-        cs = _containers(ctx, 'uptime-kuma', 'louislam/uptime-kuma')
-        if not cs:
-            return None
-        c = cs[0]
-        managed = (c.get('labels') or {}).get('storageforge.tool') == 'uptime-kuma'
-        tag = (c.get('image') or '').split('@')[0].rsplit(':', 1)
-        return {'running': c.get('state') == 'running', 'how': c.get('how') or 'container', 'container': c.get('name'), 'managed': managed,
-                'version': tag[1] if len(tag) == 2 else None}
+        return _container_found(ctx, 'uptime-kuma', 'louislam/uptime-kuma')
 
     def status(self, reading, ctx, found):
         code = ctx.get('health', {}).get('uptime-kuma')
-        tiles = [_tile('Container', f'{found["container"]}, {"running" if found["running"] else "stopped"}', 'ok' if found['running'] else 'crit'),
-                 _tile('Version', found.get('version') or 'unknown', 'ok')]
-        if code is not None:
-            tiles.append(_tile('Health check', f'HTTP {code}' if code else 'no answer', 'ok' if code == 200 else 'crit'))
         health = 'ok' if found['running'] and code in (None, 200) else 'down'
-        return {'health': health, 'version': found.get('version'), 'tiles': tiles}
+        return {'health': health, 'version': found.get('version'), 'tiles': _container_tiles(found, code)}
 
     def metrics(self, reading, ctx):
         return {'containers': len(_containers(ctx, 'uptime-kuma', 'louislam/uptime-kuma'))}

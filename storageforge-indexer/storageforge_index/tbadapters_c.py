@@ -17,7 +17,7 @@ import json
 import re
 
 from . import tbadapters
-from .tbadapters import Adapter, _containers, _tile
+from .tbadapters import Adapter, _container_found, _container_tiles, _containers, _tile
 
 SECTION = 'tb_c'
 # what the tb_c section prints: version lines, unit states, restore test results and the unauthenticated seal status. Never a secret.
@@ -162,23 +162,13 @@ class ContainerTool(Adapter):
         self.name, self.image_part = name, image_part
 
     def detect(self, reading, ctx):
-        cs = _containers(ctx, self.name, self.image_part)
-        if not cs:
-            return None
-        c = cs[0]
-        tag = (c.get('image') or '').split('@')[0].rsplit(':', 1)
-        return {'running': c.get('state') == 'running', 'how': c.get('how') or 'container', 'container': c.get('name'),
-                'managed': (c.get('labels') or {}).get('storageforge.tool') == self.name, 'version': tag[1] if len(tag) == 2 and '/' not in tag[1] else None}
+        return _container_found(ctx, self.name, self.image_part)
 
     def status(self, reading, ctx, found):
         code = ctx.get('health', {}).get(self.name)
-        tiles = [_tile('Container', f'{found["container"]}, {"running" if found["running"] else "stopped"}', 'ok' if found['running'] else 'crit'),
-                 _tile('Version', found.get('version') or 'unknown')]
-        if not found.get('managed'):
-            tiles.append(_tile('Installed by', 'not StorageForge: found on the host', 'warn'))
-        if code is not None:
-            tiles.append(_tile('Health check', f'HTTP {code}' if code else 'no answer', 'ok' if code == 200 else 'crit'))
-        return {'health': 'ok' if found['running'] and code in (None, 200) else 'down', 'version': found.get('version'), 'tiles': tiles}
+        mine = [] if found.get('managed') else [_tile('Installed by', 'not StorageForge: found on the host', 'warn')]
+        return {'health': 'ok' if found['running'] and code in (None, 200) else 'down', 'version': found.get('version'),
+                'tiles': _container_tiles(found, code, mine)}
 
     def metrics(self, reading, ctx):
         return {'containers': len(_containers(ctx, self.name, self.image_part))}

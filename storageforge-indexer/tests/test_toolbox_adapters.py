@@ -85,6 +85,23 @@ class Adapters(Base):
         self.assertEqual(kuma.status(r, dict(ctx, health={'uptime-kuma': 502}), found)['health'], 'down')
         self.assertIsNone(tbadapters.ADAPTERS['cockpit'].detect({'toolbox': {}}, ctx))
 
+    def test_the_container_adapters_share_one_kit(self):
+        # UptimeKuma and the ContainerTools of tbadapters_a and tbadapters_c detect the same way: the main container is sf-<tool> even when a
+        # sidecar or a stray container of the same image comes first, and a registry port is not a version
+        for name in ('uptime-kuma', 'dockge', 'forgejo'):
+            a = tbadapters.ADAPTERS[name]
+            image = getattr(a, 'image', None) or getattr(a, 'image_part', None) or 'louislam/uptime-kuma'
+            port = {'containers': [{'name': 'other', 'image': f'localhost:5000/{image}', 'state': 'running', 'labels': {}}]}
+            self.assertIsNone(a.detect({}, port)['version'], name)
+            two = {'containers': [{'name': f'sf-{name}-db', 'image': 'postgres:16', 'state': 'exited', 'labels': {'storageforge.tool': name, 'storageforge.part': 'db'}},
+                                  {'name': f'sf-{name}', 'image': f'{image}:1.0', 'state': 'running', 'labels': {'storageforge.tool': name}}],
+                   'health': {name: 200}}
+            found = a.detect({}, two)
+            self.assertEqual((found['container'], found['version'], found['running']), (f'sf-{name}', '1.0', True), name)
+            tiles = a.status({'toolbox': {}}, two, found)['tiles']
+            self.assertEqual([t['label'] for t in tiles][:2], ['Container', 'Version'], name)
+            self.assertEqual(tiles[-1], {'label': 'Health check', 'value': 'HTTP 200', 'level': 'ok'}, name)
+
     def test_refresh_fills_status_and_finds_a_staged_install(self):
         toolbox.stage(self.conn, 'box', 'uptime-kuma', 'test')
         got = tbadapters.refresh(self.conn, 'box', reading())

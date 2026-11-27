@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from .tbadapters import Adapter, _containers, _tile
+from .tbadapters import Adapter, _container_found, _container_tiles, _containers, _tile
 
 SECTIONS = ('tb_access',)
 UNITS = ('strongswan.service', 'strongswan-starter.service', 'storageforge-nebula.service', 'storageforge-cloudflared.service',
@@ -108,27 +108,15 @@ class ContainerTool(Adapter):
         return _containers(ctx, self.name, self.image)
 
     def detect(self, reading, ctx):
-        cs = self._all(ctx)
-        if not cs:
-            return None
-        main = next((c for c in cs if c.get('name') == f'sf-{self.name}'), None) or next((c for c in cs if not (c.get('labels') or {}).get('storageforge.part')), cs[0])
-        parts = [c for c in cs if (c.get('labels') or {}).get('storageforge.part')]
-        tag = (main.get('image') or '').split('@')[0].rsplit('/', 1)[-1].rsplit(':', 1)
-        return {'running': main.get('state') == 'running', 'how': main.get('how') or 'container', 'container': main.get('name'),
-                'managed': (main.get('labels') or {}).get('storageforge.tool') == self.name, 'version': tag[1] if len(tag) == 2 else None,
-                'parts': len(parts), 'parts_running': sum(1 for c in parts if c.get('state') == 'running')}
+        return _container_found(ctx, self.name, self.image, parts=True)
 
     def extra(self, reading: dict, found: dict) -> tuple[list[dict], bool]:
         return [], True
 
     def status(self, reading, ctx, found):
         code = (ctx.get('health') or {}).get(self.name)
-        tiles = [_tile('Container', f'{found["container"]}, {"running" if found["running"] else "stopped"}', 'ok' if found['running'] else 'crit'),
-                 _tile('Version', found.get('version') or 'unknown')]
-        if found.get('parts'):
-            tiles.append(_tile('Beside it', f'{found["parts_running"]} of {found["parts"]} running', 'ok' if found['parts_running'] == found['parts'] else 'crit'))
-        if code is not None:
-            tiles.append(_tile('Health check', f'HTTP {code}' if code else 'no answer', 'ok' if code == 200 else 'crit'))
+        beside = [_tile('Beside it', f'{found["parts_running"]} of {found["parts"]} running', 'ok' if found['parts_running'] == found['parts'] else 'crit')] if found.get('parts') else []
+        tiles = _container_tiles(found, code, beside)
         more, good = self.extra(reading, found)
         tiles += more
         healthy = found['running'] and code in (None, 200) and found.get('parts_running', 0) == found.get('parts', 0) and good
