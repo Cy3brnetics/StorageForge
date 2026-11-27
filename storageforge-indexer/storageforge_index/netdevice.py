@@ -495,7 +495,46 @@ class RouterOsApply:
         return 'ok' in run(':put ok', timeout=20)
 
 
-class OpenWrtApply:
+class _ShellTimerApply:
+    """A device with a POSIX shell: plant() saves its config in a private folder and starts a background back.sh that puts it back and reloads when
+    the time is up. A subclass says how to save, restore and start back.sh; the hooks read self.dir when the script is built, not when the applier is made."""
+
+    def _snapshot(self) -> str:
+        """The lines that copy the config into self.dir."""
+        raise NotImplementedError
+
+    def _restore(self) -> str:
+        """The lines back.sh runs after its sleep: put the copy back and reload."""
+        raise NotImplementedError
+
+    def _launch(self) -> str:
+        """The lines that start back.sh in the background and leave its pid in self.dir/pid."""
+        raise NotImplementedError
+
+    def plant(self, run, secs: int):
+        # set -e: a step that fails ends the script. Without it the line that starts back.sh ran after a failed mkdir or cp as well, and said "planted" (SF-55)
+        script = f"""set -e
+mkdir -m 700 {self.dir}
+{self._snapshot()}
+cat > {self.dir}/back.sh <<'SFEOF'
+#!/bin/sh
+sleep {int(secs)}
+{self._restore()}
+touch {self.dir}/rolled
+SFEOF
+chmod +x {self.dir}/back.sh
+{self._launch()}
+echo planted"""
+        got = run(script)
+        if 'planted' not in got:
+            raise DeviceError(f'could not plant the rollback: {got[:200]}')
+        return [got]
+
+    def alive(self, run):
+        return 'ok' in run('echo ok', timeout=20)
+
+
+class OpenWrtApply(_ShellTimerApply):
     """A copy of /etc/config and a background shell that puts it back and reloads when the time is up. Confirming kills it."""
 
     def __init__(self, cid: int):
@@ -503,26 +542,14 @@ class OpenWrtApply:
         # there, a folder or a link another account made first, makes the plant fail, so back.sh is never put in, or run from, a place someone else can write to
         self.dir = f'/tmp/sf-{cid}'
 
-    def plant(self, run, secs: int):
-        # set -e: a step that fails ends the script. Without it the line that starts back.sh ran after a failed mkdir or cp as well, and said "planted" (SF-55)
-        script = f"""set -e
-mkdir -m 700 {self.dir}
-mkdir {self.dir}/config
-cp -a /etc/config/. {self.dir}/config/
-cat > {self.dir}/back.sh <<'SFEOF'
-#!/bin/sh
-sleep {int(secs)}
-cp -a {self.dir}/config/. /etc/config/
-/etc/init.d/network reload; /etc/init.d/firewall restart; /etc/init.d/dropbear restart
-touch {self.dir}/rolled
-SFEOF
-chmod +x {self.dir}/back.sh
-start-stop-daemon -S -b -m -p {self.dir}/pid -x {self.dir}/back.sh
-echo planted"""
-        got = run(script)
-        if 'planted' not in got:
-            raise DeviceError(f'could not plant the rollback: {got[:200]}')
-        return [got]
+    def _snapshot(self) -> str:
+        return f'mkdir {self.dir}/config\ncp -a /etc/config/. {self.dir}/config/'
+
+    def _restore(self) -> str:
+        return f'cp -a {self.dir}/config/. /etc/config/\n/etc/init.d/network reload; /etc/init.d/firewall restart; /etc/init.d/dropbear restart'
+
+    def _launch(self) -> str:
+        return f'start-stop-daemon -S -b -m -p {self.dir}/pid -x {self.dir}/back.sh'
 
     def apply(self, run, compiled: dict) -> list[str]:
         script = 'set -e\n' + compiled['text'] + "\n(sleep 1; /etc/init.d/network reload; /etc/init.d/firewall restart) >/dev/null 2>&1 &\necho applied\n"
@@ -537,11 +564,8 @@ echo planted"""
     def confirm(self, run):
         run(f'[ -f {self.dir}/pid ] && kill $(cat {self.dir}/pid) 2>/dev/null; pkill -f "{self.dir}/back.sh" 2>/dev/null; rm -rf {self.dir}; true')
 
-    def alive(self, run):
-        return 'ok' in run('echo ok', timeout=20)
 
-
-class PfApply:
+class PfApply(_ShellTimerApply):
     """A copy of config.xml and a background shell that restores it and reloads the filter when the time is up. The fragments go into the XML here, not on the device, and go back whole."""
 
     # pfSense keeps config.xml under /cf/conf and its reload in /etc; OPNsense has neither, and keeps them in /conf and /usr/local/etc.
@@ -553,27 +577,14 @@ class PfApply:
     def __init__(self, cid: int):
         self.dir = f'/tmp/sf-{cid}'      # made with mkdir and no -p, mode 700, for the reason given at OpenWrtApply (SF-55)
 
-    def plant(self, run, secs: int):
-        script = f"""set -e
-mkdir -m 700 {self.dir}
-{self.CONF}
-cp "$c" {self.dir}/config.xml
-cat > {self.dir}/back.sh <<'SFEOF'
-#!/bin/sh
-sleep {int(secs)}
-{self.CONF}
-cp {self.dir}/config.xml "$c"; rm -f /tmp/config.cache
-{self.RELOAD}
-touch {self.dir}/rolled
-SFEOF
-chmod +x {self.dir}/back.sh
-nohup {self.dir}/back.sh >/dev/null 2>&1 &
-echo $! > {self.dir}/pid
-echo planted"""
-        got = run(script)
-        if 'planted' not in got:
-            raise DeviceError(f'could not plant the rollback: {got[:200]}')
-        return [got]
+    def _snapshot(self) -> str:
+        return f'{self.CONF}\ncp "$c" {self.dir}/config.xml'
+
+    def _restore(self) -> str:
+        return f'{self.CONF}\ncp {self.dir}/config.xml "$c"; rm -f /tmp/config.cache\n{self.RELOAD}'
+
+    def _launch(self) -> str:
+        return f'nohup {self.dir}/back.sh >/dev/null 2>&1 &\necho $! > {self.dir}/pid'
 
     def apply(self, run, compiled: dict) -> list[str]:
         import base64
@@ -588,9 +599,6 @@ echo planted"""
 
     def confirm(self, run):
         run(f'[ -f {self.dir}/pid ] && kill $(cat {self.dir}/pid) 2>/dev/null; rm -rf {self.dir}; true')
-
-    def alive(self, run):
-        return 'ok' in run('echo ok', timeout=20)
 
 
 def merge_config(xml: str, fragments: dict) -> str:
