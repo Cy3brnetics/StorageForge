@@ -16,6 +16,7 @@ import time
 
 from .db import loads
 from .remote import PLATFORM, PVE_ENTERPRISE, child_env
+from .scriptkit import package_facts, package_words
 
 # Read-only. Runs through storageforge-run, so it has bash and a root's view; each line is key=value.
 PROBE = r"""export LC_ALL=C
@@ -79,10 +80,10 @@ def facts_from_scan(conn, host: str) -> dict:
     row = conn.all('SELECT inventory_json FROM hosts WHERE lower(hostname) = lower(:h) OR ssh_host = :h', {'h': host})
     inv = (loads(row[0][0]) or {}) if row else {}
     text = inv.get('packages') or ''
-    words = [line.split(None, 1) for line in text.splitlines() if ' ' in line]
-    have = [v for k, v in words if k == 'have']
+    words = package_words(text)
+    have, pm = package_facts(inv)
     facts = {'os': (inv.get('os') or '').splitlines()[0] if inv.get('os') else '', 'have': have,
-             'pm': next((v for k, v in words if k == 'pm'), 'none') if text else None}
+             'pm': (pm or 'none') if text else None}
     version = next((v for k, v in words if k == 'openssh'), None)
     if version:
         facts['openssh'] = version

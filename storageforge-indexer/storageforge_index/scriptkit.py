@@ -426,15 +426,29 @@ NEEDS = {'NFS server': ('exportfs', {'apt-get': 'nfs-kernel-server', 'dnf': 'nfs
          'GlusterFS client': ('mount.glusterfs', {'apt-get': 'glusterfs-client', 'dnf': 'glusterfs-fuse', 'yum': 'glusterfs-fuse', 'pacman': 'glusterfs', 'zypper': 'glusterfs'})}
 
 
+def package_words(text: str | None) -> list[tuple[str, str]]:
+    """The scan's 'packages' text as (key, value) pairs, one per line that has both."""
+    return [(w[0], w[1]) for w in (line.split(None, 1) for line in (text or '').splitlines() if ' ' in line) if len(w) == 2]
+
+
+def package_facts(inv: dict) -> tuple[list[str], str | None]:
+    """From a host's scan: the programs it has, in the scan's order, and its package manager (None when no line says)."""
+    words = package_words(inv.get('packages'))
+    return [v for k, v in words if k == 'have'], next((v for k, v in words if k == 'pm'), None)
+
+
+def need_tuple(what: str) -> tuple[str, str, str, str, str]:
+    """(command, apt, dnf, pacman, zypper) for one of NEEDS: the words need_cmd takes after its label."""
+    cmd, p = NEEDS[what]
+    return cmd, p['apt-get'], p['dnf'], p['pacman'], p['zypper']
+
+
 def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
     """From the host's last scan: is this installed, and if not, what would a deploy install with what?"""
     inv = loads(conn.scalar('SELECT inventory_json FROM hosts WHERE host_id = :h', {'h': h['id']})) or {}
-    text = inv.get('packages')
-    if not text:
+    if not inv.get('packages'):
         return 'note', f'rescan {h["name"]} to see whether it needs the {what} installed'
-    words = [line.split(None, 1) for line in text.splitlines() if ' ' in line]
-    have = {v for k, v in words if k == 'have'}
-    manager = next((v for k, v in words if k == 'pm'), None)
+    have, manager = package_facts(inv)
     cmd, packages = NEEDS[what]
     if cmd in have:
         return 'ok', f'{what} is installed on {h["name"]}'
@@ -447,8 +461,8 @@ def package_check(conn: Conn, h: dict, what: str) -> tuple[str, str]:
 
 def need_line(what: str) -> str:
     """The script line that checks for this and, on --apply, installs it. The script needs PACKAGES."""
-    cmd, p = NEEDS[what]
-    return f'need_cmd {cmd} "{what}" {p["apt-get"]} {p["dnf"]} {p["pacman"]} {p["zypper"]}\n'
+    cmd, *names = need_tuple(what)
+    return f'need_cmd {cmd} "{what}" {" ".join(names)}\n'
 
 
 # Needs APPLY and the HELPERS. The host decides when the script runs: the scan only predicts it.

@@ -17,10 +17,10 @@ import time
 from . import __version__
 from .hostconfig import CONFIG_PATH, REBUILT_MARK
 from .moves import host_slug
-from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, one_line
+from .scriptkit import CIFS_KERNEL, HELPERS, PACKAGES, REMOTE, comments, need_tuple, one_line
 
 # filesystem or layer -> the program that shows its tools are there, then packages for apt, dnf, pacman, zypper
-TOOLS = {'btrfs': ('btrfs', 'btrfs-progs', 'btrfs-progs', 'btrfs-progs', 'btrfsprogs'),
+TOOLS = {'btrfs': need_tuple('btrfs-progs'),
          'xfs': ('xfs_repair', 'xfsprogs', 'xfsprogs', 'xfsprogs', 'xfsprogs'),
          'f2fs': ('fsck.f2fs', 'f2fs-tools', 'f2fs-tools', 'f2fs-tools', 'f2fs-tools'),
          'exfat': ('fsck.exfat', 'exfatprogs', 'exfatprogs', 'exfatprogs', 'exfatprogs'),
@@ -29,15 +29,14 @@ TOOLS = {'btrfs': ('btrfs', 'btrfs-progs', 'btrfs-progs', 'btrfs-progs', 'btrfsp
          'crypto_LUKS': ('cryptsetup', 'cryptsetup', 'cryptsetup', 'cryptsetup', 'cryptsetup'),
          'fuse.mergerfs': ('mergerfs', 'mergerfs', 'mergerfs', 'mergerfs', 'mergerfs'),
          'mergerfs': ('mergerfs', 'mergerfs', 'mergerfs', 'mergerfs', 'mergerfs'),
-         'nfs': ('mount.nfs', 'nfs-common', 'nfs-utils', 'nfs-utils', 'nfs-client'),
-         'nfs4': ('mount.nfs', 'nfs-common', 'nfs-utils', 'nfs-utils', 'nfs-client'),
-         'cifs': ('mount.cifs', 'cifs-utils', 'cifs-utils', 'cifs-utils', 'cifs-utils'),
-         'smb3': ('mount.cifs', 'cifs-utils', 'cifs-utils', 'cifs-utils', 'cifs-utils'),
-         'fuse.sshfs': ('sshfs', 'sshfs', 'fuse-sshfs', 'sshfs', 'sshfs')}
+         'nfs': need_tuple('NFS client'),
+         'nfs4': need_tuple('NFS client'),
+         'cifs': need_tuple('SMB client'),
+         'smb3': need_tuple('SMB client'),
+         'fuse.sshfs': need_tuple('sshfs')}
 LAYERS = {'md': ('mdadm', 'mdadm', 'mdadm', 'mdadm', 'mdadm'), 'lvm': ('vgchange', 'lvm2', 'lvm2', 'lvm2', 'lvm2'),
           'zfs': ('zpool', 'zfsutils-linux', 'zfs', 'zfs', 'zfs')}
-SERVERS = {'nfs': ('NFS server', ('exportfs', 'nfs-kernel-server', 'nfs-utils', 'nfs-utils', 'nfs-kernel-server')),
-           'smb': ('Samba', ('smbd', 'samba', 'samba', 'samba', 'samba'))}
+SERVERS = {'nfs': ('NFS server', need_tuple('NFS server')), 'smb': ('Samba', need_tuple('Samba'))}
 
 BODY = r"""
 HOST= APPLY=0 REPLACE=0 FORCE_ZFS=0 ANY_HOST=0 ONLY= ARGS=("$@")

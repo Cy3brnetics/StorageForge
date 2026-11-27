@@ -60,6 +60,18 @@ class Findings(unittest.TestCase):
         self.assertNotIn('evil', facts)
         self.assertEqual(preflight.parse_probe('')['have'], [])
 
+    def test_the_scans_package_text_is_read_one_way_for_the_preflight_and_the_package_check(self):
+        from storageforge_index import scriptkit
+        self.assertEqual(scriptkit.package_facts({'packages': 'pm dnf\nhave rsync\nhave bash\nhave \nnoise\n'}), (['rsync', 'bash'], 'dnf'))
+        self.assertEqual(scriptkit.package_facts({}), ([], None))
+        self.assertEqual(scriptkit.package_words('openssh 9.6p1\npm \n'), [('openssh', '9.6p1')])   # a key with no value is skipped, not a crash
+
+    def test_the_reinstall_tools_take_their_package_names_from_the_one_table(self):
+        from storageforge_index import reinstall, scriptkit
+        self.assertEqual(reinstall.TOOLS['nfs4'], ('mount.nfs', 'nfs-common', 'nfs-utils', 'nfs-utils', 'nfs-client'))
+        self.assertEqual(reinstall.SERVERS['nfs'], ('NFS server', scriptkit.need_tuple('NFS server')))
+        self.assertEqual(scriptkit.need_line('sshfs'), 'need_cmd sshfs "sshfs" sshfs fuse-sshfs sshfs sshfs\n')
+
     def test_keyboard_interactive_counts_as_a_password_and_not_knowing_does_too(self):
         self.assertTrue(preflight.takes_password(['publickey', 'keyboard-interactive']))
         self.assertTrue(preflight.takes_password(None))
