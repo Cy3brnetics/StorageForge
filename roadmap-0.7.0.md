@@ -102,17 +102,17 @@ The order goes from what is wrong today, to the small shared pieces everything e
 
 | Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-48** | One platform registry and module contract, so Proxmox VE, PBS and PDM stop being a special case beside the six registered platforms | Duplicate | |
-| **BE-49** | One guarded reading loop for every platform reader (the collector behind BE-01), with one way to count a capped list | Duplicate | |
-| **BE-50** | The read-back's token notes (disabled, no expiry, expired) come from one helper | Duplicate | |
-| **BE-51** | One resolver from a platform's node, environment or site to the scanned host it is, without a query per object | Duplicate | |
-| **BE-52** | One table of container panels (name, image pattern, label prefixes, unit names, API kind) in place of four partial lists | Duplicate | |
-| **BE-53** | The OpenWrt and pfSense appliers share one rollback-timer base | Duplicate | |
-| **BE-54** | The SSH password environment and options are written once, and `netdevice.session` builds its transport from one table | Duplicate | |
-| **BE-55** | A what-if over a firewall lays the new rules onto the machine's real chains the same way for a device change and for the planner | Bug in one copy | |
-| **BE-56** | Exposure classifies VPN interfaces with the overlay naming table, by name only: a WAN address behind carrier-grade NAT stays WAN | Bug in one copy | |
-| **BE-57** | One adapter kit for the Toolbox's container, unit and program adapters, in place of three sets | Duplicate | |
-| **BE-58** | One permission gate for staging a tool, a bundle and a role profile, and a refused staging is audited on all three | Bug in one copy | |
+| **BE-48** | One platform registry and module contract, so Proxmox VE, PBS and PDM stop being a special case beside the six registered platforms | Duplicate | `c05cd61` |
+| **BE-49** | One guarded reading loop for every platform reader (the collector behind BE-01), with one way to count a capped list | Duplicate | `3f25bbc, 276e80e` |
+| **BE-50** | The read-back's token notes (disabled, no expiry, expired) come from one helper | Duplicate | `5552ba8` |
+| **BE-51** | One resolver from a platform's node, environment or site to the scanned host it is, without a query per object | Duplicate | `7a58655` |
+| **BE-52** | One table of container panels (name, image pattern, label prefixes, unit names, API kind) in place of four partial lists | Duplicate | `7fa44b1` |
+| **BE-53** | The OpenWrt and pfSense appliers share one rollback-timer base | Duplicate | `236c959` |
+| **BE-54** | The SSH password environment and options are written once, and `netdevice.session` builds its transport from one table | Duplicate | `067ceaa` |
+| **BE-55** | A what-if over a firewall lays the new rules onto the machine's real chains the same way for a device change and for the planner | Bug in one copy | `86474ed` |
+| **BE-56** | Exposure classifies VPN interfaces with the overlay naming table, by name only: a WAN address behind carrier-grade NAT stays WAN | Bug in one copy | `9d50261, 73d80d7` |
+| **BE-57** | One adapter kit for the Toolbox's container, unit and program adapters, in place of three sets | Duplicate | `70b34aa` |
+| **BE-58** | One permission gate for staging a tool, a bundle and a role profile, and a refused staging is audited on all three | Bug in one copy | `05881d0, 4be19bd` |
 
 ## 0.6.6: Hosts, keys and credentials
 
