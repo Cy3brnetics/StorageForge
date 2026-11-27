@@ -147,7 +147,7 @@ def session(db, conn: Conn, d: dict, action: str = 'scan', timeout: int = 120):
     spec = PLATFORMS[d['platform']]
     known = str(known_hosts_path())
     with Vault(db, conn).unlock() as v:
-        secret = v.credential(d['credential'], host=d.get('name') or d['address'], platform=d['platform']) if d['credential'] else None          # released for this device, and written up as such
+        secret = _release(v, d)
         user = d['username'] or (secret or {}).get('username')
         host, port = d['address'], d['port']
         if d['transport'] == 'telnet':
@@ -160,42 +160,43 @@ def session(db, conn: Conn, d: dict, action: str = 'scan', timeout: int = 120):
             finally:
                 t.close()
             return
-        if secret:
-            from .hostkeys import require_confirmed
-            require_confirmed(conn, host, port)         # whoever receives a password has the account, so a person has compared this key first
-            if spec['transport'] == 'cli' or d['transport'] == 'cli':
-                t = NetworkTransport(host, user, profile=spec['profile'], port=port, password=secret['password'], known_hosts=known, legacy=d['legacy'], enable_password=secret.get('enable'), command_timeout=timeout)
+        cli = spec['transport'] == 'cli' or d['transport'] == 'cli'
+        with contextlib.ExitStack() as agent:
+            if secret:
+                from .hostkeys import require_confirmed
+                require_confirmed(conn, host, port)         # whoever receives a password has the account, so a person has compared this key first
+                t, run = _ssh(d, spec, cli, host, user, port, known, timeout, password=secret['password'], enable_password=secret.get('enable'))
+            else:
                 try:
-                    if spec['profile'] == 'cisco':
-                        t.enable(secret.get('enable'))
-                    yield t.run
-                finally:
-                    t.close()
-                return
-            t = DirectTransport(host=host, user=_login(user, spec), port=port, known_hosts=known, isolated=True, strict=True, legacy=d['legacy'], password=secret['password'], posix=spec['transport'] == 'sh')
+                    b = v.resolve(host, action)
+                except NoBinding as exc:
+                    raise DeviceError(f'{d["name"]}: {exc}') from None
+                sock = agent.enter_context(ephemeral_agent(v.decrypt_key(b.key_id, 'device'), ttl=max(600, timeout + 60)))
+                who = d['username'] if action == 'scan' and d['username'] else b.user
+                t, run = _ssh(d, spec, cli, host, who, b.port or port, known, timeout, agent_sock=sock)
             try:
-                yield lambda c, timeout=timeout: t.run(c, timeout=timeout)
+                if secret and cli and spec['profile'] == 'cisco':     # enable only with a stored credential: key auth has no enable secret
+                    t.enable(secret.get('enable'))
+                yield run
             finally:
                 t.close()
-            return
-        try:
-            b = v.resolve(host, action)
-        except NoBinding as exc:
-            raise DeviceError(f'{d["name"]}: {exc}') from None
-        with ephemeral_agent(v.decrypt_key(b.key_id, 'device'), ttl=max(600, timeout + 60)) as sock:
-            who = d['username'] if action == 'scan' and d['username'] else b.user
-            if spec['transport'] == 'cli' or d['transport'] == 'cli':
-                t = NetworkTransport(host, who, profile=spec['profile'], port=b.port or port, agent_sock=sock, known_hosts=known, legacy=d['legacy'], command_timeout=timeout)
-                try:
-                    yield t.run
-                finally:
-                    t.close()
-                return
-            t = DirectTransport(host=host, user=_login(who, spec), port=b.port or port, agent_sock=sock, known_hosts=known, isolated=True, legacy=d['legacy'], posix=spec['transport'] == 'sh')
-            try:
-                yield lambda c, timeout=timeout: t.run(c, timeout=timeout)
-            finally:
-                t.close()
+
+
+def _ssh(d: dict, spec: dict, cli: bool, host: str, user: str | None, port: int, known: str, timeout: int, **auth):
+    """(transport, run) for a device over SSH. cli: NetworkTransport, for a device that only gives a shell; else DirectTransport,
+    which runs the command it is given. auth: password and enable_password, or agent_sock. A password goes only to a pinned key."""
+    if cli:
+        t = NetworkTransport(host, user, profile=spec['profile'], port=port, known_hosts=known, legacy=d['legacy'], command_timeout=timeout, **auth)
+        return t, t.run
+    auth.pop('enable_password', None)
+    t = DirectTransport(host=host, user=_login(user, spec), port=port, known_hosts=known, isolated=True, strict='password' in auth, legacy=d['legacy'],
+                        posix=spec['transport'] == 'sh', **auth)
+    return t, lambda c, timeout=timeout: t.run(c, timeout=timeout)
+
+
+def _release(v, d: dict) -> dict | None:
+    """The device's stored credential, released for this device and its platform and written up as such; None without one."""
+    return v.credential(d['credential'], host=d.get('name') or d['address'], platform=d['platform']) if d['credential'] else None
 
 
 def _login(user: str | None, spec: dict) -> str | None:
@@ -213,7 +214,7 @@ def read(db, conn: Conn, name: str, actor: str = 'system') -> dict:
             secret = None
             if d['credential']:
                 with Vault(db, conn).unlock() as v:
-                    secret = v.credential(d['credential'], host=d.get('name') or d['address'], platform='snmp')
+                    secret = _release(v, d)         # platform is 'snmp', the only platform read over SNMP
             data = snmp.collect(d['address'], port=d['port'] or 161, secret=secret)
         else:
             with session(db, conn, d, 'scan') as run:

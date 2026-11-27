@@ -34,6 +34,18 @@ def askpass_path() -> str:
     return path
 
 
+# ssh tries the password once and nothing else; each caller keeps its own host key and timeout options
+PASSWORD_AUTH_OPTS = ['-o', 'PubkeyAuthentication=no', '-o', 'PreferredAuthentications=password,keyboard-interactive',
+                      '-o', 'NumberOfPasswordPrompts=1']
+
+
+def askpass_env(password: str) -> dict:
+    """The four variables that make ssh ask the askpass helper, which answers with password. The caller merges them into its
+    own environment: the transports start from child_env(), keyinstall and access from a bare PATH and throwaway HOME."""
+    return {'SSH_ASKPASS': askpass_path(), 'SSH_ASKPASS_REQUIRE': 'force', 'DISPLAY': 'none',
+            'STORAGEFORGE_ASKPASS_SECRET': password}
+
+
 def validate(host: str, user: str, port: int) -> None:
     if not HOST.fullmatch(host) or host.startswith('-'):
         raise ValueError('host must be a hostname or IP address')
@@ -101,12 +113,9 @@ def install_public_key(public_line: str, host: str, user: str, password: str, po
         argv = ['ssh-copy-id', '-f', '-i', str(pub), '-p', str(port),
                 '-o', 'StrictHostKeyChecking=yes',      # the caller made sure a person confirmed this key
                 '-o', f'UserKnownHostsFile={known_hosts_path()}', '-o', 'GlobalKnownHostsFile=/dev/null',
-                '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no',
-                '-o', 'NumberOfPasswordPrompts=1', '-o', 'ConnectTimeout=10',
+                *PASSWORD_AUTH_OPTS, '-o', 'ConnectTimeout=10',
                 f'{user}@{host}']
-        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work),
-               'SSH_ASKPASS': askpass_path(), 'SSH_ASKPASS_REQUIRE': 'force', 'DISPLAY': 'none',
-               'STORAGEFORGE_ASKPASS_SECRET': password}
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work), **askpass_env(password)}
         try:   # no stdin and a new session (no controlling tty), so ssh can only ask the askpass helper
             p = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                timeout=TIMEOUT, start_new_session=True)

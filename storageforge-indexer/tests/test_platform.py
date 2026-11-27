@@ -1982,7 +1982,7 @@ class HostAccessTests(DBCase):
             calls.append((argv, kw.get('input')))
             return subprocess.CompletedProcess(argv, 0, 'done', '')
         with mock.patch.object(hostkeys, 'require_confirmed', lambda *a: None), \
-             mock.patch.object(access, 'askpass_path', lambda: '/bin/true'), \
+             mock.patch('storageforge_index.keyinstall.askpass_path', lambda: '/bin/true'), \
              mock.patch.object(access.subprocess, 'run', fake_run):
             with self.assertRaisesRegex(ValueError, 'no scan key is bound'):
                 access.sudo_run(self.db, self.conn, 'nas', lambda u: 'true', 'pw')
@@ -2007,7 +2007,7 @@ class HostAccessTests(DBCase):
         def fake_run(argv, **kw):
             return subprocess.CompletedProcess(argv, 0, f'{access.NO_PASSWORD_MARK}\ndone\n', '')
         with mock.patch.object(hostkeys, 'require_confirmed', lambda *a: None), \
-             mock.patch.object(access, 'askpass_path', lambda: '/bin/true'), \
+             mock.patch('storageforge_index.keyinstall.askpass_path', lambda: '/bin/true'), \
              mock.patch.object(access.subprocess, 'run', fake_run):
             r = access.sudo_run(self.db, self.conn, 'nas', lambda u: 'id', 'pw', admin_user='admin')
         self.assertTrue(r['passwordless'])

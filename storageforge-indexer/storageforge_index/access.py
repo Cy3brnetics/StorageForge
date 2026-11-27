@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import health
 from .db import epoch
-from .keyinstall import askpass_path, validate
+from .keyinstall import PASSWORD_AUTH_OPTS, askpass_env, validate
 from .remote import READONLY_DIR, RemoteError, Transport, child_env
 from .runner import connect_address, ephemeral_agent, known_hosts_path, runtime_dir
 from .vault import NoBinding, Vault
@@ -238,10 +238,8 @@ def sudo_run(db, conn, host: str, make_script, password: str, admin_user: str | 
     try:
         argv = ['ssh', '-F', '/dev/null', '-T', '-p', str(port), '-o', 'StrictHostKeyChecking=yes',
                 '-o', f'UserKnownHostsFile={known_hosts_path()}', '-o', 'GlobalKnownHostsFile=/dev/null',
-                '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no',
-                '-o', 'NumberOfPasswordPrompts=1', '-o', 'ConnectTimeout=10', f'{admin_user}@{host}', sudo]
-        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work), 'SSH_ASKPASS': askpass_path(),
-               'SSH_ASKPASS_REQUIRE': 'force', 'DISPLAY': 'none', 'STORAGEFORGE_ASKPASS_SECRET': password}
+                *PASSWORD_AUTH_OPTS, '-o', 'ConnectTimeout=10', f'{admin_user}@{host}', sudo]
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(work), **askpass_env(password)}
         p = subprocess.run(argv, input=password + '\n', env=env, capture_output=True, text=True, timeout=TIMEOUT,
                            start_new_session=True)
     finally:

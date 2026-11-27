@@ -267,9 +267,9 @@ class NetworkTransport(CliSession):
             argv += ['-o', f'UserKnownHostsFile={known_hosts}', '-o', 'GlobalKnownHostsFile=/dev/null']
         env = child_env()
         if password:
-            from .keyinstall import askpass_path
-            argv += ['-o', 'PubkeyAuthentication=no', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'NumberOfPasswordPrompts=1']
-            env.update(SSH_ASKPASS=askpass_path(), SSH_ASKPASS_REQUIRE='force', DISPLAY='none', STORAGEFORGE_ASKPASS_SECRET=password)
+            from .keyinstall import PASSWORD_AUTH_OPTS, askpass_env
+            argv += PASSWORD_AUTH_OPTS
+            env.update(askpass_env(password))
         else:
             argv += ['-o', 'BatchMode=yes', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no']
         if agent_sock:
@@ -500,8 +500,8 @@ class DirectTransport(Transport):
     def env(self) -> dict:
         env = super().env()
         if self.password:
-            from .keyinstall import askpass_path
-            env.update(SSH_ASKPASS=askpass_path(), SSH_ASKPASS_REQUIRE='force', DISPLAY='none', STORAGEFORGE_ASKPASS_SECRET=self.password)
+            from .keyinstall import askpass_env
+            env.update(askpass_env(self.password))
         return env
 
     def argv(self, script: str) -> list[str]:
@@ -516,5 +516,6 @@ class DirectTransport(Transport):
                 kept.append(a)
             argv = kept
             at = argv.index('--')
-            argv[at:at] = ['-o', 'PubkeyAuthentication=no', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'NumberOfPasswordPrompts=1']
+            from .keyinstall import PASSWORD_AUTH_OPTS
+            argv[at:at] = PASSWORD_AUTH_OPTS
         return argv if self.posix else [*argv[:-1], script]
