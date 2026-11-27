@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import re
 
-from . import inframeasure, pvenode, wlmanaged, wlread
+from . import inframeasure, panels, pvenode, wlmanaged, wlread
 from .db import Conn
 from .paths import deepest
 from .runtimes import docker
 
 SOCKETS = ('/var/run/docker.sock', '/run/docker.sock', '/run/podman/podman.sock')
-PANELS = (('Dockhand', r'dockhand'), ('Portainer', r'portainer'), ('Komodo', r'komodo'), ('Dockge', r'dockge'), ('Dokploy', r'dokploy'), ('Coolify', r'coolify'), ('CasaOS', r'casaos'))
+PANELS = panels.IMAGES
 RISKY_CAPS = ('SYS_ADMIN', 'ALL', 'NET_ADMIN', 'SYS_MODULE', 'SYS_PTRACE', 'DAC_READ_SEARCH')
 
 

@@ -1,6 +1,7 @@
 """Workloads something else manages (wlmanaged.py): told by labels, units, Proxmox, libvirt metadata and a panel with the engine socket,
 and the warning a plan check gives before a step changes one."""
 import json
+import re
 import shutil
 import tempfile
 import time
@@ -11,8 +12,8 @@ try:
     import dbfactory
 except ImportError:      # run as tests.test_x from the project folder
     from tests import dbfactory
-from storageforge_index import changes, inframeasure, security, wlmanaged, workloads
-from storageforge_index.runtimes import guests
+from storageforge_index import apiconn, changes, inframeasure, panels, security, wlmanaged, wlread, workloads
+from storageforge_index.runtimes import docker, guests
 
 
 def c(name, image='nginx:1.27', **labels):
@@ -44,6 +45,37 @@ class Tell(unittest.TestCase):
     def test_the_units_section_is_read(self):
         got = inframeasure.parse('@@wl_units\ncontainer-web.service\npuppet.service\nmarker:pve\nnot a unit\n@@end\n')['wl_units']
         self.assertEqual(got, {'units': ['container-web.service', 'puppet.service'], 'markers': ['pve']})
+
+
+class PanelTable(unittest.TestCase):
+    """panels.PANELS is the one table; the label filter and the scan's unit grep stay literal and must cover it."""
+
+    def test_the_stored_labels_keep_every_panel_label(self):
+        for prefix, name in panels.LABELS:
+            self.assertTrue(docker.KEEP_LABELS.match(prefix + 'stack'), f'{name}: KEEP_LABELS drops {prefix}*')
+
+    def test_the_scan_lists_every_panel_unit(self):
+        grep = re.search(r"sec wl_units\n.*?grep -aE '([^']+)'", wlread.BODY, re.S)[1]
+        for prefix, name in panels.UNITS:
+            unit = prefix + ('service' if prefix.endswith('.') else '.service')
+            self.assertTrue(re.match(grep, unit), f'{name}: the wl_units grep in wlread.BODY drops {unit}')
+
+    def test_each_lookup_order_names_every_panel_with_that_column(self):
+        for column, order in (('image', panels.IMAGE_ORDER), ('labels', panels.LABEL_ORDER), ('units', panels.UNIT_ORDER), ('folders', panels.FOLDER_ORDER)):
+            self.assertEqual(sorted(order), sorted(p.name for p in panels.PANELS if getattr(p, column)), column)
+
+    def test_an_api_kind_has_the_panel_title(self):
+        for p in panels.PANELS:
+            if p.api:
+                self.assertEqual(apiconn.KINDS[p.api]['title'], p.name)
+
+    def test_each_lookup_keeps_its_own_order(self):
+        both = {'name': 'x', 'labels': {'dockhand.a': '1', 'komodo.b': '1'}}
+        self.assertEqual(wlmanaged.of_container(both, set())['by'], 'Komodo')
+        self.assertEqual(workloads._container('h', 'docker', {'name': 'x', 'image': 'komodo/dockhand'}, [], [])['panel'], 'Dockhand')
+        self.assertEqual(panels.of_folder('/opt/stacks/portainer'), 'Portainer')
+        self.assertEqual(panels.of_folder('/srv/app'), 'compose')
+        self.assertIs(docker._manager, panels.of_folder)
 
 
 class Listing(unittest.TestCase):

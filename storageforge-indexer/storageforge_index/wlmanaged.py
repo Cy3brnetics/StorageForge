@@ -16,16 +16,16 @@ Platforms read through their own APIs (the API connection kind) are not read her
 """
 from __future__ import annotations
 
-from . import apiconn, pvenode
+from . import apiconn, panels, pvenode
 from .runtimes.docker import _manager
 
-LABEL_MANAGERS = (('komodo.', 'Komodo'), ('io.portainer.', 'Portainer'), ('coolify.', 'Coolify'), ('dockhand.', 'Dockhand'), ('dev.dockge.', 'Dockge'))
+LABEL_MANAGERS = panels.LABELS
 CONFIG_AGENTS = {'puppet.service': 'Puppet', 'pxp-agent.service': 'Puppet', 'chef-client.service': 'Chef', 'chef-client.timer': 'Chef', 'salt-minion.service': 'Salt',
                  'cfengine3.service': 'CFEngine'}
 KNOWN_NS = {'http://libosinfo.org/xmlns/libvirt/domain/1.0': None, 'https://storageforge.invalid/vm': 'StorageForge',
             'http://ovirt.org/vm/1.0': 'oVirt', 'http://ovirt.org/vm/tune/1.0': 'oVirt', 'http://openstack.org/xmlns/libvirt/nova/1.0': 'OpenStack Nova',
             'http://openstack.org/xmlns/libvirt/nova/1.1': 'OpenStack Nova'}
-PANEL_UNITS = (('komodo-periphery', 'Komodo'), ('periphery.', 'Komodo'), ('portainer', 'Portainer'), ('dockhand', 'Dockhand'), ('dockge', 'Dockge'), ('coolify', 'Coolify'))
+PANEL_UNITS = panels.UNITS
 
 
 def _m(by: str, how: str, level: str = 'warn') -> dict:

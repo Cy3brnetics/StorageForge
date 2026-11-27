@@ -20,6 +20,7 @@ import re
 import threading
 import time
 
+from .. import panels
 from ..db import Conn
 from ..paths import is_under
 
@@ -28,7 +29,7 @@ NOT_STACKS = ('/overlay2/', '/containerd/', '/node_modules/', '/.cache/', '/fuse
               '/.local/share/Trash/', '/site-packages/', '/tests/', '/test/', '/examples/', '/docs/')
 MAX_COMPOSE = 500
 KEEP_LABELS = re.compile(r'^(com\.docker\.compose\.|io\.podman\.compose\.|komodo\.|org\.opencontainers\.image\.title$|storageforge\.|PODMAN_SYSTEMD_UNIT$|io\.containers\.autoupdate$|'
-                         r'com\.centurylinklabs\.watchtower|coolify\.|io\.portainer\.|dockhand\.|dev\.dockge\.|(.*[./])?managed[-_]by$)')   # what says who runs a container (wlmanaged.py)
+                         r'com\.centurylinklabs\.watchtower|coolify\.|io\.portainer\.|dockhand\.|dev\.dockge\.|(.*[./])?managed[-_]by$)')   # what says who runs a container (wlmanaged.py); covers every panels.LABELS prefix
 SECRET_OPT = re.compile(r'((?:pass|password|pwd|secret|token)=)[^,]*', re.I)
 
 FMT_C = ('{"id":"{{.Id}}","name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},'
@@ -378,13 +379,7 @@ def survey(db, conn: Conn, t, host_id: int, scan_id: int) -> dict:
 
 
 # ── what the UI and the other modules ask ───────────────────────────────
-def _manager(path: str) -> str:
-    p = (path or '').lower()
-    for key, name in (('dockhand', 'Dockhand'), ('komodo', 'Komodo'), ('portainer', 'Portainer'), ('/data/compose/', 'Portainer'),
-                      ('/opt/stacks', 'Dockge'), ('dockge', 'Dockge'), ('casaos', 'CasaOS'), ('coolify', 'Coolify')):
-        if key in p:
-            return name
-    return 'compose'
+_manager = panels.of_folder
 
 
 def host_view(row) -> dict:
