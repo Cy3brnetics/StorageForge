@@ -193,6 +193,7 @@ The design, with the commit order and the questions its major checkpoints decide
 | :--- | :--- |
 | The audit of everything since 0.6.1, to the [audit rules](notebook/Audit%20rules/Audit%20rules.md), and its bugfix round | |
 | Every alias left by rule 4 that nothing reads any more is removed | |
+| The browser tests' page stall: under load, about one browser test per local heavy run (and some on GitHub CI) times out waiting for a page. Seen since 0.6.2 and not caused by this roadmap. On 2026-11-26 the test runner's thread dumps showed the test's server idle, with no request in flight, while Chromium waited on a navigation (`waiting for "http://127.0.0.1:PORT/" navigation to finish`) or never sent the page's requests. So it is on the browser's side, not a database lock. Next: Chromium's network log on a stall. Also seen: each test's server leaves its four scan-worker threads running, 108 sets in one worker by the end of the heavy block | |
 | The full unit suites on SQLite and PostgreSQL | |
 | The full lab, every tier | |
 | The release, with every *not lab-tested* label listed in the notes | |

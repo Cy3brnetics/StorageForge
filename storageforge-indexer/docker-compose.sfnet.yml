@@ -28,7 +28,7 @@ services:
     build:
       context: .
       target: sfnet
-    image: storageforge-sfnet:0.6.4
+    image: storageforge-sfnet:0.6.5
     restart: unless-stopped        # the link stops when the server's network is gone from under it, and is started again in the new one
     depends_on:
       storageforge: { condition: service_started, restart: true }

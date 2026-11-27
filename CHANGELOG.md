@@ -2,7 +2,9 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.6.5 — 2026-11-26
+
+The fourth version of the [0.7.0 roadmap](roadmap-0.7.0.md): platform APIs, network devices and the Toolbox. Every platform reader collects through one guarded loop, the platforms share one registry and one host resolver, the device appliers share their rollback timer and SSH plumbing, and the Toolbox's container tools share one adapter kit. Three fixes came out of it: the planner's firewall what-if now lays rules on the chains a host really walks, a VPN interface is known by the overlay naming table so a WAN behind carrier-grade NAT stays WAN, and a refused staging of a bundle or role profile is audited. Built and unit-tested on SQLite and PostgreSQL 16, light, medium and heavy on each; **not lab-tested**. Two browser tests stalled under load in the SQLite heavy run, as they have since 0.6.2: the cause is on the browser's side and is on the 0.7.0 audit's list.
 
 ### Fixed
 
