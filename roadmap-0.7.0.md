@@ -2,11 +2,11 @@
 
 0.7.0 has one theme: **features that do the same job share one backend.** StorageForge grew to 0.6.0 one feature at a time, and many features brought their own copy of something another already had: a parser, a quoting rule, a script fragment, a table of names. A copy that drifts is a bug in one feature and not its twin, and the survey behind this page found ten of those. This page lists what gets combined, in what order, and what stays apart on purpose.
 
-It was written on 2026-11-26 from the [backend consolidation survey](docs/audit-2026-11-26-backend.md) of `a9bdc3a` (0.6.1), which holds the evidence for every item: the lines of each copy, what a second reader corrected, and the first commit it named. [roadmap.md](roadmap.md) is still the ledger of the features 0.6.0 built and of what in them is *not lab-tested*. Nothing here adds a feature.
+It was written on 2026-11-26 from the [backend consolidation survey](docs/audit-2026-11-26-backend.md) of `a9bdc3a` (0.6.1), which holds the evidence for every item: the lines of each copy, what a second reader corrected, and the first commit it named. [roadmap.md](roadmap.md) is still the ledger of the features 0.6.0 built and of what in them is *not lab-tested*. Nothing here adds a feature, except 0.6.10: cloud-init templates, which the owner added on 2026-11-26.
 
 ## How to read this
 
-An item is `BE` and a number. Each was found either as a **bug in one copy** or as a **duplicate**. **Fix** (a bug in one copy) means the item changes what StorageForge does, because one copy was wrong: its changelog line says what changed for the user. **Duplicate** means the item was found as a plain duplicate with no bug in it. It may still leave every caller with the best copy's behaviour (see rule 1). The **Status** cell is the ledger: whoever finishes an item writes the commit that finished it. There are no time estimates on this page.
+An item is `BE` and a number. Each was found either as a **bug in one copy** or as a **duplicate**. **Fix** (a bug in one copy) means the item changes what StorageForge does, because one copy was wrong: its changelog line says what changed for the user. **Duplicate** means the item was found as a plain duplicate with no bug in it. It may still leave every caller with the best copy's behaviour (see rule 1). **Feature** (0.6.10 only) is something new, and an item starting with `CT` is part of the cloud-init templates. The **Status** cell is the ledger: whoever finishes an item writes the commit that finished it. There are no time estimates on this page.
 
 ## Rules for the release
 
@@ -33,7 +33,8 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | **0.6.7** | Plans, jobs, alerts and routes | BE-67 to BE-75, in the table below | BE-73 changes who is notified and when · the release |
 | **0.6.8** | Shares, archives and quarantine | BE-76 to BE-80, in the table below | The lab run of the share and archive tiers, since generated scripts change · the release |
 | **0.6.9** | The Rust programs and the secure channels | BE-81 to BE-83, in the table below | Each of BE-82 and BE-83 is a security boundary and changes a signed image: the owner decides whether they are done at all · the release |
-| **0.7.0** | The release | The audit of everything since 0.6.1, to the audit rules, and its bugfix round, a commit per finding · the full unit suites on SQLite and PostgreSQL · the full lab, since generated scripts changed in 0.6.4 and 0.6.8 | The audit's findings · the lab results · the release |
+| **0.6.10** | Cloud-init templates | CT-01 to CT-14, in the table below | The secrets a template may carry (CT-04) and the Xen Orchestra create action (CT-09) are each a security boundary · the lab run of every system a template reaches · the release |
+| **0.7.0** | The release | The audit of everything since 0.6.1, to the audit rules, and its bugfix round, a commit per finding · the full unit suites on SQLite and PostgreSQL · the full lab, since generated scripts changed in 0.6.4, 0.6.8 and 0.6.10 | The audit's findings · the lab results · the release |
 
 ## 0.6.2: What the survey found broken
 
@@ -159,6 +160,31 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | **BE-82** | The two Python Noise implementations (the agent tunnel and the enclave channel) share one symmetric state, cipher and framing | Duplicate | |
 | **BE-83** | The enclave takes its Noise primitives from the `wire` crate instead of its own copy | Duplicate | |
 
+## 0.6.10: Cloud-init templates
+
+The owner's addition of 2026-11-26: a cloud-init config manager, so a person can make simple templates for new VMs and use them on every system StorageForge makes VMs on, going further than today's one login account. It is a feature and a consolidation at once. Four places write cloud-init today, each by hand and each with only a login user and an SSH key: `vm-create` (a `printf` of JSON into a libvirt seed ISO, `steps_vm.py`), the OS install's NoCloud seed inside the new root (`steps_osinstall.py`), `pve-vm` (`qm set --ciuser --sshkeys`, `steps_proxmox.py`) and the Terraform export (`wlexport.py`). The Incus step refuses the `user.user-data` keys outright, and Xen Orchestra and TrueNAS can be read but StorageForge makes no VM on them.
+
+**What a template is.** A named, versioned set of plain fields, not a blank YAML page: login users with their groups, sudo and SSH keys (a vault key's public half by name, or a pasted public key), packages and whether to update and upgrade first, time zone, locale and NTP servers, files to write, commands to run at first boot and on every boot (each a list of words, not a line of shell), mounts and swap, growing the root partition, a host name pattern (`{name}`, `{name}.{domain}`), the network (DHCP, or static addresses per interface with gateway, DNS servers and search domains, written as network-config version 2), and what to do when cloud-init is done (power off, reboot, nothing). Parameters with defaults are filled in per VM in the VM step's form. An *extra* block takes further cloud-config keys for what the fields do not cover, read with the PyYAML the controller already has, checked, and refused where a key would replace StorageForge's own login account or its SSH key.
+
+**The rules it keeps.** Rendering is done once, in the controller's Python, and every system's step only delivers the files: one renderer, many deliveries (roadmap rule 2: the seed or snippet on the host is whole, and nothing on the host calls back to the controller; `phone_home` is not offered). A template holds no secret: a password or a file's secret contents name a vault secret, released at deploy as the plan's other secrets are, and never in the plan, the script, an export or a log (the 0.6.0 roadmap's rule 3). A plan made before templates existed renders exactly today's login-only config, which becomes the built-in template *Login only* (rule 1: backwards compatible).
+
+| Item | What is built | Found as | Status |
+| :--- | :--- | :--- | :--- |
+| **CT-01** | One cloud-init renderer, `cloudinit.py`: user-data, meta-data, vendor-data and network-config from a template and a VM's values. The four writers above become its first callers, and a plan with no template renders today's login-only config, checked byte for byte against each writer's output before the change | Duplicate | |
+| **CT-02** | The template store: a table on SQLite and PostgreSQL (a new table, no stored format changed), versions kept as the design versions keep theirs, the API (list, show, save, remove, render a preview) and the CLI (`storageforge-index cloudinit ...`), audited, under its own permission, in the route table test | Feature | |
+| **CT-03** | The template's fields as listed above, each checked as plan fields are (safe words, sizes, a list of words for every command), the parameters and their per-VM values, and the *extra* block with its refusals | Feature | |
+| **CT-04** | Secrets in a template: a vault secret named for a user's password (hashed at deploy, never sent as text) or a file's contents, released one request at a time at deploy, written into the seed as a file of mode 0600. Refused, with the reason, where the system keeps user-data readable through its API to anyone who may read the VM (Incus instance config, Xen Orchestra) | Feature | |
+| **CT-05** | libvirt (`vm-create`): the seed ISO holds the rendered files | Feature | |
+| **CT-06** | Proxmox VE (`pve-vm`): the rendered user-data and network-config as `cicustom` snippets on a storage of the node that allows snippets, which the check looks for and names. With no such storage, the fields Proxmox's own cloud-init options carry (user, SSH keys, addresses, DNS) are set through them, and the check lists each field that cannot be | Feature | |
+| **CT-07** | Incus (`incus` step): `cloud-init.user-data` and `cloud-init.network-config` set at create, only with an image that carries cloud-init (the check reads the image's variant). The `user.*` keys stay refused as labels | Feature | |
+| **CT-08** | The OS install's NoCloud seed inside the new root, and host migration's first boot, from a template | Feature | |
+| **CT-09** | Xen Orchestra (XCP-ng): a VM made from a template through the API connection's `vm.create` with its cloud config and network config, only when the connection's action list allows creating VMs (section 13's rule: read-only by default, the least that works). TrueNAS: a NoCloud seed ISO written to a dataset over SSH and attached as the VM's CD-ROM, or a written decision in this ledger if its API cannot attach one | Feature | |
+| **CT-10** | Exports from the renderer: Terraform and OpenTofu (`libvirt_cloudinit_disk`, the Proxmox provider's `cicustom`), Ansible and Bash, so an exported plan makes the same VM | Duplicate | |
+| **CT-11** | The web UI: a list of templates and an editor of plain fields, a preview of the rendered files with every secret shown as its vault name, the template and its parameters in the VM step's form on the Workloads page, and *Make a template from this VM* from a VM step already filled in | Feature | |
+| **CT-12** | Checks: the rendered files checked before any step runs (cloud-config keys known to cloud-init, sizes, a network-config that parses), and in report mode the host's own `cloud-init schema` run against them where the host has it | Feature | |
+| **CT-13** | The lab: a VM made from one template on `sf-ubuntu` (libvirt and Incus), `sf-pve` and `sf-xcp`, then scanned after first boot to show its users, packages, files and network are what the template said; TrueNAS on `sf-truenas` as CT-09 decides | Feature | |
+| **CT-14** | Docs (a page of its own, and the VM pages updated) and the changelog | Feature | |
+
 ## 0.7.0: The release
 
 | Item | Status |
@@ -174,6 +200,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | Decision | Needed for |
 | :--- | :--- |
 | Whether 0.6.9 is done at all. The two Noise implementations and the enclave's own copy of the primitives are real duplication, but they sit on the channels that carry the vault's secrets, and the enclave's image is signed and reproducible: a changed dependency changes its digest. The survey's records for them were not checked by a second reader | BE-82, BE-83 |
+| Where the template editor lives: the Workloads page (beside the VM steps, recommended) or Admin. And whether the *extra* block of raw cloud-config is offered at all in the first release of CT-03, or only the plain fields | CT-03, CT-11 |
 | Whether the CLI and the web should audit and check the same things. They differ today (three actor formats, the web audits saves and the CLI doesn't, the web's clone save checks accepted risks and the CLI's doesn't). The survey refused to merge them without a decision on which is right | Not on this roadmap until decided |
 | What retiring a host does with the 31 tables that still hold its name. BE-07 removed what the roadmap named and lists the rest in `retire.KEPT`, each with a reason that starts *not decided*: the agent's tables, alerts, host logs and their counts, saved host configs, task runs, notification history, playbook runs, traffic samples, scan signatures, host checks, secret deliveries, SSH CA hosts, workload captures and four Toolbox tables. Retire can't be undone, so each needs a yes (removed with the host) or a no (kept as history) | Retire removing them |
 | Unified designs, [roadmap.md](roadmap.md) step 3i. The survey found the two design stores again and left them: they wait on the answers in section 10.1 and a stored-format migration | Not on this roadmap |
