@@ -264,18 +264,11 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
 
 
 # ── beside the scan, and the views ────────────────────────────────────
-def _host_map(conn, objects: list[dict]) -> dict:
-    """XO host id -> the scanned host, by name or address."""
-    from .apiviews import _hosts
-    names = _hosts(conn)
-    by_ip = {ip.lower(): h for h, ip in conn.all('SELECT hostname, ip_address FROM hosts') if ip}
-    out = {}
-    for o in objects:
-        if o['kind'] == 'xo-host':
-            address = (o.get('address') or '').lower()      # no address matches no host: not the scanned host that has none either
-            out[o['ref']] = (names.get((o.get('name') or '').lower()) or names.get((o.get('name') or '').split('.')[0].lower())
-                             or (by_ip.get(address) if address else None))
-    return out
+def _host_map(conn, objects: list[dict], hosts=None) -> dict:
+    """XO host id -> the scanned host, by name or address. hosts: an apiviews.HostIndex already read."""
+    from .apiviews import HostIndex
+    index = hosts if hosts is not None else HostIndex(conn)
+    return {o['ref']: index.name(o.get('name')) or index.address(o.get('address')) for o in objects if o['kind'] == 'xo-host'}
 
 
 def compare(conn, row: dict, objects: list[dict]) -> dict:
@@ -318,7 +311,7 @@ def workloads(conn, row: dict, objects: list[dict]) -> list[dict]:
 
 
 def map_nodes(conn, row: dict, objects: list[dict], hosts: dict, layers) -> list[dict]:
-    hostmap = _host_map(conn, objects)
+    hostmap = _host_map(conn, objects, hosts)
     out = []
     if 'workloads' in layers:
         for o in objects:

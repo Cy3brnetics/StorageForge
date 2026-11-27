@@ -241,23 +241,22 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
 
 
 # ── beside the scan, and the views ────────────────────────────────────
-def host_of_environment(conn, row: dict, env: dict) -> str | None:
-    """The scanned host an environment is: by its address or name; a socket environment is the host Dockhand itself runs on."""
-    from .apiviews import _hosts
+def host_of_environment(conn, row: dict, env: dict, hosts=None) -> str | None:
+    """The scanned host an environment is: by its address or name; a socket environment is the host Dockhand itself runs on. hosts: an
+    apiviews.HostIndex already read, so a caller asking for many environments reads the hosts once."""
+    from .apiviews import HostIndex
     if env.get('connection') == 'socket':
         return row.get('host')
-    names = _hosts(conn)
-    by_ip = {(ip or '').lower(): h for h, ip in conn.all('SELECT hostname, ip_address FROM hosts') if ip}
-    for v in (env.get('host'), env.get('public_ip'), env.get('name')):
-        v = (v or '').lower()
-        if v and (names.get(v) or names.get(v.split('.')[0]) or by_ip.get(v)):
-            return names.get(v) or names.get(v.split('.')[0]) or by_ip.get(v)
-    return None
+    return (hosts if hosts is not None else HostIndex(conn)).find(env.get('host'), env.get('public_ip'), env.get('name'))
 
 
-def panel_containers(conn, row: dict, objects: list[dict]) -> list[dict]:
-    """Each container the panel lists, with its stack and the scanned host its environment is. Shared by Dockhand, Portainer and Komodo."""
+def panel_containers(conn, row: dict, objects: list[dict], hosts=None) -> list[dict]:
+    """Each container the panel lists, with its stack and the scanned host its environment is. Shared by Dockhand, Portainer and Komodo.
+    The hosts are read once and each environment is resolved once, however many containers it has."""
+    from .apiviews import HostIndex
     envs = {o['ref']: o for o in objects if o['kind'] == 'environment'}
+    index = hosts if hosts is not None else HostIndex(conn)
+    on_host = {ref: host_of_environment(conn, row, env, index) if env else None for ref, env in envs.items()}
     stack_of = {}
     for o in objects:
         if o['kind'] == 'stack':
@@ -267,8 +266,7 @@ def panel_containers(conn, row: dict, objects: list[dict]) -> list[dict]:
     for o in objects:
         if o['kind'] != 'container':
             continue
-        env = envs.get(str(o.get('environment'))) or {}
-        out.append({**o, 'on_host': host_of_environment(conn, row, env) if env else None, 'stack': o.get('stack') or stack_of.get((str(o.get('environment')), o.get('name')))})
+        out.append({**o, 'on_host': on_host.get(str(o.get('environment'))), 'stack': o.get('stack') or stack_of.get((str(o.get('environment')), o.get('name')))})
     return out
 
 
@@ -312,7 +310,7 @@ def map_nodes(conn, row: dict, objects: list[dict], hosts: dict, layers) -> list
     if 'workloads' not in layers:
         return []
     out = []
-    for c in panel_containers(conn, row, objects):
+    for c in panel_containers(conn, row, objects, hosts):
         host = c['on_host']
         props = {'runtime': 'docker', 'state': c.get('state'), 'image': c.get('image'), 'stack': c.get('stack'), 'environment': c.get('environment_name'), 'panel': row['kind']}
         out.append({'attach': f'wl:{host}:docker::{c["name"]}' if host else None, 'id': f'api:{row["name"]}:ctr:{c["ref"]}', 'kind': 'Container',

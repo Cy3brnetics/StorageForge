@@ -12,6 +12,7 @@ Where the samples come from: the @openapi blocks of Dockhand's own routes, githu
     GET /api/users           [{id, username, email, displayName, isAdmin, isActive, isSso, authProvider}] (needs users:view)"""
 import json
 import time
+from unittest import mock
 
 try:
     from test_apiconn import Base
@@ -133,6 +134,31 @@ class Read(Base):
         listing = apiviews.annotate_workloads(self.conn, {'workloads': [{'host': 'dock1', 'runtime': 'docker', 'name': 'immich_redis', 'state': 'running'}]})
         w = next(x for x in listing['workloads'] if x['name'] == 'immich_redis')
         self.assertEqual(w['api']['differs'], [{'field': 'state', 'api': 'exited', 'ssh': 'running'}])
+
+    def test_the_hosts_are_read_once_however_many_containers_and_environments(self):
+        self.conn.execute("INSERT INTO hosts (hostname, ssh_host, ip_address, ssh_user, inventory_json) VALUES ('edge2.lan', 'e2', '10.5.0.2', 'scan', '{}')")
+        objects = [{'kind': 'environment', 'ref': str(i), 'name': f'env{i}', 'host': '10.5.0.2' if i % 2 else 'dock1.lab', 'connection': 'tcp'} for i in range(20)]
+        objects += [{'kind': 'container', 'ref': f'{i % 20}/c{i}', 'name': f'c{i}', 'environment': i % 20} for i in range(200)]
+        reads = []
+        real = self.conn.all
+        with mock.patch.object(self.conn, 'all', lambda sql, *a, **k: (reads.append(sql) if 'FROM hosts' in sql else None, real(sql, *a, **k))[1]):
+            got = apidockhand.panel_containers(self.conn, self.row, objects)
+        self.assertEqual(len(reads), 1, 'one read of the hosts, not one per container')
+        self.assertEqual({c['on_host'] for c in got[1::2]}, {'edge2.lan'})
+        self.assertEqual({c['on_host'] for c in got[0::2]}, {'dock1'})
+
+    def test_one_resolver_for_a_node_an_environment_and_a_site(self):
+        for name, ip in (('nas1.lan', '10.0.0.5'), ('nas1', '10.0.0.6'), ('blank', ''), ('quiet', None)):
+            self.conn.execute('INSERT INTO hosts (hostname, ssh_host, ip_address, ssh_user, inventory_json) VALUES (:h, :h, :i, \'scan\', \'{}\')', {'h': name, 'i': ip})
+        index = apiviews.HostIndex(self.conn)
+        self.assertEqual(index.name('NAS1'), 'nas1', 'a full name wins over another host\'s short name')
+        self.assertEqual(index.name('nas1.other'), 'nas1', 'the candidate is shortened')
+        self.assertEqual(index.name('nas1.lan'), 'nas1.lan')
+        self.assertEqual((index.address('10.0.0.5'), index.address(''), index.address(None)), ('nas1.lan', None, None), 'no address is no host')
+        self.assertEqual(index.find(None, '', 'nowhere', '10.0.0.6', 'nas1.lan'), 'nas1', 'the first value that finds a host')
+        self.assertIsNone(index.find('', None))
+        self.assertEqual(apiviews.host_of_node(index, {'host': 'ctl'}, 'NAS1.LAN', 3), 'nas1.lan')
+        self.assertEqual(apiviews.host_of_node(index, {'host': 'ctl'}, 'pve9', 1), 'ctl', 'a one-node platform is its connection\'s host')
 
     def test_the_guide_and_answers_that_are_not_what_the_routes_say(self):
         g = apiguide.guide('dockhand', scope='docker1')

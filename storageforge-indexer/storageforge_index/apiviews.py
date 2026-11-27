@@ -16,12 +16,37 @@ from .db import Conn
 PROXMOX = ('pve', 'pbs', 'pdm')
 
 
-def _hosts(conn: Conn) -> dict:
-    out = {}
-    for (name,) in conn.all('SELECT hostname FROM hosts'):
-        out[name.lower()] = name
-        out.setdefault(name.split('.')[0].lower(), name)
-    return out
+class HostIndex(dict):
+    """The scanned hosts, read in one query, to say which one a platform's node, environment or site is: the one resolver the readers
+    share, built once per view and asked once per object. As a dict it maps each host's full name and its short name, lower-cased, to the
+    host (a full name wins over another host's short name); by_ip maps each recorded address to its host. Only apiconn.host_for, which
+    matches a connection's URL and also the SSH address, keeps rules of its own."""
+
+    def __init__(self, conn: Conn):
+        super().__init__()
+        self.by_ip = {}
+        for name, ip in conn.all('SELECT hostname, ip_address FROM hosts'):
+            self[name.lower()] = name
+            self.setdefault(name.split('.')[0].lower(), name)
+            if ip:                  # a host with no recorded address is found by no address: not even by an object that has none
+                self.by_ip[ip.lower()] = name
+
+    def name(self, value: str | None) -> str | None:
+        """The host this name is: as written, or by its first label ('nas1.lan' is host nas1)."""
+        v = (value or '').lower()
+        return (self.get(v) or self.get(v.split('.')[0])) if v else None
+
+    def address(self, value: str | None) -> str | None:
+        """The host scanned at this address. No address is no host."""
+        v = (value or '').lower()
+        return self.by_ip.get(v) if v else None
+
+    def find(self, *values: str | None) -> str | None:
+        """The host the first of these values that names or addresses one is."""
+        for v in values:
+            if found := self.name(v) or self.address(v):
+                return found
+        return None
 
 
 def host_of_node(hosts: dict, conn_row: dict, node: str | None, nodes: int) -> str | None:
@@ -40,7 +65,7 @@ def _mib(b):
 def guests(conn: Conn) -> list[dict]:
     """Every guest any connection reads (a PVE cluster, or PVE remotes through PDM), with the scanned host it runs on when known."""
     from . import apiconn
-    hosts = _hosts(conn)
+    hosts = HostIndex(conn)
     rows = {r['conn_id']: r for r in apiconn.listing(conn)}
     objs = apiread.objects(conn)
     nodes_of: dict = {}
@@ -142,7 +167,7 @@ def map_extra(conn: Conn, g: dict, layers) -> dict:
     """Adds to a map graph what the connections read: guests the scan does not already draw (workloads layer), the platform's storage and
     datastores (storage layer). A guest the scan draws gets the API's reading as a property, not a second node."""
     from . import apiconn
-    hosts = _hosts(conn)
+    hosts = HostIndex(conn)
     known = {n['id']: n for n in g['nodes']}
     drawn_hosts = {n['label'] for n in g['nodes'] if n['kind'] == 'Host'}
 

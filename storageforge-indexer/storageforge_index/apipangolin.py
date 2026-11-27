@@ -235,10 +235,11 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
 
 
 # ── exposure, the views ───────────────────────────────────────────────
-def site_hosts(conn, row: dict, objects: list[dict]) -> dict:
-    """Site id -> the scanned host it is: by the site's name or niceId; a local site is the Pangolin server itself."""
-    from .apiviews import _hosts
-    names = _hosts(conn)
+def site_hosts(conn, row: dict, objects: list[dict], hosts=None) -> dict:
+    """Site id -> the scanned host it is: by the site's name or niceId; a local site is the Pangolin server itself. hosts: an
+    apiviews.HostIndex already read."""
+    from .apiviews import HostIndex
+    index = hosts if hosts is not None else HostIndex(conn)
     out = {}
     for o in objects:
         if o['kind'] != 'site':
@@ -247,9 +248,8 @@ def site_hosts(conn, row: dict, objects: list[dict]) -> dict:
             out[o['ref']] = row.get('host')
             continue
         for v in (o.get('name'), o.get('nice')):
-            v = (v or '').lower()
-            if v and (names.get(v) or names.get(v.split('.')[0])):
-                out[o['ref']] = names.get(v) or names.get(v.split('.')[0])
+            if found := index.name(v):
+                out[o['ref']] = found
                 break
     return out
 
@@ -318,7 +318,7 @@ def compare(conn, row: dict, objects: list[dict]) -> dict:
 def map_nodes(conn, row: dict, objects: list[dict], hosts: dict, layers) -> list[dict]:
     """Each published resource as a route in the access layer, from the Newt tunnel on the host its site is (or the platform)."""
     out = []
-    shosts = site_hosts(conn, row, objects)
+    shosts = site_hosts(conn, row, objects, hosts)
     for o in objects:
         if o['kind'] != 'resource':
             continue
