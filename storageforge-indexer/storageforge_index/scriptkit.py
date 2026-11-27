@@ -383,6 +383,40 @@ send_stream() { # name what-it-should-be-on-the-other-side stream-command...: tr
 """
 
 # Needs ARGS (the original arguments) and HOST set by the caller's option parsing; FWD_AGENT=1 with --forward-agent.
+# What Moves scripts, storageforge-job and the change-plan archive step all carry, embedded whole in each (a script on a host
+# sources nothing another script installed). No apostrophe in it: the change-plan script may hold none.
+COMPRESS_KIT = r"""sf_idle() {
+  if command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null; then ionice -c3 nice -n 19 "$@"
+  elif command -v nice >/dev/null 2>&1; then nice -n 19 "$@"
+  else "$@"; fi
+}
+rsync_compress_flags() { # mode (empty, zstd or max) -> appends wire compression flags to RS
+  local mode=$1
+  [[ -n $mode ]] || return 0
+  if rsync --compress-choice=zstd --version >/dev/null 2>&1; then
+    if [[ $mode == max ]]; then RS+=(-z --compress-choice=zstd --compress-level=19)
+    else RS+=(-z --compress-choice=zstd --compress-level=3); fi
+  else
+    if [[ $mode == max ]]; then RS+=(-z --compress-level=9); else RS+=(-z); fi
+  fi
+}
+sf_remote_compress_cmd() { # codec -> self-contained bash snippet for a host with nothing installed: stdin raw tar -> stdout round-trip verified archive
+  local codec=$1 comp ver
+  if [[ $codec == xz-extreme ]]; then
+    comp="xz -9 -e -T0 -c"
+    ver="xz -dc <\"\$d/v\" | tar -tf - >/dev/null"
+  elif [[ $codec == zstd-high ]]; then
+    comp="zstd -q -T0 -19 -c"
+    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
+  else
+    comp="( zstd -q -T0 --ultra -22 --long=27 -c )"
+    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
+  fi
+  printf "%s" "set -o pipefail; d=\$(mktemp -d) || exit 2; mkfifo \"\$d/v\" || { rm -rf \"\$d\"; exit 2; }; ( $ver ) & vp=\$!; nice -n 19 sh -c \"$comp\" | tee \"\$d/v\"; rc=\$?; wait \"\$vp\" || rc=9; rm -rf \"\$d\"; exit \"\$rc\""
+}
+"""
+assert "'" not in COMPRESS_KIT
+
 REMOTE = r"""# ── remote: copy this script over, run it there with sudo, clean up (like storage-setup.sh --host) ──
 if [[ -n $HOST ]]; then
   [[ $HOST == -* ]] && { echo "--host: not a host name: $HOST" >&2; exit 2; }

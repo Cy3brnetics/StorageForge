@@ -20,7 +20,7 @@ from .changes import F
 from .db import Conn
 from .fsmap import SYSTEM_DIRS
 from .moves import find_host, hosts, mount_of
-from .scriptkit import CODEC_EXT, CODEC_TOOL, CODECS, package_check
+from .scriptkit import CODEC_EXT, CODEC_TOOL, CODECS, COMPRESS_KIT, package_check
 
 ARCHIVE_SUFFIXES = ('.tar.zst', '.tzst', '.tar.xz', '.txz', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.7z')
 OS_PROTECTED = set(SYSTEM_DIRS) | {'/', '/boot/efi', '/boot/firmware', '/efi'}
@@ -61,16 +61,7 @@ def _args_archive(conn: Conn, task: dict) -> list[str]:
 # Uses need, act, try, later, ok, conflict, info, human and t_trash from changes.py. Avoid apostrophes in bash text.
 BASH = r"""
 # ── lossless ultra-compression archive and safe extraction ─────────────
-sf_idle() {
-  if command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null; then
-    ionice -c3 nice -n 19 "$@"
-  elif command -v nice >/dev/null 2>&1; then
-    nice -n 19 "$@"
-  else
-    "$@"
-  fi
-}
-
+@@COMPRESS_KIT@@
 sf_tar_create_flags() {
   TAR_CREATE_FLAGS=(--numeric-owner --sparse)
   if tar --version 2>/dev/null | grep -qi "gnu tar"; then
@@ -97,21 +88,6 @@ sf_7z_bin() {
     command -v "$c" >/dev/null 2>&1 && { printf "%s" "$c"; return 0; }
   done
   return 1
-}
-
-sf_remote_compress_cmd() { # codec -> self-contained bash snippet: stdin raw tar -> stdout verified archive
-  local codec=$1 comp ver
-  if [[ $codec == xz-extreme ]]; then
-    comp="xz -9 -e -T0 -c"
-    ver="xz -dc <\"\$d/v\" | tar -tf - >/dev/null"
-  elif [[ $codec == zstd-high ]]; then
-    comp="zstd -q -T0 -19 -c"
-    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
-  else
-    comp="( zstd -q -T0 --ultra -22 --long=27 -c )"
-    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
-  fi
-  printf "%s" "set -o pipefail; d=\$(mktemp -d) || exit 2; mkfifo \"\$d/v\" || { rm -rf \"\$d\"; exit 2; }; ( $ver ) & vp=\$!; nice -n 19 sh -c \"$comp\" | tee \"\$d/v\"; rc=\$?; wait \"\$vp\" || rc=9; rm -rf \"\$d\"; exit \"\$rc\""
 }
 
 sf_verify_archive_file() { # file [codec]
@@ -319,7 +295,7 @@ t_archive_extract() { local archive=$1 dest=$2 verify_sum=${3:-1} dmode downer
   printf "%s\n" "$archive" >"$dest/.sf-extracted"
   ok "extracted $archive into $dest"
 }
-"""
+""".replace('@@COMPRESS_KIT@@\n', COMPRESS_KIT + '\n')
 
 
 def _check_archive(conn: Conn, c: changes.Host, h: dict, p: dict, say):

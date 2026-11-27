@@ -28,7 +28,7 @@ import time
 from . import hostid, site
 from .db import Conn
 from .paths import deepest, is_under
-from .scriptkit import CODEC_EXT, HELPERS, REMOTE, STREAM_CODECS, codec_tool, comments, host_name, one_line, package_check
+from .scriptkit import CODEC_EXT, COMPRESS_KIT, HELPERS, REMOTE, STREAM_CODECS, codec_tool, comments, host_name, one_line, package_check
 
 METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git', 'archive')
 ARCHIVE_CODECS = STREAM_CODECS
@@ -831,22 +831,7 @@ src_spec() {
   if src_is_local "$1"; then printf '%s/' "${S_SRC[$1]%/}"; else printf '%s:%s/' "${S_SRC_LOGIN[$1]}" "${S_SRC[$1]%/}"; fi; }
 ssh_src() { local i=$1; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${S_SRC_PORT[$i]}" "${S_SRC_LOGIN[$i]}" "$@"; }
 ssh_comp() { local i=$1; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${S_COMP_PORT[$i]}" "${S_COMP_LOGIN[$i]}" "$@"; }
-sf_idle() {
-  if command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null; then ionice -c3 nice -n 19 "$@"
-  elif command -v nice >/dev/null 2>&1; then nice -n 19 "$@"
-  else "$@"; fi
-}
-rsync_compress_flags() { # mode -> appends wire compression flags to RS
-  local mode=$1
-  [[ -n $mode ]] || return 0
-  if rsync --compress-choice=zstd --version >/dev/null 2>&1; then
-    if [[ $mode == max ]]; then RS+=(-z --compress-choice=zstd --compress-level=19)
-    else RS+=(-z --compress-choice=zstd --compress-level=3); fi
-  else
-    if [[ $mode == max ]]; then RS+=(-z --compress-level=9); else RS+=(-z); fi
-  fi
-}
-rsync_args() { # step [extra...] -> RS array
+""" + COMPRESS_KIT + r"""rsync_args() { # step [extra...] -> RS array
   local i=$1; shift
   RS=(rsync -aHAXS '--filter=-x_system.*' --filter=-x_security.selinux --numeric-ids --protect-args --partial --partial-dir=.rsync-partial --human-readable)
   has "$i" onefs && RS+=(-x)
@@ -920,20 +905,6 @@ archive_verify_file() { # file codec
   if [[ $codec == xz-extreme ]]; then ( set -o pipefail; sf_idle xz -dc -- "$f" | tar -tf - >/dev/null )
   else ( set -o pipefail; ( sf_idle zstd -dc --long=31 -- "$f" ) | tar -tf - >/dev/null ); fi
 }
-archive_compress_cmd() { # codec -> self-contained bash snippet: stdin raw tar -> stdout round-trip verified archive
-  local codec=$1 comp ver
-  if [[ $codec == xz-extreme ]]; then
-    comp="xz -9 -e -T0 -c"
-    ver="xz -dc <\"\$d/v\" | tar -tf - >/dev/null"
-  elif [[ $codec == zstd-high ]]; then
-    comp="zstd -q -T0 -19 -c"
-    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
-  else
-    comp="( zstd -q -T0 --ultra -22 --long=27 -c )"
-    ver="( zstd -dc --long=31 <\"\$d/v\" ) | tar -tf - >/dev/null"
-  fi
-  printf '%s' "set -o pipefail; d=\$(mktemp -d) || exit 2; mkfifo \"\$d/v\" || { rm -rf \"\$d\"; exit 2; }; ( $ver ) & vp=\$!; nice -n 19 sh -c \"$comp\" | tee \"\$d/v\"; rc=\$?; wait \"\$vp\" || rc=9; rm -rf \"\$d\"; exit \"\$rc\""
-}
 archive_tar_local() { # step -> streams raw tar of S_SRC[step] on stdout under idle IO/CPU priority
   local i=$1 src parent base x ex=()
   src=$(realpath -m -- "${S_SRC[$i]}")
@@ -957,7 +928,7 @@ archive_tar_remote() { # step -> streams raw tar from S_SRC_LOGIN[step] over SSH
 }
 archive_stream_remote_compressed() { # step codec -> runs tar + verified compression on S_SRC_LOGIN[step]
   local i=$1 codec=$2
-  ssh_src "$i" "set -o pipefail; $(archive_tar_remote_cmd "$i") | ( $(archive_compress_cmd "$codec") )"
+  ssh_src "$i" "set -o pipefail; $(archive_tar_remote_cmd "$i") | ( $(sf_remote_compress_cmd "$codec") )"
 }
 archive_step() { # step mode
   local i=$1 mode=$2 codec comp_on worker_remote=0 tool dst part sum rc=0 after_sz where_lbl
@@ -1003,7 +974,7 @@ archive_step() { # step mode
       if ((worker_remote)); then
         ( set -o pipefail
           { if src_is_local "$i"; then archive_tar_local "$i"; else archive_tar_remote "$i"; fi; } \
-            | ssh_comp "$i" "$(archive_compress_cmd "$codec")" \
+            | ssh_comp "$i" "$(sf_remote_compress_cmd "$codec")" \
             | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) || rc=$?
       elif [[ $comp_on == source ]] && ! src_is_local "$i"; then
         ( set -o pipefail
@@ -1013,7 +984,7 @@ archive_step() { # step mode
         command -v tar >/dev/null && command -v "$tool" >/dev/null || { conflict "tar and $tool must be installed on $(uname -n)"; return 1; }
         ( set -o pipefail
           { if src_is_local "$i"; then archive_tar_local "$i"; else archive_tar_remote "$i"; fi; } \
-            | bash -c "$(archive_compress_cmd "$codec")" \
+            | bash -c "$(sf_remote_compress_cmd "$codec")" \
             | tee "$part" | sha256sum | awk '{print $1}' >"$part.sha" ) || rc=$?
       fi
       sum=$(cat "$part.sha" 2>/dev/null || true)

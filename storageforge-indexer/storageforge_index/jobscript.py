@@ -22,7 +22,7 @@ their sources. Deploys install and update it; it is static, and everything per j
     storageforge-job with-lock <folder> [--shared] -- <command...>   wait for sync streams on that volume, then run it
 """
 
-from .scriptkit import RECEIVE_KIT
+from .scriptkit import COMPRESS_KIT, RECEIVE_KIT
 from .syncindex import SYNC_PY
 
 JOB_SCRIPT = r"""#!/bin/bash
@@ -63,11 +63,7 @@ serve_load() {
   source "$ETC/serve/$1.conf"
   SID=$1
 }
-sf_idle() {
-  if command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null; then ionice -c3 nice -n 19 "$@"
-  elif command -v nice >/dev/null 2>&1; then nice -n 19 "$@"
-  else "$@"; fi
-}
+@@COMPRESS_KIT@@
 sf_compress_verified_stream() { # codec -> stdin raw tar -> stdout round-trip verified archive
   local codec=${1:-zstd-ultra} tmpd vp rc=0
   tmpd=$(mktemp -d "$TMPD/sf-comp.XXXXXX" 2>/dev/null || mktemp -d) || return 2
@@ -586,14 +582,7 @@ rsync_cmd() { # source-path extra... -> RS
   has onefs && RS+=(-x)
   has checksum && RS+=(-c)
   has delete && RS+=(--delete-after)
-  if [[ -n $COMPRESS ]]; then
-    if rsync --compress-choice=zstd --version >/dev/null 2>&1; then
-      if [[ $COMPRESS == max ]]; then RS+=(-z --compress-choice=zstd --compress-level=19)
-      else RS+=(-z --compress-choice=zstd --compress-level=3); fi
-    else
-      if [[ $COMPRESS == max ]]; then RS+=(-z --compress-level=9); else RS+=(-z); fi
-    fi
-  fi
+  rsync_compress_flags "$COMPRESS"
   local bw; bw=$(bwlimit); [[ -n $bw ]] && RS+=(--bwlimit="$bw")
   ((SRC_LOCAL)) || RS+=(-e "ssh ${SSHO[*]}")
   ((${#ROUTES[@]})) && RS+=(--timeout=120)     # a path that went quiet ends the attempt, and the next one finds another
@@ -970,4 +959,4 @@ case ${1:-} in
   version) echo "storageforge-job 1" ;;
   *) echo "usage: storageforge-job run|verify|cutover|test|status|snapshots|ls|pack|unpack|dedupe|with-lock|version ..." >&2; exit 2 ;;
 esac
-""".replace('@@SYNC_PY@@', SYNC_PY.strip('\n')).replace('@@RECEIVE_KIT@@', RECEIVE_KIT.rstrip('\n'))
+""".replace('@@SYNC_PY@@', SYNC_PY.strip('\n')).replace('@@RECEIVE_KIT@@', RECEIVE_KIT.rstrip('\n')).replace('@@COMPRESS_KIT@@', COMPRESS_KIT.rstrip('\n'))

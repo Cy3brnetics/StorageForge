@@ -326,5 +326,18 @@ class ArchiveStepsAndOffloadTests(unittest.TestCase):
         self.assertEqual(len(cplans), 1)
 
 
+
+class CompressKitTests(unittest.TestCase):
+    def test_each_script_carries_the_kit_whole_and_once(self):
+        # a script on a host sources nothing another script installed: each holds every function of the kit itself
+        from storageforge_index.scriptkit import COMPRESS_KIT
+        for name, text in (('Moves', moves.SCRIPT_BODY), ('storageforge-job', jobscript.JOB_SCRIPT), ('archive step', steps_archive.BASH)):
+            with self.subTest(name):
+                self.assertEqual(text.count(COMPRESS_KIT.rstrip('\n')), 1)
+                for fn in ('sf_idle', 'rsync_compress_flags', 'sf_remote_compress_cmd'):
+                    self.assertEqual(text.count(f'\n{fn}() {{'), 1, fn)
+        self.assertNotIn("'", COMPRESS_KIT)   # the change-plan script holds no apostrophe
+        self.assertIn('  rsync_compress_flags "$COMPRESS"\n', jobscript.JOB_SCRIPT)
+
 if __name__ == '__main__':
     unittest.main()
