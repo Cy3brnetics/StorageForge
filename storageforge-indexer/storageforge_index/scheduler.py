@@ -1353,19 +1353,15 @@ def deploy_items(db, conn: Conn, schedule: dict, mode: str, report_url: str | No
         def hook(res):
             if res.get('status') != 'ok':
                 return
-            c = db.connect()
-            try:
+            with deploy.hook_conn(db) as c:
                 if gone:
-                    c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'schedules' AND ref = :r",
-                              {'h': target_host, 'r': ref})
+                    deploy.forget_deployed(c, target_host, 'schedules', ref)
                 else:
                     if promote:
                         _set_token(c, sid, promote)
                     deploy.mark_deployed(c, target_host, 'schedules', ref, digest,
                                          {'name': schedule['name'], 'cron_expr': schedule['cron_expr'],
                                           'task_type': schedule['task_type'], 'schedule_id': sid}, actor)
-            finally:
-                c.close()
         return hook
 
     # a schedule's timer needs its key whether or not this run is the first, so the key stays until the schedule is taken off
@@ -1412,11 +1408,8 @@ def orphan_items(db, conn: Conn, schedule_id: int, mode: str, actor: str) -> lis
         def hook(res):
             if res.get('status') != 'ok':
                 return
-            c = db.connect()
-            try:
-                c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'schedules' AND ref = :r", {'h': host, 'r': ref})
-            finally:
-                c.close()
+            with deploy.hook_conn(db) as c:
+                deploy.forget_deployed(c, host, 'schedules', ref)
         return hook
 
     hosts_with = [d['host'] for d in deploy.deployed(conn, kind='schedules') if d['ref'] == ref]

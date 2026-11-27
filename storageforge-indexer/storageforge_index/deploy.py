@@ -686,8 +686,26 @@ def output(conn, run_id: int) -> dict:
                       'host_exit', 'confirmed_at'), rows[0]))
 
 
+def forget_deployed(conn, host: str, kind: str, ref: str | None = None):
+    """The host's mark for one unit of this kind gone, or for every unit of the kind when ref is None."""
+    if ref is None:
+        conn.execute('DELETE FROM deployed WHERE host = :h AND kind = :k', {'h': host, 'k': kind})
+    else:
+        conn.execute('DELETE FROM deployed WHERE host = :h AND kind = :k AND ref = :r', {'h': host, 'k': kind, 'r': ref})
+
+
+@contextmanager
+def hook_conn(db: Database):
+    """A connection of its own for an after-deploy hook (on_ok), closed whatever the hook does."""
+    c = db.connect()
+    try:
+        yield c
+    finally:
+        c.close()
+
+
 def mark_deployed(conn, host: str, kind: str, ref: str, deploy_hash: str, detail: dict, actor: str):
-    conn.execute('DELETE FROM deployed WHERE host = :h AND kind = :k AND ref = :r', {'h': host, 'k': kind, 'r': ref})
+    forget_deployed(conn, host, kind, ref)
     conn.execute("""INSERT INTO deployed (host, kind, ref, deploy_hash, detail_json, deployed_at, deployed_by)
                     VALUES (:h, :k, :r, :d, :j, :t, :a)""",
                  {'h': host, 'k': kind, 'r': ref, 'd': deploy_hash, 'j': json.dumps(detail), 't': int(time.time()), 'a': actor})

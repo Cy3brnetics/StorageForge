@@ -550,14 +550,11 @@ def deploy_items(db, conn: Conn, plan: dict, mode: str, report_url: str | None, 
                                               report_url, sec, [s for s in sp if s.get('compressor') == h]))
 
         def done(res, h=h):
-            c = db.connect()
-            try:
+            with deploy.hook_conn(db) as c:
                 if h in serving:
                     deploy.mark_deployed(c, h, 'jobs', ref, plan_hash(plan), {'jobs': [s['id'] for s in sp if h in (s['runner'], s['source'], s.get('compressor'))], 'hosts': serving}, actor)
                 else:   # its jobs have just been removed: a mark would keep the plan from being deleted, and the host from being retired
-                    c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'jobs' AND ref = :r", {'h': h, 'r': ref})
-            finally:
-                c.close()
+                    deploy.forget_deployed(c, h, 'jobs', ref)
         items.append({'host': h, 'script': script, 'args': ['--apply'] if mode == 'apply' else [], 'kind': 'jobs', 'ref': ref,
                       'mode': mode, 'phase': phase[h], **({'on_ok': done} if mode == 'apply' else {})})
     if mode == 'apply':

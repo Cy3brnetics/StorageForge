@@ -1029,10 +1029,9 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str, remove: bool 
     token = secrets.token_urlsafe(32) if not remove and alerts.get_setting(conn, 'report_url') else ''
 
     def done(res):
-        c = db.connect()
-        try:
+        with deploy.hook_conn(db) as c:
             if remove:
-                c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'security'", {'h': name})
+                deploy.forget_deployed(c, name, 'security')
                 c.execute('DELETE FROM security_canaries WHERE lower(host) = lower(:h)', {'h': name})
                 saved = alerts.get_setting(c, host_key(name)) or {}
                 saved.pop('token_sha', None)
@@ -1043,8 +1042,6 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str, remove: bool 
                 saved = alerts.get_setting(c, host_key(name)) or {}
                 alerts.set_setting(c, host_key(name), {**saved, 'host': name, 'token_sha': hashlib.sha256(token.encode()).hexdigest()}, actor)
             deploy.mark_deployed(c, name, 'security', 'security', digest(c, name), {'armed': cfg['armed'], 'decoys': len(decoy_paths(cfg))}, actor)
-        finally:
-            c.close()
     return [{'host': name, 'script': _install(conn, name, token, rearm), 'args': ['--uninstall' if remove else '--apply'], 'kind': 'security', 'ref': name, 'mode': 'apply', 'on_ok': done}]
 
 

@@ -367,10 +367,7 @@ def _removals(db, conn, hosts_: list[str], prefix: str, actor: str, title: str) 
 
     def forgotten(host):
         def hook(_res):
-            c = db.connect()
-            try:
-                c.execute('DELETE FROM deployed WHERE host = :h AND kind = :k AND ref = :r', {'h': host, 'k': KIND, 'r': prefix})
-            finally:
-                c.close()
+            with deploy.hook_conn(db) as c:
+                deploy.forget_deployed(c, host, KIND, prefix)
         return hook
     return [{**_item(conn, h, _head(prefix, title, h, 'removal') + 'take_off\n', ['--remove'], prefix, 'apply'), 'on_ok': forgotten(h)} for h in hosts_ if deploy.ready(conn, h)]

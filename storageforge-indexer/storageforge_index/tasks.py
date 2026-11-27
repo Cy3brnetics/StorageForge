@@ -872,15 +872,12 @@ def deploy_items(db, conn: Conn, task: dict, mode: str, actor: str, run_now: boo
 
     def mark(host, gone=False):
         def hook(_res):
-            c = db.connect()
-            try:
+            with deploy.hook_conn(db) as c:
                 for r in (refs if gone else retired):
-                    c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'tasks' AND ref = :r", {'h': host, 'r': r})
+                    deploy.forget_deployed(c, host, 'tasks', r)
                 if not gone:
                     deploy.mark_deployed(c, host, 'tasks', key, task_hash(task),
                                          {'name': task['name'], 'schedule': task['schedule'], 'id': tid}, actor)
-            finally:
-                c.close()
         return hook
     if run_now:          # the key goes again after a run of a task not installed here: nothing on a timer needs it
         stays = any(d['ref'] in refs and d['host'] == home['name'] for d in deploy.deployed(conn, kind='tasks'))

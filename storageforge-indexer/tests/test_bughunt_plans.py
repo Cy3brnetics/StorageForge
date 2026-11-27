@@ -130,6 +130,24 @@ class Sched(unittest.TestCase):
 
 
 class Shares(Base):
+    def test_forgetting_a_mark_takes_one_unit_or_every_unit_of_its_kind(self):
+        for host, kind, ref in (('nas', 'jobs', '1'), ('nas', 'jobs', '2'), ('nas', 'tasks', '1'), ('pc', 'jobs', '1')):
+            deploy.mark_deployed(self.conn, host, kind, ref, 'h', {}, 'test')
+
+        def marks():
+            return sorted((d['host'], d['kind'], d['ref']) for d in deploy.deployed(self.conn))
+        with deploy.hook_conn(self.db) as c:
+            deploy.forget_deployed(c, 'nas', 'jobs', '1')
+        self.assertEqual(marks(), [('nas', 'jobs', '2'), ('nas', 'tasks', '1'), ('pc', 'jobs', '1')])
+        deploy.forget_deployed(self.conn, 'nas', 'jobs')
+        self.assertEqual(marks(), [('nas', 'tasks', '1'), ('pc', 'jobs', '1')])
+        held = []
+        with self.assertRaises(RuntimeError), deploy.hook_conn(self.db) as c:
+            held.append(c)
+            raise RuntimeError('a hook that fails')
+        with self.assertRaises(Exception):     # the hook's connection was closed all the same
+            held[0].scalar('SELECT 1')
+
     def test_a_design_is_deployed_only_when_the_clients_ran_too(self):
         self.host('pc', 'apt', [])
         shares.save_export(self.db, self.conn, 'nas', {'protocol': 'NFS', 'path': '/mnt/pool/photos', 'clients': '10.0.0.0/24'}, None, 'test')

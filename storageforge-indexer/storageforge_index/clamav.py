@@ -354,14 +354,11 @@ def deploy_items(db, conn: Conn, host: str, mode: str, actor: str, run_now: bool
         return [{'host': name, 'script': text, 'args': [], 'kind': 'clamav', 'ref': name, 'mode': 'report'}]
 
     def mark(_res):
-        c = db.connect()
-        try:
+        with deploy.hook_conn(db) as c:
             if remove:
-                c.execute("DELETE FROM deployed WHERE host = :h AND kind = 'clamav'", {'h': name})
+                deploy.forget_deployed(c, name, 'clamav')
             else:
                 deploy.mark_deployed(c, name, 'clamav', 'clamav', digest(c, name), {'schedule': config['schedule'], 'paths': config['paths']}, actor)
-        finally:
-            c.close()
     return [{'host': name, 'script': text, 'args': ['--uninstall' if remove else '--apply'], 'kind': 'clamav', 'ref': name, 'mode': 'apply', 'on_ok': mark}]
 
 
