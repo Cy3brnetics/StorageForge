@@ -29,6 +29,13 @@ PROBLEMS=0 STAMP=20261107-120000
 '''
 
 
+class Loader(yaml.SafeLoader):
+    pass
+
+
+Loader.add_constructor('!unsafe', lambda loader, node: loader.construct_scalar(node))     # what the playbook marks to keep Ansible from rendering it
+
+
 def stub(d: Path, name: str, body: str):
     p = d / name
     p.write_text('#!/bin/bash\n' + body + '\n')
@@ -268,9 +275,10 @@ class Checks(Db):
 
 
 class AnsibleExport(Db):
-    """The playbook's md-array task, run in bash against a stand-in mdadm that reads its arguments as mdadm 4.3 to 4.6 do: a -- is counted with
-    the devices, and the create fails with "not enough devices"; and a blkid that, like the real one, exits 2 on a blank disk. The export put a --
-    there, and took blkid's 2 under set -e as the end of the playbook: every md-array playbook failed on a real host, the second time silently."""
+    """The playbook's md-array task runs the step's own t_md_array, with the change script's helpers it calls, against a stand-in mdadm that
+    reads its arguments as mdadm 4.3 to 4.6 do (a -- is counted with the devices, and the create fails with "not enough devices") and a blkid
+    that, like the real one, exits 2 on a blank disk. The export once carried a second implementation of the step: it put a -- there, took
+    blkid's 2 under set -e as the end of the playbook, and never asked whether a device was mounted or in another array."""
 
     MDADM = r"""
 case "$1" in
@@ -280,20 +288,41 @@ case "$1" in
 ' "$@" > "$FAKE/create-args"; touch "$FAKE/made" ;;
 esac"""
 
+    def run_export(self, params, before_call=''):
+        """The exported task's cmd run in bash with mdadm, blkid and modinfo stood in on PATH; before_call is Bash put just before the
+        cmd's last line, the call of t_md_array, so it can stand in for a function the cmd defined."""
+        p = {'name': 'data', 'level': 'raid1', 'devices': '/dev/vdd /dev/vde', 'fstype': '', 'label': '', 'wipe': False, **params}
+        plan = {'name': 'p', 'tasks': [{'type': 'md-array', 'host': 'web-01', 'params': {**p, 'confirm': p['devices']}}]}
+        task = yaml.load(changes.ansible(self.conn, plan), Loader)[0]['tasks'][0]
+        self.assertIn('storageforge_destructive | default(false) | bool', task['when'])
+        cmd = task['ansible.builtin.shell']['cmd']
+        body, call = cmd.rstrip('\n').rsplit('\n', 1)
+        self.assertTrue(call.startswith('t_md_array '), 'the task ends in a call of the step\'s own function')
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        fake = Path(d)
+        for name, body_ in (('mdadm', self.MDADM), ('blkid', 'exit 2'), ('modinfo', 'exit 0')):
+            stub(fake, name, body_)
+        r = subprocess.run(['bash', '-c', body + '\n' + before_call + '\n' + call + '\n'], capture_output=True, text=True, timeout=30,
+                           env={**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE': d})
+        return r, fake
+
     def test_the_create_runs_as_mdadm_reads_it(self):
-        plan = {'name': 'p', 'tasks': [{'type': 'md-array', 'host': 'web-01', 'params': {'name': 'data', 'level': 'raid1', 'devices': '/dev/vdd /dev/vde',
-                                                                                        'confirm': '/dev/vdd /dev/vde', 'fstype': '', 'label': '', 'wipe': False}}]}
-        doc = yaml.safe_load(changes.ansible(self.conn, plan))
-        cmd = doc[0]['tasks'][0]['ansible.builtin.shell']['cmd']
-        with tempfile.TemporaryDirectory() as d:
-            fake = Path(d)
-            for name, body in (('mdadm', self.MDADM), ('blkid', 'exit 2')):
-                stub(fake, name, body)
-            cmd = cmd.replace('c=/etc/mdadm.conf', f'c={fake}/mdadm.conf').replace('[ -d /etc/mdadm ]', '[ -d /nonexistent ]')
-            r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=30, env={**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE': d})
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual((fake / 'create-args').read_text().split('\n')[-3:-1], ['/dev/vdd', '/dev/vde'])
-            self.assertIn('UUID=1234abcd', (fake / 'mdadm.conf').read_text())
+        # the devices are free (dev_guard asks the kernel, which a test cannot stand in for), and mdadm.conf is in the test's folder
+        r, fake = self.run_export({}, 'dev_guard() { :; }; md_conf() { echo "$FAKE/mdadm.conf"; }')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((fake / 'create-args').read_text().split('\n')[-3:-1], ['/dev/vdd', '/dev/vde'])
+        self.assertIn('UUID=1234abcd', (fake / 'mdadm.conf').read_text())
+        self.assertIn('changed: mdadm --create /dev/md/data', r.stdout)
+
+    def test_a_device_that_is_not_free_stops_the_task_before_mdadm_runs(self):
+        """The playbook checks each device as the plan's script does: /dev/vdd is no block device on the machine the test runs on."""
+        for wipe in (False, True):
+            with self.subTest(wipe=wipe):
+                r, fake = self.run_export({'wipe': wipe}, 'md_conf() { echo "$FAKE/mdadm.conf"; }')
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn('conflict: /dev/vdd is not a block device', r.stderr)
+                self.assertFalse((fake / 'create-args').exists())
 
 
 class Design(unittest.TestCase):

@@ -24,8 +24,8 @@ FIELDS = [F('name', 'name', 'Array name (/dev/md/<name>)', required=True, placeh
           F('wipe', 'bool', 'They have a filesystem: overwrite it'), CONFIRM_ALL]
 
 # mdadm takes no -- to end its options: the devices field allows only /dev/ paths, so none can be read as an option.
-# Uses need, devs_guard, act, try, mkfs_dev and the report helpers of the change script. No apostrophes: the script
-# text is checked for values that could end a quoted word.
+# Uses need, devs_guard, act, try, mkfs_dev and the report helpers of the change script, which the Ansible export carries
+# too. No apostrophes: the script text is checked for values that could end a quoted word.
 BASH = r"""
 md_conf() { if [[ -d /etc/mdadm ]]; then echo /etc/mdadm/mdadm.conf; else echo /etc/mdadm.conf; fi; }
 t_md_array() { local name=$1 level=$2 devs=$3 meta=${4:-1.2} fs=$5 label=$6 wipe=$7 arr d dev conf line uuid have
@@ -88,23 +88,14 @@ def _check(conn, c, h, p, say):
 
 
 def _ansible(t):
-    q = shlex.quote
-    p = t['params']
-    dev = f'/dev/md/{p["name"]}'
-    devs = ' '.join(q(d) for d in p['devices'].split())
-    guard = ('' if p.get('wipe') else
-             # || true: blkid -p exits 2 on a blank device, and under set -e that ended the playbook on exactly the disk it was meant for
-             f'for d in {devs}; do t=$(blkid -p -o value -s TYPE -- "$d" 2>/dev/null || true); [ -z "$t" ] || {{ echo "$d holds $t" >&2; exit 1; }}; done; ')
-    wipe = f'for d in {devs}; do wipefs -aq -- "$d"; done; ' if p.get('wipe') else ''
-    mk = (f'[ -n "$(blkid -p -o value -s TYPE -- {q(dev)})" ] || {{ mkfs.{p["fstype"]} {"-L " + q(p["label"]) + " " if p["label"] else ""}{q(dev)} && echo changed; }}; '
-          if p.get('fstype') else '')
-    cmd = (f'set -e; if ! mdadm --detail {q(dev)} >/dev/null 2>&1; then {guard}{wipe}'
-           f'mdadm --create {q(dev)} --run --level={q(p["level"])} --raid-devices={len(p["devices"].split())} --metadata={q(p["metadata"] or "1.2")} '
-           f'--name={q(p["name"])} {devs}; echo changed; fi; '      # no --: mdadm counts it among the devices (4.3 to 4.6 say "not enough devices")
-           'c=/etc/mdadm.conf; [ -d /etc/mdadm ] && c=/etc/mdadm/mdadm.conf; '
-           f'u=$(mdadm --detail --export {q(dev)} | sed -n "s/^MD_UUID=//p"); grep -qs -- "$u" "$c" || {{ mdadm --detail --brief {q(dev)} >>"$c"; echo changed; }}; '
-           + mk)
-    return changes.shell_task(t, cmd)
+    """The playbook runs t_md_array itself, with the helpers of the change script it calls (devs_guard, dev_guard, mkfs_dev) and the
+    report helpers, so a playbook checks and builds the array as the plan's script does. The destructive gate is added by changes."""
+    call = ' '.join(shlex.quote(w) for w in changes.words_of(t['params'], ARGS))
+    head = 'set -u; STAMP=$(date +%Y%m%d-%H%M%S)\n' + changes.ansible_head(
+        'act() { echo "changed: $*"; }; try() { "$@" || { conflict "failed: $*"; return 1; }; }; later() { conflict "$*"; }\n'
+        'need() { command -v "$1" >/dev/null || conflict "$1 is not installed (package ${2:-$1})"; }\n')
+    helpers = changes.bash_fn(changes.CHANGE_BODY_3, 'devs_guard', 'dev_guard', 'mkfs_dev')
+    return changes.shell_task(t, head + helpers + BASH + f'\nt_md_array {call}\n')
 
 
 changes.register('md-array', {'group': 'mdadm', 'label': 'Create an mdadm array', 'destructive': True, 'fields': FIELDS,

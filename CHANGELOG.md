@@ -7,6 +7,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 ### Security
 
 - **Every destructive step in an Ansible export now runs only with `-e storageforge_destructive=true`, as the playbook's header says.** The exported tasks of seven destructive steps had no such gate, because each step module writes its own export: creating an mdadm array, installing or removing an OS on a disk, moving a tool's data to the trash, reverting a VM to a snapshot, removing a workload and rolling a ZFS dataset back. A plain `ansible-playbook` ran them. They now carry the `destructive` tag and the gate, whichever module wrote them, and a test walks every destructive step type.
+- **The Ansible export of an mdadm array step checks each device as the plan's script does before it touches one.** The export carried its own copy of the step. It never asked whether a device was mounted, used for swap, part of another array, LVM or LUKS, or a block device at all, and with "overwrite" set it wiped every device it was given. The task now runs the step's own Bash function: it stops at the first device that is not free, stops before any disk when the kernel has no md driver, backs up `mdadm.conf` before adding the array, and fails where an existing array holds another filesystem instead of skipping the format without a word.
 
 ### Fixed
 
