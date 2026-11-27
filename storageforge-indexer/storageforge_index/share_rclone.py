@@ -22,8 +22,7 @@ BACKEND_OF = {'webdav': 'webdav', 'sftp': 'sftp', 's3': 's3', 'http': 'http'}
 NAME = rclone.NAME
 SAFE_PATH = re.compile(r'/[A-Za-z0-9_./+@: -]*')
 ADDRESS = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,200}')
-SECRET_KEYS = ('token', 'client_secret', 'password', 'pass', 'secret_access_key', 'key', 'account_key', 'sas_url',
-               'service_account_credentials')
+SECRET_KEYS = rclone.SECRET_KEYS
 
 BASH = rclone.LIB + r"""
 RCLONE_DIR=${SF_RCLONE_DIR:-/etc/storageforge/rclone}

@@ -39,6 +39,10 @@ CACHE_MODES = ('writes', 'off', 'minimal', 'full')
 FILENAME_ENC = ('standard', 'obfuscate', 'off')
 ARGS = ('name', 'backend', 'remote_path', 'options', 'secret', 'crypt', 'crypt_secret', 'filename_encryption', 'target', 'owner', 'cache', 'state')
 
+# The rclone options that hold a password, key or token: they belong in a vault secret, never in a plan's options. Shared with share_rclone.py.
+SECRET_KEYS = ('token', 'client_secret', 'password', 'pass', 'secret_access_key', 'key', 'account_key', 'sas_url',
+               'service_account_credentials')
+
 # Shared by the plan step and share_rclone.py. No apostrophes: a change plan's script is checked for words that could end a quote.
 LIB = r"""
 rc_bin() { command -v rclone 2>/dev/null || { [[ -x /usr/bin/rclone ]] && echo /usr/bin/rclone; }; }
@@ -131,6 +135,13 @@ WantedBy=multi-user.target"
   if timeout -k 2 10 mountpoint -q "$target"; then ok "$target is mounted"; elif ((APPLY)); then conflict "$target is not mounted: journalctl -u $unit"; fi
   return 0
 }
+rc_mount_report() { # UNIT TARGET WHAT -> what a check (no apply) says of a client mount: rclone, its unit, whether TARGET is mounted
+  if [[ -n $(rc_bin) ]]; then ok "rclone installed"; else missing "would install rclone and FUSE"; fi
+  if [[ -e ${SF_UNIT_DIR:-/etc/systemd/system}/$1 ]]; then info "$1 is there: an apply checks its settings and the config against the vault secrets"
+  else missing "would mount $3"; fi
+  if timeout -k 2 10 mountpoint -q "$2"; then ok "$2 is mounted"; fi
+  return 0
+}
 rc_drop_unit() { # UNIT -> stopped, disabled and removed
   local f=${SF_UNIT_DIR:-/etc/systemd/system}/$1
   [[ -e $f ]] || { ok "no $1"; return 0; }
@@ -149,12 +160,7 @@ t_rclone_mount() { local name=$1 backend=$2 rpath=$3 opts=$4 secret=$5 crypt=$6 
     if [[ -e $conf ]]; then act "remove $conf" && rm -f -- "$conf" "$conf.inputs"; fi
     return 0
   fi
-  if ((!APPLY)); then
-    command -v rclone >/dev/null && ok "rclone installed" || missing "would install rclone and FUSE"
-    [[ -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit ]] && info "$unit is there: an apply checks its settings and the config against the vault secrets" || missing "would mount $name ($backend) at $target"
-    timeout -k 2 10 mountpoint -q "$target" && ok "$target is mounted"
-    return 0
-  fi
+  if ((!APPLY)); then rc_mount_report "$unit" "$target" "$name ($backend) at $target"; return 0; fi
   rc_install || return 0
   rc=0; rc_config "$name" "$backend" "$opts" "$secret" "$crypt" "$csecret" "$fnenc" "$rpath" || rc=$?   # set -e: 1 and 2 are answers
   ((rc == 2)) && return 0
@@ -173,8 +179,7 @@ def _check(conn, c, h, p, say):
     bad = [o for o in opts if not OPTION.fullmatch(o)]
     if bad:
         say('crit', f'options are key=value, comma separated: {", ".join(bad)}')
-    if any(o.split('=')[0] in ('token', 'client_secret', 'password', 'pass', 'secret_access_key', 'key', 'account_key', 'sas_url',
-                               'service_account_credentials') for o in opts):
+    if any(o.split('=')[0] in SECRET_KEYS for o in opts):
         say('crit', 'a password, key or token goes in the vault secret, not in the options: options are in the plan for anyone to read')
     if not REMOTE_PATH.fullmatch(p.get('remote_path') or ''):
         say('crit', 'the path in the remote is a folder or bucket path')

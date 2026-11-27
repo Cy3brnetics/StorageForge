@@ -123,12 +123,7 @@ client_s3() {
   conf=${SF_RCLONE_DIR:-/etc/storageforge/rclone}/$name.conf
   opts="provider=Other,endpoint=$(par endpoint "${C_PARAM[$i]}"),force_path_style=true"
   section "mount ${C_SOURCE[$i]} at $t (rclone, S3)"
-  if ((!APPLY)); then
-    [[ -n $(rc_bin) ]] && ok "rclone installed" || missing "would install rclone and FUSE"
-    [[ -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit ]] && info "$unit is there: an apply checks its settings and the config against the vault secrets" || missing "would mount ${C_SOURCE[$i]} at $t"
-    timeout -k 2 10 mountpoint -q "$t" && ok "$t is mounted"
-    return 0
-  fi
+  if ((!APPLY)); then rc_mount_report "$unit" "$t" "${C_SOURCE[$i]} at $t"; return 0; fi
   rc_install || return 0
   rc_config "$name" s3 "$opts" "$secret" "$crypt" "$csecret" standard "${C_NAME[$i]}" || rc=$?   # set -e: 1 and 2 are answers
   ((rc == 2)) && return 0

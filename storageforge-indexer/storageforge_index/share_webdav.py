@@ -120,13 +120,7 @@ client_webdav() {
   local dir=${SF_RCLONE_DIR:-/etc/storageforge/rclone}
   unit=$(share_unit "$t").service; cfg=$(webdav_cfg "$i"); conf=$dir/$cfg.conf
   section "mount ${C_SOURCE[$i]} at $t (rclone, WebDAV)"
-  if ((!APPLY)); then
-    if [[ -n $(rc_bin) ]]; then ok "rclone installed"; else missing "would install rclone and FUSE"; fi
-    if [[ -e ${SF_UNIT_DIR:-/etc/systemd/system}/$unit ]]; then info "$unit is there: an apply checks its settings and the config against the vault secrets"
-    else missing "would mount ${C_SOURCE[$i]} at $t"; fi
-    if timeout -k 2 10 mountpoint -q "$t"; then ok "$t is mounted"; fi
-    return 0
-  fi
+  if ((!APPLY)); then rc_mount_report "$unit" "$t" "${C_SOURCE[$i]} at $t"; return 0; fi
   rc_install || return 0
   lsec=$(par login_secret "$p"); csec=$(par crypt_secret "$p"); crypt=; [[ $(par crypt "$p") == 1 ]] && crypt=1
   src=$(secret "$lsec")
