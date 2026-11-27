@@ -1033,6 +1033,29 @@ class Api(Base):
         got = self.client.post('/api/dsl/whatif', json={'host': 'dmzbox', 'dsl': '/ip firewall filter add chain=input protocol=tcp dst-port=80 action=drop', 'from': '10.77.20.80', 'to': '10.77.20.80', 'port': 80}).get_json()
         self.assertTrue(got['changed'])
 
+    def _host_with(self, name, ip, fw):
+        self.conn.execute('INSERT INTO hosts (hostname, ip_address, ssh_host) VALUES (:n, :i, :i)', {'n': name, 'i': ip})
+        hid = self.conn.scalar('SELECT host_id FROM hosts WHERE hostname = :n', {'n': name})
+        h = linux(ip, 24, [('10.77.10.0/24', '10.77.20.1')], [web_listener(80)])
+        self.conn.execute('INSERT INTO host_network (host_id, data_json, updated_at) VALUES (:h, :d, 1)', {'h': hid, 'd': json.dumps(h['net'])})
+        security._save_measurement(self.conn, name, 'infra', 1, 'measure', {**h['infra'], 'firewall': {'readable': True, 'nat': [], 'zones': [], 'notes': [], 'policies': {'input': 'accept'}, **fw}})
+
+    def test_a_what_if_lays_the_rules_on_the_chains_the_host_really_walks(self):
+        """The planner's what-if put every new rule in table filter, a chain only RouterOS has, so on an nftables, ufw or firewalld
+        host a new drop changed nothing. It now lands where the device change's what-if puts it, or in the front end the host runs."""
+        nft = {'backends': ['nftables'], 'rules': [], 'chains': [{'backend': 'nftables', 'table': 'inet fw4', 'name': 'input', 'hook': 'input', 'prio': 0, 'policy': 'accept', 'family': 'inet'}]}
+        ufw = {'backends': ['ufw'], 'rules': [], 'chains': [{'backend': 'iptables', 'table': 'filter', 'name': 'INPUT', 'hook': 'input', 'prio': 0, 'policy': 'accept', 'family': 'ip'}]}
+        public = {'name': 'public', 'active': True, 'interfaces': ['eth1'], 'sources': [], 'target': 'default'}
+        fwd = {'backends': ['firewalld', 'nftables'], 'zones': [public], 'chains': [],
+               'rules': [{'backend': 'firewalld', 'table': 'zone public', 'chain': 'public', 'hook': 'input', 'zone': 'public', 'zone_interfaces': ['eth1'], 'order': 1,
+                          'action': 'accept', 'proto': 'tcp', 'dports': [80], 'saddr': None, 'daddr': None, 'iif': None, 'oif': None, 'unmodelled': []}]}
+        for name, ip, fw in (('nftbox', '10.77.20.81', nft), ('ufwbox', '10.77.20.82', ufw), ('fwdbox', '10.77.20.83', fwd)):
+            self._host_with(name, ip, fw)
+            got = self.client.post('/api/dsl/whatif', json={'host': name, 'dsl': '/ip firewall filter add chain=input protocol=tcp dst-port=80 action=drop', 'from': ip, 'to': ip, 'port': 80}).get_json()
+            self.assertEqual((got['before']['verdict'], got['after']['verdict'], got['changed']), ('allowed', 'blocked', True), (name, got))
+        got = self.client.post('/api/dsl/whatif', json={'host': 'nftbox', 'dsl': '/ip firewall filter add chain=forward action=drop', 'from': '10.77.20.81', 'to': '10.77.20.81', 'port': 80}).get_json()
+        self.assertEqual(got['notes'], ['a rule for chain forward has no chain to land in on nftbox, so it is left out'])
+
     def test_a_linux_hosts_rules_become_steps_in_changes(self):
         got = self.client.post('/api/dsl/stage', json={'host': 'dmzbox', 'dsl': '/ip firewall filter add chain=input protocol=tcp dst-port=8080 src-address=10.0.0.0/8 action=accept\n/ip firewall nat add chain=srcnat out-interface=e0 action=masquerade'}).get_json()
         self.assertTrue(got['ok'], got)

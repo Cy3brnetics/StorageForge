@@ -366,20 +366,11 @@ def cuts_off(conn: Conn, d: dict, stmts: list) -> dict | None:
     fw = (m or {}).get('firewall')
     if not fw or not fw.get('readable') or not net:
         return {'cuts': None, 'why': 'its firewall has not been read'}
-    added = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]), existing=fw['rules'])
-    # the new rules say table filter, and only RouterOS and pf have one: elsewhere they go on the device's own chain for that hook, or the answer is not known
-    chains = fw.get('chains') or []
-    mapped = []
-    for r in added['rules']:
-        if any(c.get('table') == r.get('table') and c.get('name') == r.get('chain') for c in chains) or r.get('chain') not in ('input', 'forward', 'output'):
-            mapped.append(r)
-            continue
-        base = sorted((c for c in chains if c.get('hook') == r['chain']), key=lambda c: c.get('prio') or 0)
-        if not base:
-            if r['chain'] == 'input':
-                return {'cuts': None, 'why': f'the new rules have no chain to land in on this {d["platform"]} device'}
-            continue
-        mapped.append({**r, 'table': base[0]['table'], 'chain': base[0]['name']})
+    # the new rules go on the device's own chain for each hook, or the answer is not known (rostranspiler.lay_on, which the planner's what-if uses too)
+    added = rostranspiler.lay_on(fw, stmts)
+    if any(r.get('chain') == 'input' for r in added['unplaced']):
+        return {'cuts': None, 'why': f'the new rules have no chain to land in on this {d["platform"]} device'}
+    mapped = added['rules']
     combined = {**fw, 'rules': sorted(fw['rules'] + mapped, key=lambda r: r.get('order') or 0)}
     iif = (exposure.iface_of(net, d['address']) or {}).get('name')
     src = next(iter(_controller_ips(conn, d['name'])), None)

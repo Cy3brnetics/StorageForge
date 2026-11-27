@@ -1140,6 +1140,38 @@ def to_model_rules(stmts: list[Stmt], start: int = 0, existing: list[dict] | Non
     return {'rules': rules, 'nat': nat}
 
 
+def lay_on(fw: dict, stmts: list[Stmt]) -> dict:
+    """What these statements add to a machine's firewall model, on the chains that machine really walks, for a what-if: the device
+    change's and the planner's alike. to_model_rules says table filter, a chain only RouterOS and pf have, so an input, forward or
+    output rule goes on the device's own base chain for that hook (the lowest priority one), and an input rule on a ufw or firewalld
+    host goes in the front end, which is what decides there. A rule with nowhere to go is returned in unplaced, not guessed at."""
+    rules = fw.get('rules') or []
+    added = to_model_rules(stmts, max([r.get('order') or 0 for r in rules] or [0]), existing=rules)
+    chains, backends, placed, unplaced = fw.get('chains') or [], fw.get('backends') or [], [], []
+    for r in added['rules']:
+        hook = r.get('chain')
+        if hook == 'input' and 'firewalld' in backends:
+            # the zone the interface is in, or the zone firewalld gives a packet from an interface no zone names (exposure.firewalld_path)
+            zones = fw.get('zones') or []
+            default = [z for z in zones if z.get('active') and not z.get('sources') and not z.get('interfaces')]
+            mine = ([z for z in zones if r['iif'] in (z.get('interfaces') or [])] or default) if r.get('iif') else [z for z in zones if z.get('active')] or zones
+            placed += [{**r, 'backend': 'firewalld', 'table': f'zone {z["name"]}', 'chain': z['name'], 'zone': z['name'], 'zone_interfaces': z.get('interfaces') or [], 'rich': True} for z in mine]
+            unplaced += [] if mine else [r]
+            continue
+        if hook == 'input' and 'ufw' in backends:
+            placed.append({**r, 'backend': 'ufw', 'table': 'ufw'})
+            continue
+        if any(c.get('table') == r.get('table') and c.get('name') == hook for c in chains) or hook not in ('input', 'forward', 'output'):
+            placed.append(r)
+            continue
+        base = sorted((c for c in chains if c.get('hook') == hook), key=lambda c: c.get('prio') or 0)
+        if not base:
+            unplaced.append(r)
+            continue
+        placed.append({**r, 'table': base[0]['table'], 'chain': base[0]['name']})
+    return {'rules': placed, 'nat': added['nat'], 'unplaced': unplaced}
+
+
 def _value(v) -> str:
     v = str(v)
     return f'"{v}"' if re.search(r'\s', v) else v

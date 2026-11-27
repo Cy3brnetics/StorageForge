@@ -67,6 +67,8 @@ Anything a target can't express is **listed, not dropped**, and a device won't a
 
 RouterOS appends. A rule added below a chain's final `drop` never matches, on the router or in a what-if, which shows you that rather than what you meant.
 
+A what-if puts each new rule on the chain the machine really walks for that hook, the same way for a device's report and for the planner: the base chain of an nftables, OpenWrt or Cisco firewall, or ufw's or firewalld's own rules for what comes in to a host that runs one. A rule with no chain to land in is left out, and the what-if says so.
+
 Values are checked against a pattern for their kind before anything else sees them, because they become shell lines, XML and device commands.
 
 ## Paths and exposure

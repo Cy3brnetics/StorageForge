@@ -4,6 +4,10 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 ## Unreleased
 
+### Fixed
+
+- **The network planner's what-if puts new firewall rules on the chains the host really walks, as a device's report already did.** It added every rule to a `filter` table only RouterOS and pfSense have, so on an nftables, OpenWrt or Cisco firewall, or a host running ufw or firewalld, a new drop or accept changed nothing and the answer before and after was the same. A rule now goes on the machine's base chain for its hook, or into ufw's or firewalld's own rules for what comes in, and a rule with no chain to land in is left out with a note saying so (BE-55).
+
 ### Changed
 
 - **A Proxmox VE or Datacenter Manager read that has reached its limit of 5000 backups or snapshots asks for no more lists**, as the Backup Server read already did. It went on fetching each remaining storage or datastore and threw the answers away, which spent the read's request budget. The line saying the rest was not read now also appears when the limit is reached exactly and another storage or datastore was left unread.

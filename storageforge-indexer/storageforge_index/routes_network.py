@@ -237,11 +237,13 @@ def register(web, ctx):
         notes = []
         if host in fleet_now.hosts and (fleet_now.hosts[host].get('infra') or {}).get('firewall'):
             fw = fleet_now.hosts[host]['infra']['firewall']
-            add = rostranspiler.to_model_rules(stmts, max([r.get('order') or 0 for r in fw['rules']] or [0]), existing=fw['rules'])
             notes = rostranspiler.shadowed_notes(fw['rules'], stmts)
             # RouterOS appends unless place-before is given, so a rule below a chain's final drop means nothing: the operator sees the same order the device would have
             chains = fw.get('chains') or [{'backend': 'dsl', 'table': 'filter', 'name': h, 'hook': h, 'prio': 0, 'policy': 'accept', 'family': None} for h in ('input', 'forward', 'output')]     # a host with no firewall has no chains yet
-            fleet_now.hosts[host]['infra']['firewall'] = {**fw, 'rules': sorted(fw['rules'] + add['rules'], key=lambda r: r.get('order') or 0), 'nat': fw['nat'] + add['nat'], 'chains': chains, 'backends': fw.get('backends') or ['dsl']}
+            fw = {**fw, 'chains': chains, 'backends': fw.get('backends') or ['dsl']}
+            add = rostranspiler.lay_on(fw, stmts)       # on the chains this machine walks, as a device change's what-if lays them
+            notes += [f'a rule for chain {h} has no chain to land in on {host}, so it is left out' for h in sorted({r.get("chain") for r in add['unplaced']})]
+            fleet_now.hosts[host]['infra']['firewall'] = {**fw, 'rules': sorted(fw['rules'] + add['rules'], key=lambda r: r.get('order') or 0), 'nat': fw['nat'] + add['nat']}
         after = reach.query(fleet_now, a, b, port, proto)
         return jsonify(before=before, after=after, changed=before['verdict'] != after['verdict'], notes=notes)
 
