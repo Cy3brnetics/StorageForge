@@ -13,6 +13,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 - Every platform kind maps to the module that reads it in one table, `apiguide.READER_MODULES`: the Proxmox VE, Backup Server and Datacenter Manager readers no longer sit in a separate table in `apiread`, and a test holds the connection kinds, the guides and the readers to the same set, in the connect screen's order. The client still does not import readers, and what each platform reads is unchanged (BE-48).
 - Every platform reader (Proxmox VE, Backup Server, Datacenter Manager, Xen Orchestra, TrueNAS, Dockhand, Portainer, Komodo and Pangolin) collects its objects and its skipped lines with one `apicollect.Reading`: a failed call is a skipped line and the read goes on, a changed certificate or a lost pin is raised from the reader itself and fails the whole read, and a list past its limit is cut by one `Cap`, in place of nine copies of the loop and four ways of counting (BE-49).
+- The read-back's notes on the token itself (disabled, no expiry, expired) come from one `apireadback._token_notes`, which both the privilege-map read-back and the role-based one call. Note text and order are unchanged (BE-50).
 
 ## 0.6.4 — 2026-11-26
 

@@ -55,6 +55,19 @@ def _covers(path: str, roots: list[str]) -> bool:
     return any(path == r or (r != '/' and path.startswith(r + '/')) for r in roots)
 
 
+def _token_notes(token: dict, now: float | None = None) -> list[str]:
+    """What judge() and verdict() say about the token itself: disabled, no expiry, expired, in that order."""
+    notes = []
+    if token.get('enable') is False:
+        notes.append('the token is disabled on the platform')
+    expire = token.get('expire')
+    if expire == 0:
+        notes.append('the token has no expiry date: the guide recommends one')
+    elif expire and expire < (now or time.time()):
+        notes.append('the token has expired')
+    return notes
+
+
 def judge(kind: str, paths: dict, actions: list[str] | None = None, token: dict | None = None, now: float | None = None) -> dict:
     """Compare a token's effective permissions with the guide."""
     g = apiguide.GUIDES[kind]
@@ -84,13 +97,7 @@ def judge(kind: str, paths: dict, actions: list[str] | None = None, token: dict 
     token = token or {}
     if token.get('privsep') is False:
         notes.append('privilege separation is off: the token has every right its user has. Make it again with -privsep 1')
-    if token.get('enable') is False:
-        notes.append('the token is disabled on the platform')
-    expire = token.get('expire')
-    if expire == 0:
-        notes.append('the token has no expiry date: the guide recommends one')
-    elif expire and expire < (now or time.time()):
-        notes.append('the token has expired')
+    notes += _token_notes(token, now)
     admin = any(o['admin'] for o in over)
     return {'kind': kind, 'verdict': 'over' if over else 'short' if short else 'exact', 'admin': admin, 'features': features, 'short': short,
             'over': over, 'extra_read': extra, 'token': token, 'notes': notes, 'actions': list(actions or [])}
@@ -104,13 +111,7 @@ def verdict(kind: str, features: dict, over: list[dict], token: dict | None = No
     short = [{'feature': f, 'what': v['what'], 'add': v.get('add') or ''} for f, v in features.items() if not v.get('ok')]
     token = token or {}
     notes = list(notes or [])
-    if token.get('enable') is False:
-        notes.append('the token is disabled on the platform')
-    expire = token.get('expire')
-    if expire == 0:
-        notes.append('the token has no expiry date: the guide recommends one')
-    elif expire and expire < (now or time.time()):
-        notes.append('the token has expired')
+    notes += _token_notes(token, now)
     notes += [f'the platform does not say {u}' for u in unknown or []]
     return {'kind': kind, 'verdict': 'over' if over else 'short' if short else 'exact', 'admin': any(o.get('admin') for o in over),
             'features': {f: {'ok': bool(v.get('ok')), 'what': v['what'], 'on': v.get('on') or []} for f, v in features.items()}, 'short': short,
