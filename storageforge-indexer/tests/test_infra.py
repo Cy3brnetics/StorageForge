@@ -247,6 +247,9 @@ class Exposure(unittest.TestCase):
             self.assertEqual(cls(name), 'lan', name)
         self.assertEqual(cls('eth0', '100.64.12.34'), 'lan')
         self.assertEqual(cls('anything', kind='wireguard'), 'vpn')
+        self.assertEqual(cls('nm-bond', '93.184.216.34', 'bond'), 'any', 'a NetworkManager bond, not Netmaker')
+        self.assertEqual(cls('nm-team', '93.184.216.34', 'team'), 'any')
+        self.assertEqual(cls('nm-bridge', '192.168.1.5', 'bridge'), 'lan')
 
     def test_ufw_source_limit_and_default(self):
         fw = self.fw(ufw=UFW)

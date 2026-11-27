@@ -244,7 +244,9 @@ def _iface_class(iface: dict) -> str | None:
         return None
     if iface['kind'] == 'bridge' and (name.startswith(('docker', 'br-', 'podman', 'cni', 'virbr', 'lxdbr', 'incusbr'))):
         return None
-    if iface['kind'] == 'wireguard' or overlays.network_of(name) is not None:   # by name only: 100.64.0.0/10 can be a CGNAT uplink
+    # by name only: 100.64.0.0/10 can be a CGNAT uplink. Not for a bond, bridge or team: NetworkManager names one nm-bond, nm-bridge or
+    # nm-team, which Netmaker's nm-* would take, and a real Netmaker link is WireGuard.
+    if iface['kind'] == 'wireguard' or (iface['kind'] not in ('bond', 'bridge', 'team') and overlays.network_of(name) is not None):
         return 'vpn'
     for a in iface['addresses']:
         try:
