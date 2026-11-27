@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import ipaddress
 
+from . import overlays
 from .firewall import port_matches
 
 ORDER = {'loopback': 0, 'blocked': 1, 'vpn': 2, 'lan': 3, 'any': 4, 'unknown': 5}
-VPN_NAMES = ('wg', 'tun', 'tap', 'tailscale', 'nebula', 'zt', 'netbird')
 LOCAL_KINDS = ('veth', 'dummy', 'loopback')
 CAVEAT = 'Per configuration, from the last reading. Anything between hosts, such as a router, is only seen if it is enrolled as a device.'
 
@@ -244,7 +244,7 @@ def _iface_class(iface: dict) -> str | None:
         return None
     if iface['kind'] == 'bridge' and (name.startswith(('docker', 'br-', 'podman', 'cni', 'virbr', 'lxdbr', 'incusbr'))):
         return None
-    if iface['kind'] == 'wireguard' or name.startswith(VPN_NAMES):
+    if iface['kind'] == 'wireguard' or overlays.network_of(name) is not None:   # by name only: 100.64.0.0/10 can be a CGNAT uplink
         return 'vpn'
     for a in iface['addresses']:
         try:

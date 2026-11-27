@@ -236,6 +236,18 @@ class Exposure(unittest.TestCase):
         fw = firewall.model({'tools': ['nft'], 'nft': json.dumps({'nftables': []})})
         self.assertEqual(exposure.listener_item(LISTEN, net, fw)['level'], 'any')
 
+    def test_vpn_interfaces_by_the_overlay_naming_table(self):
+        """The same names the console calls private networks, by name only: an address in 100.64.0.0/10 on an ordinary
+        interface is a WAN uplink behind carrier-grade NAT, not a VPN, and stays lan."""
+        def cls(name, ip='10.8.0.1', kind='ethernet'):
+            return exposure._iface_class({'name': name, 'kind': kind, 'state': 'up', 'addresses': [{'ip': ip, 'prefix': 24}]})
+        for name in ('wg0', 'tun0', 'tailscale0', 'wt0', 'ziti0', 'vti0', 'sf0', 'ts0', 'nm-office', 'ovpn-home', 'WG0'):
+            self.assertEqual(cls(name), 'vpn', name)
+        for name in ('tunl0', 'eth0', 'ztx'):
+            self.assertEqual(cls(name), 'lan', name)
+        self.assertEqual(cls('eth0', '100.64.12.34'), 'lan')
+        self.assertEqual(cls('anything', kind='wireguard'), 'vpn')
+
     def test_ufw_source_limit_and_default(self):
         fw = self.fw(ufw=UFW)
         self.assertEqual(exposure.listener_item({**LISTEN, 'port': 445}, NET, fw)['level'], 'lan')
