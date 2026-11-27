@@ -389,12 +389,14 @@ def register(web, ctx):
     def api_toolbox_host_profile_stage(host):
         b = json_body()
         accept = bool(b.get('accept_unsigned'))
+        if accept:      # before the host is looked up, so an unknown host is refused as a known one is, not told apart by a 404
+            stale = stage_gate([], True)
+            if stale:
+                return stale
         hp = None
         try:
             hp = tbbundles.host_profile(conn(), host)
-            stale = stage_gate((hp or {}).get('tools') or [], accept)
-            if stale:
-                return stale
+            stage_gate((hp or {}).get('tools') or [], False)
             got = tbbundles.stage_host_profile(conn(), host, actor(), params=b.get('params'), accept_unsigned=accept)
         except LookupError as exc:
             return bad(exc, 404)

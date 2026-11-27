@@ -130,6 +130,14 @@ class Routes(Base):
                 self.assertEqual(op.post(path, json={**body, 'accept_unsigned': True}).status_code, 403)
                 self.assertTrue(stale.post(path, json={**body, 'accept_unsigned': True}).get_json().get('reauth'))
 
+    def test_accepting_unsigned_in_a_role_profile_is_refused_before_the_host_is_looked_up(self):
+        op, stale = self.client('op'), self.client('admin', fresh=False)
+        r = op.post('/api/toolbox/profiles/host/nosuchhost/stage', json={'accept_unsigned': True})
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('unsigned', r.get_json()['error'])
+        self.assertTrue(stale.post('/api/toolbox/profiles/host/nosuchhost/stage', json={'accept_unsigned': True}).get_json().get('reauth'))
+        self.assertEqual(self.client().post('/api/toolbox/profiles/host/nosuchhost/stage', json={'accept_unsigned': True}).status_code, 404)
+
     def test_a_refused_staging_is_audited_for_a_tool_a_bundle_and_a_role_profile(self):
         from storageforge_index import tbbundles
         c = self.client()
