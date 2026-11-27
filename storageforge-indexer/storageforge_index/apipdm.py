@@ -72,37 +72,32 @@ def parse_resources(text: str) -> dict:
 
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
-    objs, skipped = [('platform', 'version', parse_version(client.get('/version')))], []
+    from .apicollect import Reading
+    r = Reading([('platform', 'version', parse_version(client.get('/version')))])
     if not (rb.get('features') or {}).get('remotes', {}).get('ok'):
-        return objs, ['remotes: the token lacks Resource.Audit on any remote']
-    for r in parse_remotes(client.get('/remotes/remote'))['remotes']:
-        objs.append(('remote', r['id'], r))
+        r.skip('remotes: the token lacks Resource.Audit on any remote')
+        return r.result()
+    for rm in parse_remotes(client.get('/remotes/remote'))['remotes']:
+        r.objs.append(('remote', rm['id'], rm))
     res = parse_resources(client.get('/resources/list'))
     for remote, why in sorted(res['errors'].items()):
-        skipped.append(f'{remote}: PDM could not read it: {why}'[:200])
+        r.skip(f'{remote}: PDM could not read it: {why}')
     for n in res['nodes']:
-        objs.append(('node', f'{n["remote"]}/{n["node"]}', n))
+        r.objs.append(('node', f'{n["remote"]}/{n["node"]}', n))
     for g in res['guests']:
-        objs.append(('guest', f'{g["remote"]}/{g["vmid"]}', g))
+        r.objs.append(('guest', f'{g["remote"]}/{g["vmid"]}', g))
     for s in res['storage']:
-        objs.append(('storage', f'{s["remote"]}/{s["node"]}/{s["storage"]}', s))
-    count = 0
+        r.objs.append(('storage', f'{s["remote"]}/{s["node"]}/{s["storage"]}', s))
+    cap = r.cap(MAX_SNAPSHOTS, 'snapshots')
     for d in res['datastores']:
-        objs.append(('datastore', f'{d["remote"]}/{d["store"]}', d))
-        try:
-            snaps = parse_snapshots(client.get(f'/pbs/remotes/{client.seg(d["remote"])}/datastore/{client.seg(d["store"])}/snapshots'))['snapshots']
-        except ApiError as exc:
-            skipped.append(f'snapshots on {d["remote"]}/{d["store"]}: {exc}'[:200])
+        r.objs.append(('datastore', f'{d["remote"]}/{d["store"]}', d))
+        if cap.full():
             continue
-        for sn in snaps:
-            if count >= MAX_SNAPSHOTS:
-                skipped.append(f'more than {MAX_SNAPSHOTS} snapshots: the rest was not read')
-                break
-            count += 1
-            objs.append(('snapshot', f'{d["remote"]}/{d["store"]}/{sn["type"]}/{sn["id"]}/{sn["time"]}', {**sn, 'remote': d['remote'], 'store': d['store']}))
-    return objs, list(dict.fromkeys(skipped))
-
+        got = r.call(f'snapshots on {d["remote"]}/{d["store"]}',
+                     lambda: parse_snapshots(client.get(f'/pbs/remotes/{client.seg(d["remote"])}/datastore/{client.seg(d["store"])}/snapshots')))
+        for sn in cap.take(got['snapshots'] if got else []):
+            r.objs.append(('snapshot', f'{d["remote"]}/{d["store"]}/{sn["type"]}/{sn["id"]}/{sn["time"]}', {**sn, 'remote': d['remote'], 'store': d['store']}))
+    return r.result()
 
 def problems(conn, row: dict, objects: list[dict]) -> dict:
     out, host = {}, row['host'] or row['name']

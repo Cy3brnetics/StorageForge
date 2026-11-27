@@ -99,36 +99,31 @@ def parse_backups(text: str) -> dict:
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
     """(objects, skipped). Each feature the read-back found the token lacks is skipped and said, not asked for and refused."""
-    from .apiconn import ApiError, CertificateChanged, NotPinned
+    from .apicollect import Reading
     feats = rb.get('features') or {}
-    objs, skipped = [], []
+    r = Reading()
     v = parse_version(client.get('/version'))
-    objs.append(('platform', 'version', v))
+    r.objs.append(('platform', 'version', v))
     res = parse_resources(client.get('/cluster/resources'))
     if res['unreadable']:
-        skipped.append('the resource list was not readable')
+        r.skip('the resource list was not readable')
     for n in res['nodes']:
-        objs.append(('node', n['node'], n))
-    try:
-        ceph = parse_ceph_status(client.get('/cluster/ceph/status'))
-        if ceph['status'] != 'UNKNOWN':
-            objs.append(('ceph', 'status', ceph))
-    except (CertificateChanged, NotPinned):
-        raise
-    except ApiError:
-        pass
+        r.objs.append(('node', n['node'], n))
+    ceph = r.call('ceph', lambda: parse_ceph_status(client.get('/cluster/ceph/status')), quiet=True)
+    if ceph and ceph['status'] != 'UNKNOWN':
+        r.objs.append(('ceph', 'status', ceph))
     for g in res['guests']:
-        objs.append(('guest', str(g['vmid']), g))
+        r.objs.append(('guest', str(g['vmid']), g))
     for s in res['storage']:
-        objs.append(('storage', f'{s["node"]}/{s["storage"]}', s))
+        r.objs.append(('storage', f'{s["node"]}/{s["storage"]}', s))
     if feats.get('backup-jobs', {}).get('ok'):
         jobs = parse_backup_jobs(client.get('/cluster/backup'))
         for j in jobs['jobs']:
-            objs.append(('backup-job', j['id'], j))
+            r.objs.append(('backup-job', j['id'], j))
     else:
-        skipped.append('backup jobs: the token lacks Sys.Audit on /')
+        r.skip('backup jobs: the token lacks Sys.Audit on /')
     if feats.get('storage', {}).get('ok'):
-        done, count = set(), 0
+        done, cap = set(), r.cap(MAX_BACKUPS, 'backups')
         for s in res['storage']:
             if 'backup' not in s['content'] or s['status'] not in (None, 'available'):
                 continue
@@ -136,21 +131,14 @@ def read(client, row: dict, rb: dict) -> tuple[list, list]:
             if key in done:
                 continue
             done.add(key)
-            try:
-                got = parse_backups(client.get(f'/nodes/{client.seg(s["node"])}/storage/{client.seg(s["storage"])}/content', content='backup'))
-            except ApiError as exc:
-                skipped.append(f'backups on {key}: {exc}'[:200])
-                continue
-            for b in got['backups']:
-                if count >= MAX_BACKUPS:
-                    skipped.append(f'more than {MAX_BACKUPS} backups: the rest was not read')
-                    break
-                count += 1
-                objs.append(('backup', b['volid'], {**b, 'storage': s['storage'], 'node': s['node']}))
+            if cap.full():
+                break
+            got = r.call(f'backups on {key}', lambda: parse_backups(client.get(f'/nodes/{client.seg(s["node"])}/storage/{client.seg(s["storage"])}/content', content='backup')))
+            for b in cap.take(got['backups'] if got else []):
+                r.objs.append(('backup', b['volid'], {**b, 'storage': s['storage'], 'node': s['node']}))
     else:
-        skipped.append('storage and backups: the token lacks Datastore.Audit')
-    return objs, list(dict.fromkeys(skipped))
-
+        r.skip('storage and backups: the token lacks Datastore.Audit')
+    return r.result()
 
 def problems(conn, row: dict, objects: list[dict], now: float | None = None) -> dict:
     """Alerts from Ceph, storage capacity, backup verification and job coverage."""

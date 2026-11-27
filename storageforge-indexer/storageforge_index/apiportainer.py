@@ -190,28 +190,25 @@ def readback(client, row: dict) -> dict:
 
 # ── the read ──────────────────────────────────────────────────────────
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
-    objs, skipped = [('platform', 'version', {'edition': rb.get('edition')})], []
+    from .apicollect import Reading
+    r = Reading([('platform', 'version', {'edition': rb.get('edition')})])
     feats = rb.get('features') or {}
     if not feats.get('environments', {}).get('ok'):
-        return objs, ['environments: the user is given none']
+        r.skip('environments: the user is given none')
+        return r.result()
     envs = parse_endpoints(client.get('/endpoints', excludeSnapshots='true'))['environments']
     names = {e['id']: e['name'] for e in envs}
     for e in envs:
-        objs.append(('environment', str(e['id']), e))
+        r.objs.append(('environment', str(e['id']), e))
         if e['type'] not in DOCKER_TYPES:
-            skipped.append(f'{e["name"]}: only Docker environments are read')
+            r.skip(f'{e["name"]}: only Docker environments are read')
             continue
         if feats.get('containers', {}).get('ok'):
-            try:
-                for c in parse_containers(client.get(f'/endpoints/{e["id"]}/docker/containers/json', all='1'))['containers']:
-                    objs.append(('container', f'{e["id"]}/{c["name"]}', {**c, 'environment': e['id'], 'environment_name': e['name']}))
-            except ApiError as exc:
-                skipped.append(f'{e["name"]} containers: {exc}'[:200])
+            got = r.call(f'{e["name"]} containers', lambda: parse_containers(client.get(f'/endpoints/{e["id"]}/docker/containers/json', all='1')))
+            for c in (got['containers'] if got else []):
+                r.objs.append(('container', f'{e["id"]}/{c["name"]}', {**c, 'environment': e['id'], 'environment_name': e['name']}))
     if feats.get('stacks', {}).get('ok'):
-        try:
-            for s in parse_stacks(client.get('/stacks'))['stacks']:
-                objs.append(('stack', f'{s["environment"]}/{s["name"]}', {**s, 'environment_name': names.get(s['environment'])}))
-        except ApiError as exc:
-            skipped.append(f'stacks: {exc}'[:200])
-    return objs, list(dict.fromkeys(skipped))
+        got = r.call('stacks', lambda: parse_stacks(client.get('/stacks')))
+        for s in (got['stacks'] if got else []):
+            r.objs.append(('stack', f'{s["environment"]}/{s["name"]}', {**s, 'environment_name': names.get(s['environment'])}))
+    return r.result()

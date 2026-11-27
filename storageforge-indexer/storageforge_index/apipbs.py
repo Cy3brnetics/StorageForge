@@ -88,66 +88,46 @@ def parse_jobs(text: str) -> dict:
 
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError, CertificateChanged, NotPinned
-    objs, skipped = [('platform', 'version', parse_version(client.get('/version')))], []
+    from .apicollect import Reading
+    r = Reading([('platform', 'version', parse_version(client.get('/version')))])
     if not (rb.get('features') or {}).get('datastores', {}).get('ok'):
-        return objs, ['datastores: the token lacks Datastore.Audit']
+        r.skip('datastores: the token lacks Datastore.Audit')
+        return r.result()
     usage = parse_usage(client.get('/status/datastore-usage'))['datastores']
-    try:
-        config = parse_config(client.get('/config/datastore'))['config']
-    except ApiError as exc:
-        config = {}
-        skipped.append(f'datastore paths: {exc}'[:200])
-    count = 0
+    got = r.call('datastore paths', lambda: parse_config(client.get('/config/datastore')))
+    config = got['config'] if got else {}
+    cap = r.cap(MAX_SNAPSHOTS, 'snapshots')
     for d in usage:
         store = d['store']
-        objs.append(('datastore', store, {**d, **(config.get(store) or {})}))
+        r.objs.append(('datastore', store, {**d, **(config.get(store) or {})}))
         path = f'/admin/datastore/{client.seg(store)}'
         ns_list = ['']
-        try:
-            namespaces = parse_namespaces(client.get(f'{path}/namespace'))
+        namespaces = r.call(f'{store} namespaces', lambda: parse_namespaces(client.get(f'{path}/namespace')))
+        if namespaces:
             ns_list.extend(namespaces['namespaces'])
             if namespaces['unreadable']:
-                skipped.append(f'{store} namespaces: the list was not readable')
-        except (CertificateChanged, NotPinned):
-            raise
-        except ApiError as exc:
-            skipped.append(f'{store} namespaces: {exc}'[:200])
+                r.skip(f'{store} namespaces: the list was not readable')
         for ns in ns_list:
             ns_arg = {'ns': ns} if ns else {}
             ref = f'{store}/{ns}' if ns else store
             for endpoint, parse, kind in (('groups', parse_groups, 'backup-group'), ('snapshots', parse_snapshots, 'snapshot')):
-                if kind == 'snapshot' and count >= MAX_SNAPSHOTS:
-                    skipped.append(f'snapshot limit of {MAX_SNAPSHOTS} reached')
+                if kind == 'snapshot' and cap.full():
                     continue
-                try:
-                    parsed = parse(client.get(f'{path}/{endpoint}', **ns_arg))
-                except (CertificateChanged, NotPinned):
-                    raise
-                except ApiError as exc:
-                    skipped.append(f'{ref} {endpoint}: {exc}'[:200])
+                parsed = r.call(f'{ref} {endpoint}', lambda: parse(client.get(f'{path}/{endpoint}', **ns_arg)))
+                if parsed is None:
                     continue
                 if parsed['unreadable']:
-                    skipped.append(f'{ref} {endpoint}: the list was not readable')
-                items = parsed[endpoint]
-                if kind == 'snapshot':
-                    if len(items) > MAX_SNAPSHOTS - count:
-                        skipped.append(f'snapshot limit of {MAX_SNAPSHOTS} reached')
-                    items = items[:MAX_SNAPSHOTS - count]
-                    count += len(items)
+                    r.skip(f'{ref} {endpoint}: the list was not readable')
+                items = cap.take(parsed[endpoint]) if kind == 'snapshot' else parsed[endpoint]
                 for item in items:
                     key = f'{ref}/{item["type"]}/{item["id"]}'
                     if kind == 'snapshot':
                         key = f'{key}/{item["time"]}'
-                    objs.append((kind, key, {**item, 'store': store, 'ns': ns}))
+                    r.objs.append((kind, key, {**item, 'store': store, 'ns': ns}))
     for path, kind in (('/admin/verify', 'verify-job'), ('/admin/prune', 'prune-job')):
-        try:
-            for j in parse_jobs(client.get(path))['jobs']:
-                objs.append((kind, j['id'], j))
-        except ApiError as exc:
-            skipped.append(f'{kind}s: {exc}'[:200])
-    return objs, list(dict.fromkeys(skipped))
-
+        jobs = r.call(f'{kind}s', lambda: parse_jobs(client.get(path)))
+        r.objs += [(kind, j['id'], j) for j in (jobs['jobs'] if jobs else [])]
+    return r.result()
 
 def compare_mounts(conn, row: dict, objects: list[dict]) -> list[dict]:
     """Each datastore's path against the mounts the SSH scan of the Backup Server read: which mount holds it, and whether the two agree on

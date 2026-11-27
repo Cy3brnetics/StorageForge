@@ -211,30 +211,27 @@ def readback(client, row: dict) -> dict:
 
 # ── the read ──────────────────────────────────────────────────────────
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
+    from .apicollect import Reading
     _, org = ids(row)
     base = f'/org/{client.seg(org)}'
-    objs, skipped = [], []
+    r = Reading()
     feats = rb.get('features') or {}
     for feature, path, parse, key, kind in (('sites', '/sites', parse_sites, 'sites', 'site'), ('resources', '/resources', parse_resources, 'resources', 'resource')):
         if not feats.get(feature, {}).get('ok'):
-            skipped.append(f'{feature}: the key lacks {READ[feature]["action"]}')
+            r.skip(f'{feature}: the key lacks {READ[feature]["action"]}')
             continue
-        try:
-            items, cut = _pages(client, base + path, parse, key)
-            objs += [(kind, str(x['id']), x) for x in items]
+        got = r.call(feature, lambda: _pages(client, base + path, parse, key))
+        if got:
+            items, cut = got
+            r.objs += [(kind, str(x['id']), x) for x in items]
             if cut:
-                skipped.append(f'{feature}: more than {PAGE * MAX_PAGES}, the rest was not read')
-        except ApiError as exc:
-            skipped.append(f'{feature}: {exc}'[:200])
+                r.cut(PAGE * MAX_PAGES, feature)
     if feats.get('domains', {}).get('ok'):
-        try:
-            objs += [('domain', d['id'], d) for d in parse_domains(client.get(base + '/domains', limit=PAGE))['domains']]
-        except ApiError as exc:
-            skipped.append(f'domains: {exc}'[:200])
+        got = r.call('domains', lambda: parse_domains(client.get(base + '/domains', limit=PAGE)))
+        r.objs += [('domain', d['id'], d) for d in (got['domains'] if got else [])]
     else:
-        skipped.append('domains: the key lacks listOrgDomains')
-    return objs, list(dict.fromkeys(skipped))
+        r.skip('domains: the key lacks listOrgDomains')
+    return r.result()
 
 
 # ── exposure, the views ───────────────────────────────────────────────

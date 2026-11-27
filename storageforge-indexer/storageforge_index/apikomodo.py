@@ -201,25 +201,23 @@ def readback(client, row: dict) -> dict:
 
 # ── the read ──────────────────────────────────────────────────────────
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
-    objs, skipped = [], []
+    from .apicollect import Reading
+    r = Reading()
     servers = parse_servers(client.post_read('/read/ListServers'))['servers']
     names = {s['id']: s['name'] for s in servers}
     stacks = parse_stacks(client.post_read('/read/ListStacks'))['stacks']
     deployments = parse_deployments(client.post_read('/read/ListDeployments'))['deployments']
     for s in servers:
-        objs.append(('environment', s['id'], s))
+        r.objs.append(('environment', s['id'], s))
         if s.get('template') or s.get('state') not in (None, 'Ok'):
             continue
-        try:
-            for c in parse_containers(client.post_read('/read/ListContainers', {'server': s['id']}))['containers']:
-                stack = next((st['name'] for st in stacks if st['server'] == s['id'] and c['name'].startswith(f'{st["name"]}-')), None)
-                dep = next((d['name'] for d in deployments if d['server'] == s['id'] and d['container'] == c['name']), None)
-                objs.append(('container', f'{s["id"]}/{c["name"]}', {**c, 'environment': s['id'], 'environment_name': s['name'], 'stack': stack, 'deployment': dep}))
-        except ApiError as exc:
-            skipped.append(f'{s["name"]} containers: {exc}'[:200])
-    objs += [('stack', st['id'], {**st, 'environment': st['server'], 'environment_name': names.get(st['server'])}) for st in stacks]
-    objs += [('deployment', d['id'], {**d, 'environment': d['server'], 'environment_name': names.get(d['server'])}) for d in deployments]
+        got = r.call(f'{s["name"]} containers', lambda: parse_containers(client.post_read('/read/ListContainers', {'server': s['id']})))
+        for c in (got['containers'] if got else []):
+            stack = next((st['name'] for st in stacks if st['server'] == s['id'] and c['name'].startswith(f'{st["name"]}-')), None)
+            dep = next((d['name'] for d in deployments if d['server'] == s['id'] and d['container'] == c['name']), None)
+            r.objs.append(('container', f'{s["id"]}/{c["name"]}', {**c, 'environment': s['id'], 'environment_name': s['name'], 'stack': stack, 'deployment': dep}))
+    r.objs += [('stack', st['id'], {**st, 'environment': st['server'], 'environment_name': names.get(st['server'])}) for st in stacks]
+    r.objs += [('deployment', d['id'], {**d, 'environment': d['server'], 'environment_name': names.get(d['server'])}) for d in deployments]
     if not servers:
-        skipped.append('servers: the key sees none (Read on servers)')
-    return objs, list(dict.fromkeys(skipped))
+        r.skip('servers: the key sees none (Read on servers)')
+    return r.result()

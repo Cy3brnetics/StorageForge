@@ -4,9 +4,15 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 ## Unreleased
 
+### Changed
+
+- **A Proxmox VE or Datacenter Manager read that has reached its limit of 5000 backups or snapshots asks for no more lists**, as the Backup Server read already did. It went on fetching each remaining storage or datastore and threw the answers away, which spent the read's request budget. The line saying the rest was not read now also appears when the limit is reached exactly and another storage or datastore was left unread.
+- **The line a platform read writes when a list holds more than it takes reads the same for every platform: "more than N snapshots: the rest was not read".** The Backup Server said "snapshot limit of N reached" and Pangolin "sites: more than N, the rest was not read".
+
 ### Internal
 
 - Every platform kind maps to the module that reads it in one table, `apiguide.READER_MODULES`: the Proxmox VE, Backup Server and Datacenter Manager readers no longer sit in a separate table in `apiread`, and a test holds the connection kinds, the guides and the readers to the same set, in the connect screen's order. The client still does not import readers, and what each platform reads is unchanged (BE-48).
+- Every platform reader (Proxmox VE, Backup Server, Datacenter Manager, Xen Orchestra, TrueNAS, Dockhand, Portainer, Komodo and Pangolin) collects its objects and its skipped lines with one `apicollect.Reading`: a failed call is a skipped line and the read goes on, a changed certificate or a lost pin is raised from the reader itself and fails the whole read, and a list past its limit is cut by one `Cap`, in place of nine copies of the loop and four ways of counting (BE-49).
 
 ## 0.6.4 — 2026-11-26
 

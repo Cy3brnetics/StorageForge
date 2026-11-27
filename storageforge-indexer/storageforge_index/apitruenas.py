@@ -307,36 +307,29 @@ CALLS = (('pools', 'pool.query', parse_pools, 'pool', 'pools', 'name'),
 
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
-    objs, skipped = [('platform', 'version', parse_system(json.dumps(client.call('system.info'))))], []
+    from .apicollect import Reading
+    r = Reading([('platform', 'version', parse_system(json.dumps(client.call('system.info'))))])
     feats = rb.get('features') or {}
     for feature, method, parse, kind, key, ref in CALLS:
         if not feats.get(feature, {}).get('ok'):
-            skipped.append(f'{feature}: the key lacks {", ".join(READ[feature]["roles"])}')
+            r.skip(f'{feature}: the key lacks {", ".join(READ[feature]["roles"])}')
             continue
-        try:
-            params = ([], {'limit': MAX_SNAPSHOTS + 1, 'extra': {'properties': ['creation', 'used', 'referenced']}}) if feature == 'snapshots' else ()
-            got = parse(json.dumps(client.call(method, *params)))
-        except ApiError as exc:
-            skipped.append(f'{feature}: {exc}'[:200])
+        params = ([], {'limit': MAX_SNAPSHOTS + 1, 'extra': {'properties': ['creation', 'used', 'referenced']}}) if feature == 'snapshots' else ()
+        got = r.call(feature, lambda: parse(json.dumps(client.call(method, *params))))
+        if got is None:
             continue
         if got.get('unreadable'):
-            skipped.append(f'{feature}: the list was not readable')
+            r.skip(f'{feature}: the list was not readable')
         if got.get('cut'):
-            limit = MAX_SNAPSHOTS if feature == 'snapshots' else MAX_DATASETS
-            skipped.append(f'more than {limit} {feature}: the rest was not read')
-        objs += [(kind, str(x[ref]), x) for x in got[key]]
+            r.cut(MAX_SNAPSHOTS if feature == 'snapshots' else MAX_DATASETS, feature)
+        r.objs += [(kind, str(x[ref]), x) for x in got[key]]
     if feats.get('shares', {}).get('ok'):
         for proto, method in (('smb', 'sharing.smb.query'), ('nfs', 'sharing.nfs.query')):
-            try:
-                objs += [('share', f'{proto}:{s["path"]}:{s["name"] or ""}', s) for s in parse_shares(json.dumps(client.call(method)), proto)['shares']]
-            except ApiError as exc:
-                skipped.append(f'{proto} shares: {exc}'[:200])
-    try:
-        objs += [('alert', a['uuid'], a) for a in parse_alerts(json.dumps(client.call('alert.list')))['alerts']]
-    except ApiError as exc:
-        skipped.append(f'alerts: {exc}'[:200])
-    return objs, list(dict.fromkeys(skipped))
+            got = r.call(f'{proto} shares', lambda: parse_shares(json.dumps(client.call(method)), proto))
+            r.objs += [('share', f'{proto}:{s["path"]}:{s["name"] or ""}', s) for s in (got['shares'] if got else [])]
+    got = r.call('alerts', lambda: parse_alerts(json.dumps(client.call('alert.list'))))
+    r.objs += [('alert', a['uuid'], a) for a in (got['alerts'] if got else [])]
+    return r.result()
 
 
 # ── beside the scan ───────────────────────────────────────────────────

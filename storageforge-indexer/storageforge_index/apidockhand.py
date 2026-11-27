@@ -215,32 +215,29 @@ def readback(client, row: dict) -> dict:
 
 # ── the read ──────────────────────────────────────────────────────────
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError, CertificateChanged, NotPinned
-    objs, skipped = [], []
+    from .apicollect import Reading
+    r = Reading()
     feats = rb.get('features') or {}
     if not feats.get('environments', {}).get('ok'):
-        return objs, ['environments: the token may see none (environments:view)']
+        r.skip('environments: the token may see none (environments:view)')
+        return r.result()
     envs = parse_environments(client.get('/environments'))['environments']
     for e in envs:
-        objs.append(('environment', str(e['id']), e))
+        r.objs.append(('environment', str(e['id']), e))
         for feature, (parse, kind, key) in INVENTORY.items():
             if not feats.get(feature, {}).get('ok'):
                 continue
-            try:
-                parsed = parse(client.get(f'/{feature}', env=e['id']))
-            except (CertificateChanged, NotPinned):
-                raise
-            except ApiError as exc:
-                skipped.append(f'{e["name"]} {feature}: {exc}'[:200])
+            parsed = r.call(f'{e["name"]} {feature}', lambda: parse(client.get(f'/{feature}', env=e['id'])))
+            if parsed is None:
                 continue
             if parsed['unreadable']:
-                skipped.append(f'{e["name"]} {feature}: the list was not readable')
+                r.skip(f'{e["name"]} {feature}: the list was not readable')
             for x in parsed[feature]:
-                objs.append((kind, f'{e["id"]}/{x[key]}', {**x, 'environment': e['id'], 'environment_name': e['name']}))
+                r.objs.append((kind, f'{e["id"]}/{x[key]}', {**x, 'environment': e['id'], 'environment_name': e['name']}))
     for f in INVENTORY:
         if not feats.get(f, {}).get('ok'):
-            skipped.append(f'{f}: could not confirm {READ[f]["perm"]} on any environment')
-    return objs, list(dict.fromkeys(skipped))
+            r.skip(f'{f}: could not confirm {READ[f]["perm"]} on any environment')
+    return r.result()
 
 
 # ── beside the scan, and the views ────────────────────────────────────

@@ -244,28 +244,23 @@ CALLS = (('pools', '/pools', 'id,name_label,master', parse_pools, 'pools', 'xo-p
 
 
 def read(client, row: dict, rb: dict) -> tuple[list, list]:
-    from .apiconn import ApiError
-    objs, skipped = [], []
+    from .apicollect import Reading
+    r = Reading()
     feats = rb.get('features') or {}
     for feature, path, fields, parse, key, kind in CALLS:
         if not feats.get(feature, {}).get('ok'):
-            skipped.append(f'{feature}: the token lacks read on {READ[feature]["resource"]}')
+            r.skip(f'{feature}: the token lacks read on {READ[feature]["resource"]}')
             continue
-        try:
-            objs += [(kind, x['id'], x) for x in parse(client.get(path, fields=fields))[key]]
-        except ApiError as exc:
-            skipped.append(f'{feature}: {exc}'[:200])
+        got = r.call(feature, lambda: parse(client.get(path, fields=fields)))
+        r.objs += [(kind, x['id'], x) for x in (got[key] if got else [])]
     if feats.get('backup-logs', {}).get('ok'):
-        try:
-            logs = parse_backup_logs(client.get('/backup-logs', fields='id,jobId,jobName,status,start,end', limit=MAX_LOGS))['logs']
-            latest = {}
-            for lg in logs:
-                if lg['job'] and (lg['job'] not in latest or (lg['start'] or 0) > (latest[lg['job']]['start'] or 0)):
-                    latest[lg['job']] = lg
-            objs += [('backup-run', job, lg) for job, lg in latest.items()]
-        except ApiError as exc:
-            skipped.append(f'backup-logs: {exc}'[:200])
-    return objs, list(dict.fromkeys(skipped))
+        got = r.call('backup-logs', lambda: parse_backup_logs(client.get('/backup-logs', fields='id,jobId,jobName,status,start,end', limit=MAX_LOGS)))
+        latest = {}
+        for lg in (got['logs'] if got else []):
+            if lg['job'] and (lg['job'] not in latest or (lg['start'] or 0) > (latest[lg['job']]['start'] or 0)):
+                latest[lg['job']] = lg
+        r.objs += [('backup-run', job, lg) for job, lg in latest.items()]
+    return r.result()
 
 
 # ── beside the scan, and the views ────────────────────────────────────
