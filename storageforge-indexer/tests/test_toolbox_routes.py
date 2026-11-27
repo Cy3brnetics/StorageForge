@@ -113,6 +113,36 @@ class Routes(Base):
         self.assertEqual(dry['tool'], 'whoami-two')
         self.assertEqual(dry['tasks'][0]['type'], 'tool-install')
 
+    def test_a_tool_a_bundle_and_a_role_profile_pass_one_gate(self):
+        from storageforge_index import tbbundles
+        self.client().post('/api/toolbox/catalog/custom', json={'yaml': CUSTOM})
+        tbbundles.save_bundle(self.conn, {'id': 'mine', 'name': 'Mine', 'entries': ['whoami']}, 'admin')
+        tbbundles.set_role_profile(self.conn, 'edge', ['whoami'], {}, 'admin')
+        tbbundles.set_host_role(self.conn, 'box', 'edge', [], 'admin')
+        tries = [('/api/toolbox/stage', {'host': 'box', 'tool': 'whoami'}), ('/api/toolbox/bundles/stage', {'host': 'box', 'bundle_id': 'mine'}),
+                 ('/api/toolbox/bundles/stage', {'host': 'box', 'entries': [' whoami']}), ('/api/toolbox/profiles/host/box/stage', {})]
+        op, stale = self.client('op'), self.client('admin', fresh=False)
+        for path, body in tries:
+            with self.subTest(path=path, body=body):
+                r = op.post(path, json=body)
+                self.assertEqual(r.status_code, 403)
+                self.assertIn('custom entry', r.get_json()['error'])
+                self.assertEqual(op.post(path, json={**body, 'accept_unsigned': True}).status_code, 403)
+                self.assertTrue(stale.post(path, json={**body, 'accept_unsigned': True}).get_json().get('reauth'))
+
+    def test_a_refused_staging_is_audited_for_a_tool_a_bundle_and_a_role_profile(self):
+        from storageforge_index import tbbundles
+        c = self.client()
+        tbbundles.save_bundle(self.conn, {'id': 'mine', 'name': 'Mine', 'entries': ['cockpit']}, 'admin')
+        tbbundles.set_role_profile(self.conn, 'edge', ['cockpit'], {}, 'admin')
+        tbbundles.set_host_role(self.conn, 'box', 'edge', ['cockpit'], 'admin')
+        self.assertEqual(c.post('/api/toolbox/stage', json={'host': 'box', 'tool': 'cockpit', 'method': 'nope'}).status_code, 400)
+        self.assertEqual(c.post('/api/toolbox/bundles/remove', json={'host': 'box', 'bundle_id': 'mine'}).status_code, 400)
+        self.assertEqual(c.post('/api/toolbox/profiles/host/box/stage', json={}).status_code, 400)
+        self.assertEqual(len(self.audited('toolbox.stage')), 1)
+        self.assertEqual(self.audited('toolbox.bundle.remove'), [{'bundle': 'mine', 'why': 'no StorageForge-managed tools from bundle Mine are installed on box'}])
+        self.assertEqual(self.audited('toolbox.profile.stage'), [{'role': 'edge', 'why': 'all tools in role edge are excluded on box'}])
+
     def test_actions_and_overrides(self):
         c = self.client('op')
         acts = c.get('/api/toolbox/box/wireguard/actions').get_json()['actions']

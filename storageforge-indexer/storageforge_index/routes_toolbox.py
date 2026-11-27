@@ -20,6 +20,21 @@ def register(web, ctx):
     def bad(exc, code=400):
         return jsonify(error=str(exc)), code
 
+    def stage_gate(tool_ids, accept):
+        """The one bar for staging a tool, a bundle or a role profile: a custom entry among tool_ids takes hosts.command (it is root on the
+        host by another name), and accepting an unsigned entry takes hosts.command and a fresh password. Ids are read as order_entries
+        reads them (' x' is x). Returns the reauth response when the password is stale, else None; a refusal raises a 403."""
+        if 'hosts.command' not in current_user.permissions:
+            for tid in tool_ids:
+                row = toolbox.find(conn(), str(tid).strip())
+                if row and row['source'] == 'custom':
+                    abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
+        if accept:
+            if 'hosts.command' not in current_user.permissions:
+                abort(403, description='accepting an unsigned entry takes hosts.command')
+            return password_stale()
+        return None
+
     @web.get('/api/toolbox/catalog')
     @login_required
     def api_toolbox_catalog():
@@ -181,16 +196,10 @@ def register(web, ctx):
                 return jsonify(got), 201
             if action != 'install':
                 return bad('action is install or remove')
-            row = toolbox.find(conn(), tool)
-            if row and row['source'] == 'custom' and 'hosts.command' not in current_user.permissions:
-                abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
             accept = bool(b.get('accept_unsigned'))
-            if accept:
-                if 'hosts.command' not in current_user.permissions:
-                    abort(403, description='accepting an unsigned entry takes hosts.command')
-                stale = password_stale()
-                if stale:
-                    return stale
+            stale = stage_gate([tool], accept)
+            if stale:
+                return stale
             got = toolbox.stage(conn(), host, tool, actor(), method=b.get('method') or None, inputs=b.get('inputs') or {}, exposure=b.get('exposure') or None,
                                 bind=b.get('bind') or None, allow_from=b.get('allow_from') or None, accept_unsigned=accept)
         except LookupError as exc:
@@ -312,23 +321,15 @@ def register(web, ctx):
         b = json_body()
         host, bid = str(b.get('host') or ''), b.get('bundle_id') or None
         accept = bool(b.get('accept_unsigned'))
-        if accept:
-            if 'hosts.command' not in current_user.permissions:
-                abort(403, description='accepting an unsigned entry takes hosts.command')
-            stale = password_stale()
-            if stale:
-                return stale
         try:
             entries = b.get('entries')
             if entries is None and bid:
-                bdef = tbbundles.get_bundle(conn(), bid)
-                entries_to_check = (bdef or {}).get('entries') or []
+                entries_to_check = (tbbundles.get_bundle(conn(), bid) or {}).get('entries') or []
             else:
                 entries_to_check = entries or []
-            for tid in entries_to_check:
-                row = toolbox.find(conn(), str(tid).strip())   # as order_entries reads it: ' x' is x
-                if row and row['source'] == 'custom' and 'hosts.command' not in current_user.permissions:
-                    abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
+            stale = stage_gate(entries_to_check, accept)
+            if stale:
+                return stale
             got = tbbundles.stage_bundle(conn(), host, bid, actor(), entries=entries, params=b.get('params'),
                                          name=b.get('name'), accept_unsigned=accept)
         except LookupError as exc:
@@ -348,6 +349,8 @@ def register(web, ctx):
         except LookupError as exc:
             return bad(exc, 404)
         except (toolbox.CatalogError, ValueError) as exc:
+            core.audit(conn(), actor(), 'toolbox.bundle.remove', 'failed', str(b.get('host') or '')[:80] or None,
+                       {'bundle': str(b.get('bundle_id') or '')[:60], 'why': str(exc)[:200]})
             return bad(exc)
         core.audit(conn(), actor(), 'toolbox.bundle.remove', 'ok', got['host'], {'bundle': got['bundle_id'], 'plan': got['plan_id']})
         return jsonify(got), 201
@@ -386,22 +389,18 @@ def register(web, ctx):
     def api_toolbox_host_profile_stage(host):
         b = json_body()
         accept = bool(b.get('accept_unsigned'))
-        if accept:              # the same bar as staging a tool or a bundle: an unsigned entry is code nobody signed
-            if 'hosts.command' not in current_user.permissions:
-                abort(403, description='accepting an unsigned entry takes hosts.command')
-            stale = password_stale()
-            if stale:
-                return stale
+        hp = None
         try:
             hp = tbbundles.host_profile(conn(), host)
-            for tid in (hp or {}).get('tools') or []:
-                row = toolbox.find(conn(), str(tid).strip())   # as order_entries reads it: ' x' is x
-                if row and row['source'] == 'custom' and 'hosts.command' not in current_user.permissions:
-                    abort(403, description='a custom entry is root on the host by another name: staging one takes hosts.command')
+            stale = stage_gate((hp or {}).get('tools') or [], accept)
+            if stale:
+                return stale
             got = tbbundles.stage_host_profile(conn(), host, actor(), params=b.get('params'), accept_unsigned=accept)
         except LookupError as exc:
             return bad(exc, 404)
         except (toolbox.CatalogError, ValueError) as exc:
+            core.audit(conn(), actor(), 'toolbox.profile.stage', 'failed', ((hp or {}).get('host') or host)[:80] or None,
+                       {'role': str((hp or {}).get('role') or '')[:60], 'why': str(exc)[:200]})
             return bad(exc)
         core.audit(conn(), actor(), 'toolbox.profile.stage', 'ok', got['host'], {'plan': got['plan_id'], 'order': got['order']})
         return jsonify(got), 201
