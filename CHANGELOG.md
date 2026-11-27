@@ -2,15 +2,14 @@
 
 Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. Everything before 0.3.0 was 0.2.0 and was never tagged.
 
-## Unreleased
+## 0.6.4 — 2026-11-26
+
+The third version of the [0.7.0 roadmap](roadmap-0.7.0.md): one script kit. The Ansible exports of every plan step are built by one set of helpers, which closed two gaps one copy had: seven destructive steps ran in a playbook without `-e storageforge_destructive=true`, and the mdadm array step's export skipped the device checks the plan's script makes. Moves, `storageforge-job` and the archive step share one compression kit, and each script still carries all of it, so it keeps working on a host with the controller gone. Built and unit-tested on SQLite and PostgreSQL 16, light, medium and heavy on each; **not lab-tested**. Browser tests that wait for a page sometimes time out under load, as they did before this release: they now print the page's script errors and the server's threads when they do.
 
 ### Security
 
 - **Every destructive step in an Ansible export now runs only with `-e storageforge_destructive=true`, as the playbook's header says.** The exported tasks of seven destructive steps had no such gate, because each step module writes its own export: creating an mdadm array, installing or removing an OS on a disk, moving a tool's data to the trash, reverting a VM to a snapshot, removing a workload and rolling a ZFS dataset back. A plain `ansible-playbook` ran them. They now carry the `destructive` tag and the gate, whichever module wrote them, and a test walks every destructive step type.
 - **The Ansible export of an mdadm array step checks each device as the plan's script does before it touches one.** The export carried its own copy of the step. It never asked whether a device was mounted, used for swap, part of another array, LVM or LUKS, or a block device at all, and with "overwrite" set it wiped every device it was given. The task now runs the step's own Bash function: it stops at the first device that is not free, stops before any disk when the kernel has no md driver, backs up `mdadm.conf` before adding the array, and fails where an existing array holds another filesystem instead of skipping the format without a word.
-
-### Fixed
-
 
 ### Changed
 

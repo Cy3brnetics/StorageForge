@@ -69,7 +69,7 @@ The rules every feature follows are in [Concepts](docs/concepts.md#the-rules), a
 ```bash
 git clone https://github.com/Cy3brnetics/StorageForge.git
 cd StorageForge/storageforge-indexer
-git checkout v0.6.3.2
+git checkout v0.6.4
 docker compose up -d --build
 ```
 
@@ -101,7 +101,7 @@ To try it without touching a real host, `examples/demo/demo.sh` runs the whole f
 
 ## Where it stands
 
-- Version 0.6.3.2 (2026-11-26). Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
+- Version 0.6.4 (2026-11-26). Releases are tagged `vX.Y.Z`; see the [changelog](CHANGELOG.md).
 - It is meant for a LAN behind its TLS proxy. Do not publish it on the internet. The one port that may face it is the optional [tunnel for remote nodes](docs/remote-nodes.md).
 - The [KVM lab](docs/kvm-lab.md) tests scans and deploys on real VMs across Debian, Ubuntu, Fedora, Arch, openSUSE, Rocky Linux and AlmaLinux. Alpine can be scanned, but deploys are refused because it has no bash or systemd. The lab tests through the API, not the web pages. The last full release run in the lab, on 2026-11-06, passed 561 of 564 checks. 0.6.0 added much more than it has been lab-tested for: the Workloads page, the Proxmox VE steps, Docker engine settings, the extra share protocols, rclone mounts, the Windows agent and much of the security, network and migration work are **built, not lab-tested**. What has not met a real device or service is listed in the [changelog](CHANGELOG.md), [roadmap.md](roadmap.md) and [progress.md](progress.md).
 - The CI workflow (`.github/workflows/ci.yml`) runs the test blocks. The PostgreSQL migrations of 0.6.0 have not been run against PostgreSQL in its release checks.
