@@ -83,19 +83,19 @@ The order goes from what is wrong today, to the small shared pieces everything e
 
 | Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
-| **BE-35** | One builder for the Ansible task that runs a step's Bash function (`shell_task`, `bash_fn`, `words_of`), in place of about 27 copies. | Duplicate | |
-| **BE-36** | One builder for the head of those tasks, used first where the heads are already identical | Duplicate | |
-| **BE-37** | Every destructive step's Ansible export carries the destructive gate. Some exports have none today, because each module writes its own | Bug in one copy | |
-| **BE-38** | One definition of the secrets folder and the secret-name rule, and one Python check for a step's `secret` field | Duplicate | |
-| **BE-39** | One checked download for VM images: `os-install` and `vm-iso` call `sf_vm_fetch` instead of carrying its body | Duplicate | |
-| **BE-40** | One reading of a scan's package list, and one table of package names per package manager for the generated scripts and the reinstall plan | Duplicate | |
-| **BE-41** | The share drivers take their *make the share folder* step from the driver helper set | Duplicate | |
-| **BE-42** | The rclone-served share kinds share their secret-key list and their mount report | Duplicate | |
-| **BE-43** | One compression codec table for Moves, the job program and the archive step | Duplicate | |
-| **BE-44** | One Bash kit for what Moves, `storageforge-job` and the archive step all carry: the idle wrapper, the rsync compression probe and the compress-and-verify command | Duplicate | |
-| **BE-45** | One function stages tasks as a named change plan, with the clash rule chosen by the caller | Duplicate | |
-| **BE-46** | One function forgets a deployed unit's mark, and one connection helper for the after-deploy hooks | Duplicate | |
-| **BE-47** | The Ansible export of `md-array` runs the step's own Bash function instead of a second implementation of it | Bug in one copy | |
+| **BE-35** | One builder for the Ansible task that runs a step's Bash function (`shell_task`, `bash_fn`, `words_of`), in place of about 27 copies. | Duplicate | `70d7354, 119b7ce` |
+| **BE-36** | One builder for the head of those tasks, used first where the heads are already identical | Duplicate | `6f4ddda` |
+| **BE-37** | Every destructive step's Ansible export carries the destructive gate. Some exports have none today, because each module writes its own | Bug in one copy | `fd4edba` |
+| **BE-38** | One definition of the secrets folder and the secret-name rule, and one Python check for a step's `secret` field | Duplicate | `4e7ea02` |
+| **BE-39** | One checked download for VM images: `os-install` and `vm-iso` call `sf_vm_fetch` instead of carrying its body | Duplicate | `05a5a72` |
+| **BE-40** | One reading of a scan's package list, and one table of package names per package manager for the generated scripts and the reinstall plan | Duplicate | `67c9a7f` |
+| **BE-41** | The share drivers take their *make the share folder* step from the driver helper set | Duplicate | `7d4bdfa` |
+| **BE-42** | The rclone-served share kinds share their secret-key list and their mount report | Duplicate | `90f31f3` |
+| **BE-43** | One compression codec table for Moves, the job program and the archive step | Duplicate | `9aa3872, a15ac1b` |
+| **BE-44** | One Bash kit for what Moves, `storageforge-job` and the archive step all carry: the idle wrapper, the rsync compression probe and the compress-and-verify command | Duplicate | `c0e9edd` |
+| **BE-45** | One function stages tasks as a named change plan, with the clash rule chosen by the caller | Duplicate | `101b5f9` |
+| **BE-46** | One function forgets a deployed unit's mark, and one connection helper for the after-deploy hooks | Duplicate | `83a7e42` |
+| **BE-47** | The Ansible export of `md-array` runs the step's own Bash function instead of a second implementation of it | Bug in one copy | `bfe893e` |
 
 ## 0.6.5: Platform APIs, network devices and the Toolbox
 
