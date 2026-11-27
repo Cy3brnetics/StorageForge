@@ -20,21 +20,8 @@ from .changes import F
 from .db import Conn
 from .fsmap import SYSTEM_DIRS
 from .moves import find_host, hosts, mount_of
-from .scriptkit import package_check
+from .scriptkit import CODEC_EXT, CODEC_TOOL, CODECS, package_check
 
-CODECS = ['zstd-ultra', 'xz-extreme', '7z-ultra', 'zstd-high']
-CODEC_EXT = {
-    'zstd-ultra': '.tar.zst',
-    'zstd-high': '.tar.zst',
-    'xz-extreme': '.tar.xz',
-    '7z-ultra': '.7z',
-}
-CODEC_TOOL = {
-    'zstd-ultra': 'zstd',
-    'zstd-high': 'zstd',
-    'xz-extreme': 'xz',
-    '7z-ultra': '7z',
-}
 ARCHIVE_SUFFIXES = ('.tar.zst', '.tzst', '.tar.xz', '.txz', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.7z')
 OS_PROTECTED = set(SYSTEM_DIRS) | {'/', '/boot/efi', '/boot/firmware', '/efi'}
 

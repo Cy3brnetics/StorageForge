@@ -35,6 +35,20 @@ def longest_gap(day_matches, minutes: list[int]) -> int | None:
     return max(within, across) * 60
 
 
+# The lossless archive codecs, one table for the archive step, Moves and storageforge-job: the file ending, the tool that
+# compresses and checks it, and whether it streams (a tar stream through a pipe, so it can cross SSH and be verified in a fifo)
+CODECS = ['zstd-ultra', 'xz-extreme', '7z-ultra', 'zstd-high']
+CODEC_EXT = {'zstd-ultra': '.tar.zst', 'zstd-high': '.tar.zst', 'xz-extreme': '.tar.xz', '7z-ultra': '.7z'}
+CODEC_TOOL = {'zstd-ultra': 'zstd', 'zstd-high': 'zstd', 'xz-extreme': 'xz', '7z-ultra': '7z'}
+CODEC_STREAMS = {'zstd-ultra': True, 'zstd-high': True, 'xz-extreme': True, '7z-ultra': False}
+STREAM_CODECS = tuple(c for c in CODECS if CODEC_STREAMS[c])   # what Moves and storageforge-job can carry
+
+
+def codec_tool(codec: str | None) -> str:
+    """The program a codec needs on the host that compresses or checks it; no codec is the default, zstd-ultra."""
+    return CODEC_TOOL.get(codec or 'zstd-ultra', 'zstd')
+
+
 def one_line(text) -> str:
     """Text safe to put after # in a generated script: control characters and line breaks become spaces."""
     return _BREAKS.sub(' ', str(text))

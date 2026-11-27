@@ -28,6 +28,7 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - A scan's package list is read by one `scriptkit.package_facts` (on `scriptkit.package_words`) for the package check of a deploy preview and for the host preflight, and the reinstall script takes its btrfs, NFS, SMB, sshfs, NFS server and Samba package names from `scriptkit.NEEDS` through `scriptkit.need_tuple`, which `need_line` also uses. Generated scripts are unchanged.
 - The SFTP, WebDAV, NBD, NVMe-oF and virtiofs share drivers make the folder a share serves with one `share_dir` in the driver helper set (`netshares.BASH`), in place of the same line in each. The shares script prints the same messages as before (BE-41).
 - The rclone options that hold a password, key or token are one `rclone.SECRET_KEYS`, read by the rclone mount step and the rclone serve share, and what a check (no apply) says of an rclone client mount is one `rc_mount_report` in the rclone library, used by the rclone mount step and the WebDAV and S3 client mounts. Their messages are as before (BE-42). The check of the rclone mount step now finds rclone as its apply does (see Changed).
+- The lossless archive codecs (their file ending, the tool each needs and whether it streams) are one table in `scriptkit` (`CODECS`, `CODEC_EXT`, `CODEC_TOOL`, `STREAM_CODECS`, `codec_tool`), read by the archive step, Moves, the storageforge-job package checks and `archive create`, in place of a table, a list and string tests on `xz-extreme` in five modules.
 
 ## 0.6.3.1 — 2026-11-26
 

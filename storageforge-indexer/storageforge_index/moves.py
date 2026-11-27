@@ -28,10 +28,10 @@ import time
 from . import hostid, site
 from .db import Conn
 from .paths import deepest, is_under
-from .scriptkit import HELPERS, REMOTE, comments, host_name, one_line, package_check
+from .scriptkit import CODEC_EXT, HELPERS, REMOTE, STREAM_CODECS, codec_tool, comments, host_name, one_line, package_check
 
 METHODS = ('copy', 'move', 'mirror', 'rsnapshot', 'git', 'archive')
-ARCHIVE_CODECS = ('zstd-ultra', 'xz-extreme', 'zstd-high')
+ARCHIVE_CODECS = STREAM_CODECS
 COMPRESS_ON = ('source', 'destination', 'worker')
 WIRE_COMPRESS = ('', 'zstd', 'max')
 SCHEDULES = ('hourly', 'daily', 'weekly', 'monthly')
@@ -64,7 +64,7 @@ def _path(p, what) -> str:
 
 def archive_path(src_path: str, dst_path: str, codec: str = 'zstd-ultra') -> str:
     """Resolve the output archive file path for an archive step."""
-    ext = '.tar.xz' if codec == 'xz-extreme' else '.tar.zst'
+    ext = CODEC_EXT.get(codec, '.tar.zst')
     if dst_path.lower().endswith(('.tar.zst', '.tzst', '.tar.xz', '.txz')):
         return dst_path
     base = posixpath.basename(src_path.rstrip('/')) or 'archive'
@@ -391,7 +391,7 @@ def check(conn: Conn, plan: dict, compare_limit: int = 300_000) -> dict:
         comp_on = (o.get('compress_on') or 'source') if s['method'] == 'archive' else ''
         wh = find_host(hs, o.get('compress_host') or '') if (s['method'] == 'archive' and comp_on == 'worker') else None
         if s['method'] == 'archive':
-            arc_tool = 'xz' if o.get('archive_codec') == 'xz-extreme' else 'zstd'
+            arc_tool = codec_tool(o.get('archive_codec'))
             if comp_on == 'worker':
                 if not wh:
                     say('crit', f'remote compression host {o.get("compress_host")} has not been scanned')

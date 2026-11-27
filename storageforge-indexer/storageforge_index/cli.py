@@ -1883,7 +1883,7 @@ def cmd_copies(args) -> int:
 
 def cmd_archive(args) -> int:
     import posixpath
-    from . import changes, moves, steps_archive
+    from . import changes, moves, scriptkit, steps_archive
 
     def split_place(value: str, default_host: str | None = None) -> tuple[str, str]:
         if ':' in value and not value.startswith('/'):
@@ -1945,7 +1945,7 @@ def cmd_archive(args) -> int:
 
         if args.trash_source:
             raise ValueError('--trash-source is only supported on same-host change plans')
-        if codec == '7z-ultra':
+        if codec not in scriptkit.STREAM_CODECS:
             raise ValueError('streaming or CPU-offloaded Moves archives use zstd-ultra, xz-extreme or zstd-high so decompression verifies in stream')
         name = args.plan or (f'Archive {sh}:{src_path} via {comp_host}' if same_host else f'Archive {sh}:{src_path} to {dh}')
         resolved = moves.archive_path(src_path, dst_path, codec)
@@ -1972,6 +1972,7 @@ def cmd_archive(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     from .copies import SCHEDULES
+    from .scriptkit import CODECS
 
     p = argparse.ArgumentParser(prog='storageforge-index', description=__doc__)
     p.add_argument('--version', action='version', version=__version__)
@@ -2081,7 +2082,7 @@ def build_parser() -> argparse.ArgumentParser:
     arc = ar_sub.add_parser('create', help='prepare a lossless archive plan (same host Change plan, or cross-host compressed Moves stream)')
     arc.add_argument('src', help='source host:/path')
     arc.add_argument('dest', nargs='?', help='destination [/path or dst_host:/path]; defaults to <src>.tar.zst on the source host')
-    arc.add_argument('--codec', choices=['zstd-ultra', 'xz-extreme', '7z-ultra', 'zstd-high'], default='zstd-ultra',
+    arc.add_argument('--codec', choices=CODECS, default='zstd-ultra',
                      help='lossless compression profile (default: zstd-ultra)')
     arc.add_argument('--compress-on', choices=['source', 'destination', 'worker'],
                      help='who runs compression CPU: source (sender), destination (receiver), or worker (remote compression host)')

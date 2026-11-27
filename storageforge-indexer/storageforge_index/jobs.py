@@ -34,7 +34,7 @@ from .db import Conn
 from .jobscript import JOB_SCRIPT
 from .remote import known_host_entries
 from .runner import known_hosts_path
-from .scriptkit import HELPERS, PACKAGES, longest_gap, need_line, one_line
+from .scriptkit import HELPERS, PACKAGES, codec_tool, longest_gap, need_line, one_line
 
 SCHEDULED = ('mirror', 'rsnapshot', 'git')
 REPORT_CA = '/etc/storageforge/report-ca.pem'       # the self-signed certificate an https report URL is checked against
@@ -381,9 +381,9 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
             parts.append(need_line('rsnapshot'))
         if 'git' in methods:
             parts.append(need_line('git'))
-        if any(s.get('compress') or (_runner_compresses(s) and s.get('archive_codec') != 'xz-extreme') for s in runner_specs):
+        if any(s.get('compress') or (_runner_compresses(s) and codec_tool(s.get('archive_codec')) == 'zstd') for s in runner_specs):
             parts.append(need_line('zstd'))
-        if any(_runner_compresses(s) and s.get('archive_codec') == 'xz-extreme' for s in runner_specs):
+        if any(_runner_compresses(s) and codec_tool(s.get('archive_codec')) == 'xz' for s in runner_specs):
             parts.append(need_line('xz'))
         if any(s.get('dedup') for s in runner_specs):
             parts.append(need_line('python3'))
@@ -416,9 +416,9 @@ def host_script(plan: dict, host: str, runner_specs: list[dict], source_specs: l
         parts.append(need_line('rsync'))
     if any(s['method'] == 'git' for s in remote_sources):
         parts.append(need_line('git'))
-    if any(s.get('compress') or (_source_compresses(s) and s.get('archive_codec') != 'xz-extreme') for s in source_specs) or any(s.get('archive_codec') != 'xz-extreme' for s in compressor_specs):
+    if any(s.get('compress') or (_source_compresses(s) and codec_tool(s.get('archive_codec')) == 'zstd') for s in source_specs) or any(codec_tool(s.get('archive_codec')) == 'zstd' for s in compressor_specs):
         parts.append(need_line('zstd'))
-    if any(_source_compresses(s) and s.get('archive_codec') == 'xz-extreme' for s in source_specs) or any(s.get('archive_codec') == 'xz-extreme' for s in compressor_specs):
+    if any(_source_compresses(s) and codec_tool(s.get('archive_codec')) == 'xz' for s in source_specs) or any(codec_tool(s.get('archive_codec')) == 'xz' for s in compressor_specs):
         parts.append(need_line('xz'))
     if runner_specs or source_specs or compressor_specs:
         parts.append('section "storageforge-job"\n' + _heredoc(f'want_file {deploy.JOBBIN} 0755', JOB_SCRIPT))
