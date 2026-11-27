@@ -58,7 +58,20 @@ class Timed(unittest.TextTestResult):
 
     def stopTest(self, test):
         self.times[test.id()] = time.perf_counter() - self._started
+        blocking()                  # a failed test's captured output is written here: it must not be lost to EAGAIN
         super().stopTest(test)
+
+
+def blocking() -> None:
+    """stdout and stderr back to blocking. Playwright's driver is a Node process that shares them, and Node makes a pipe
+    non-blocking for every process holding it: a large write then fails with BlockingIOError once the pipe is full. On GitHub CI
+    that lost a failed test's report and skipped its class's teardown, so the next browser class in the worker found Playwright's
+    loop still running."""
+    for fd in (1, 2):
+        try:
+            os.set_blocking(fd, True)
+        except OSError:
+            pass
 
 
 def run_class(name: str, ids: list[str]) -> dict:
@@ -66,6 +79,7 @@ def run_class(name: str, ids: list[str]) -> dict:
     os.chdir(HERE.parent)
     if str(HERE) not in sys.path:
         sys.path.insert(0, str(HERE))
+    blocking()
     stream = io.StringIO()
     started = time.perf_counter()
     try:
