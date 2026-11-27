@@ -11,7 +11,6 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 
 ### Fixed
 
-- **Signing out while the page is still drawing its first answers no longer raises a script error.** When answers to the page's first load arrive, the infrastructure view waits 50 ms to draw them all at once. A sign-out inside those 50 ms let that drawing run on the emptied page. It now stops once the page is signed out. 0.6.3.1 fixed a similar case for answers still being read; GitHub CI's slower runners hit this one in three browser tests.
 
 ### Changed
 
@@ -33,6 +32,16 @@ Newest first. Releases are tagged `vX.Y.Z`, and a fix to a release `vX.Y.Z.N`. E
 - The idle wrapper `sf_idle`, the rsync wire compression probe `rsync_compress_flags` and the round-trip verified compressor snippet `sf_remote_compress_cmd` are one Bash kit, `scriptkit.COMPRESS_KIT`, that Moves scripts, storageforge-job and the change-plan archive step each carry whole, in place of three copies of the first, two of the second and two of the third. The text sent over SSH to a compression host is the same, and the job program's rsync flags come out in the same order; the job program's text changes, so the next deploy to a host that runs jobs rewrites its storageforge-job.
 - Tasks are staged as a named change plan by one `changes.stage`, which finds the plan by its name in any case and makes it when there is none; the caller chooses whether new tasks replace the plan's own (security hardening, re-converge, roll back, labels, AppArmor, fences, a map design) or are added after them (a step from the map, a Linux host's firewall rules), in place of the same lookup written in three modules (BE-45).
 - A host's deployed mark for a unit is dropped by one `deploy.forget_deployed` (one unit, or every unit of a kind), and the hooks that run after a deploy open and close their connection with one `deploy.hook_conn`, in the tasks, schedules, ClamAV, decoy, jobs and receiving-key modules, in place of a hand-written delete and close in each. Which runs mark or forget is unchanged (BE-46).
+
+## 0.6.3.2 — 2026-11-26
+
+GitHub CI's heavy block failed on 0.6.3.1 with the same script error as before, at a moment the fix in 0.6.3.1 did not cover. 0.6.3.1 passed every block here on SQLite and light and medium on PostgreSQL 16; this release changes one line of the web UI and two tests, and was checked with the browser, smoke and kernel tests (168) on both databases. GitHub has not run it yet. The image scan job still fails, as in 0.6.3.1.
+
+### Fixed
+- **Signing out while the page is still drawing its first answers no longer raises a script error.** When answers to the page's first load arrive, the infrastructure view waits 50 ms to draw them all at once. A sign-out inside those 50 ms let that drawing run on the emptied page. It now stops once the page is signed out. Found by signing out at each of the first thirty answers the page reads, which a new test now does for the first twenty.
+
+### Tests
+- Browser tests record each page error's stack, so a failure names the file and line. The secrets page test says which script errors the page raised when it times out waiting for the page.
 
 ## 0.6.3.1 — 2026-11-26
 
