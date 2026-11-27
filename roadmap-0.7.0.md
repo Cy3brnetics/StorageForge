@@ -32,7 +32,7 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | **0.6.6** | Hosts, keys and credentials | BE-59 to BE-66 and BE-84, in the table below | BE-59, BE-61 and BE-62 each, before they merge: every private key and the KEK rotation pass through them · the release |
 | **0.6.7** | Plans, jobs, alerts and routes | BE-67 to BE-75, in the table below | BE-73 changes who is notified and when · the release |
 | **0.6.8** | Shares, archives and quarantine | BE-76 to BE-80, in the table below | The lab run of the share and archive tiers, since generated scripts change · the release |
-| **0.6.9** | The Rust programs and the secure channels | BE-81 to BE-83, in the table below | Each of BE-82 and BE-83 is a security boundary and changes a signed image: the owner decides whether they are done at all · the release |
+| **0.6.9** | The Rust programs | BE-81, in the table below (BE-82 and BE-83 not done, by the owner's choice) | The release |
 | **0.6.10** | Cloud-init templates | CT-01 to CT-14, in the table below | The secrets a template may carry (CT-04) and the Xen Orchestra create action (CT-09) are each a security boundary · the lab run of every system a template reaches · the release |
 | **0.7.0** | The release | The audit of everything since 0.6.1, to the audit rules, and its bugfix round, a commit per finding · the full unit suites on SQLite and PostgreSQL · the full lab, since generated scripts changed in 0.6.4, 0.6.8 and 0.6.10 | The audit's findings · the lab results · the release |
 
@@ -157,8 +157,8 @@ The order goes from what is wrong today, to the small shared pieces everything e
 | Item | What is combined | Found as | Status |
 | :--- | :--- | :--- | :--- |
 | **BE-81** | The agent's plugin programs take their bounded file read, disk list, clock and hex from the agent library | Duplicate | |
-| **BE-82** | The two Python Noise implementations (the agent tunnel and the enclave channel) share one symmetric state, cipher and framing | Duplicate | |
-| **BE-83** | The enclave takes its Noise primitives from the `wire` crate instead of its own copy | Duplicate | |
+| **BE-82** | The two Python Noise implementations (the agent tunnel and the enclave channel) share one symmetric state, cipher and framing | Duplicate | Not done: the owner chose on 2026-11-26 to leave the secure channels and the enclave image as they are before 1.0 |
+| **BE-83** | The enclave takes its Noise primitives from the `wire` crate instead of its own copy | Duplicate | Not done: the owner chose on 2026-11-26 to leave the secure channels and the enclave image as they are before 1.0 |
 
 ## 0.6.10: Cloud-init templates
 
@@ -195,12 +195,20 @@ The owner's addition of 2026-11-26: a cloud-init config manager, so a person can
 | The full lab, every tier | |
 | The release, with every *not lab-tested* label listed in the notes | |
 
+## Decisions taken
+
+| Decision | Taken |
+| :--- | :--- |
+| **Better behaviour is allowed when copies are combined,** as long as it stays backwards compatible (rule 1) | 2026-11-26, the owner |
+| **What StorageForge makes on a host outlives the controller** (rule 2, and [Concepts](docs/concepts.md#the-rules) rule 16) | 2026-11-26, the owner |
+| **Cloud-init templates are added as 0.6.10,** before the 0.7.0 release | 2026-11-26, the owner |
+| **0.6.9 leaves the secure channels alone:** BE-82 (the two Python Noise implementations) and BE-83 (the enclave's own Noise code) are not done before 1.0. The duplication stays, and the enclave image keeps its digest | 2026-11-26, the owner |
+| **The cloud-init template editor lives on the Workloads page,** beside the VM steps, and a template takes a checked *extra* block of raw cloud-config as well as its plain fields | 2026-11-26, the owner |
+
 ## Decisions still open
 
 | Decision | Needed for |
 | :--- | :--- |
-| Whether 0.6.9 is done at all. The two Noise implementations and the enclave's own copy of the primitives are real duplication, but they sit on the channels that carry the vault's secrets, and the enclave's image is signed and reproducible: a changed dependency changes its digest. The survey's records for them were not checked by a second reader | BE-82, BE-83 |
-| Where the template editor lives: the Workloads page (beside the VM steps, recommended) or Admin. And whether the *extra* block of raw cloud-config is offered at all in the first release of CT-03, or only the plain fields | CT-03, CT-11 |
 | Whether the CLI and the web should audit and check the same things. They differ today (three actor formats, the web audits saves and the CLI doesn't, the web's clone save checks accepted risks and the CLI's doesn't). The survey refused to merge them without a decision on which is right | Not on this roadmap until decided |
 | What retiring a host does with the 31 tables that still hold its name. BE-07 removed what the roadmap named and lists the rest in `retire.KEPT`, each with a reason that starts *not decided*: the agent's tables, alerts, host logs and their counts, saved host configs, task runs, notification history, playbook runs, traffic samples, scan signatures, host checks, secret deliveries, SSH CA hosts, workload captures and four Toolbox tables. Retire can't be undone, so each needs a yes (removed with the host) or a no (kept as history) | Retire removing them |
 | Unified designs, [roadmap.md](roadmap.md) step 3i. The survey found the two design stores again and left them: they wait on the answers in section 10.1 and a stored-format migration | Not on this roadmap |
